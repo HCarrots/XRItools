@@ -3,6 +3,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <atomic>
+#include <functional>
 #include <stdexcept>
 
 struct HdfNode {
@@ -31,11 +33,17 @@ struct DataSlice {
 // Each operation owns its HDF5 handles. A process-wide mutex also supports
 // HDF5 builds without thread-safety; background reads never share handles.
 enum class ScanFormat { Generic, Scan, GridScan };
+class QMutex;
 
 class HdfFile {
   public:
+    static QMutex &ioMutex();
     static ScanFormat formatFromFileName(const QString &file);
     static HdfNode inspect(const QString &file, const QString &path);
     static QVector<HdfNode> children(const QString &file, const QString &path);
     static DataSlice read(const SliceRequest &request);
+    static DataSlice sumFrames(const QString &file, const QString &path, const std::atomic_bool &cancel,
+                               std::atomic<int> *progress = nullptr);
+    static void visitFrames(const QString &file, const QString &path, const std::atomic_bool &cancel,
+                            const std::function<void(int, const double *, int, int)> &visitor);
 };

@@ -1,0 +1,82 @@
+{
+  "accepted_keys_equal": true,
+  "rejected_keys_equal": true,
+  "same_shape": true,
+  "old_new": {
+    "spacing_xyz_mm": [
+      [
+        0.06408624917929226,
+        0.057499999999999996,
+        0.054000000000000006
+      ],
+      [
+        0.06408624521324145,
+        0.057499999999999996,
+        0.054000000000000006
+      ]
+    ],
+    "gain_fit_iterations": [
+      92,
+      92
+    ],
+    "nnls_projected_kkt_relative": [
+      9.8428136609398e-08,
+      9.911671278068639e-08
+    ],
+    "tv_iterations": [
+      39586,
+      39613
+    ],
+    "nnls_relative_l2_residual": [
+      0.4203843538937465,
+      0.4203849121309115
+    ],
+    "tv_relative_l2_residual": [
+      0.42100661331359446,
+      0.42100711766812476
+    ],
+    "numerical_response_rank": [
+      77,
+      77
+    ]
+  },
+  "tomography_inputs.h5": {
+    "R_matched_px": 0.0,
+    "R_matched_variance_px": 0.0,
+    "D_band_pyz": 0.0,
+    "D_variance_pyz": 6.776263578034403e-21
+  },
+  "calibration.h5": {
+    "counts_epx": 0.0
+  },
+  "reconstruction.h5": {
+    "max_abs_difference": 1.5310943126678467e-06,
+    "relative_l2_difference": 4.114041243281259e-06,
+    "dtype": "float32",
+    "dimension_scales": [
+      1,
+      1,
+      1
+    ],
+    "shape": [
+      157,
+      21,
+      21
+    ]
+  },
+  "reconstruction_nnls.h5": {
+    "max_abs_difference": 0.05976998805999756,
+    "relative_l2_difference": 0.007721778625228435,
+    "dtype": "float32",
+    "dimension_scales": [
+      1,
+      1,
+      1
+    ],
+    "shape": [
+      157,
+      21,
+      21
+    ]
+  }
+}

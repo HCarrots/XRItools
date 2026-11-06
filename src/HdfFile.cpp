@@ -170,6 +170,7 @@ ScanFormat HdfFile::formatFromFileName(const QString &file) {
     return match.captured(1).compare("grid_scan", Qt::CaseInsensitive) == 0 ? ScanFormat::GridScan
                                                                             : ScanFormat::Scan;
 }
+QMutex &HdfFile::ioMutex(){return hdfMutex;}
 
 HdfNode HdfFile::inspect(const QString &file, const QString &path) {
     QMutexLocker lock(&hdfMutex);
@@ -316,4 +317,87 @@ DataSlice HdfFile::read(const SliceRequest &r) {
         out.error = QString::fromUtf8(e.what());
     }
     return out;
+}
+
+DataSlice HdfFile::sumFrames(const QString &file, const QString &path, const std::atomic_bool &cancel,
+                             std::atomic<int> *progress) {
+    QMutexLocker lock(&hdfMutex);
+    DataSlice out;
+    out.path = path;
+    out.xAxis = 2;
+    out.yAxis = 1;
+    try {
+        auto f = openFile(file);
+        Handle dataset(H5Dopen2(f, path.toUtf8().constData(), H5P_DEFAULT), H5Dclose);
+        Handle space(H5Dget_space(dataset), H5Sclose);
+        out.dims = dimensions(space);
+        if (out.dims.size() != 3 || out.dims[0] == 0 || out.dims[1] == 0 || out.dims[2] == 0 ||
+            out.dims[1] > 4096 || out.dims[2] > 4096)
+            throw std::runtime_error(
+                "ROI requires a non-empty detector stack [frames, y, x], maximum 4096 x 4096.");
+        out.width = int(out.dims[2]);
+        out.height = int(out.dims[1]);
+        out.strides = {1, 1, 1};
+        out.starts = {0, 0, 0};
+        out.values.fill(0, out.width * out.height);
+        QVector<double> frame(out.values.size());
+        double *sumPixels = out.values.data();
+        double *framePixels = frame.data();
+        const qsizetype pixelCount = frame.size();
+        hsize_t count[] = {1, hsize_t(out.height), hsize_t(out.width)}, memorySize = hsize_t(frame.size());
+        Handle memory(H5Screate_simple(1, &memorySize, nullptr), H5Sclose);
+        for (quint64 i = 0; i < out.dims[0]; ++i) {
+            if (cancel.load())
+                throw std::runtime_error("Cancelled");
+            hsize_t start[] = {hsize_t(i), 0, 0};
+            check(H5Sselect_hyperslab(space, H5S_SELECT_SET, start, nullptr, count, nullptr));
+            check(H5Dread(dataset, H5T_NATIVE_DOUBLE, memory, space, H5P_DEFAULT, framePixels));
+            for (qsizetype j = 0; j < pixelCount; ++j)
+                sumPixels[j] += framePixels[j];
+            if (progress)
+                progress->store(int((i + 1) * 100 / out.dims[0]), std::memory_order_relaxed);
+        }
+        out.minimum = std::numeric_limits<double>::infinity();
+        out.maximum = -out.minimum;
+        long double sum = 0;
+        for (double v : out.values)
+            if (std::isfinite(v)) {
+                out.minimum = std::min(out.minimum, v);
+                out.maximum = std::max(out.maximum, v);
+                sum += v;
+                ++out.finiteCount;
+            }
+        out.sum = double(sum);
+        out.mean = out.finiteCount ? double(sum / out.finiteCount) : NAN;
+        if (!out.finiteCount)
+            out.minimum = out.maximum = NAN;
+    } catch (const std::exception &e) {
+        out.error = QString::fromUtf8(e.what());
+        out.values.clear();
+    }
+    return out;
+}
+
+void HdfFile::visitFrames(const QString &file, const QString &path, const std::atomic_bool &cancel,
+                          const std::function<void(int, const double *, int, int)> &visitor) {
+    QMutexLocker lock(&hdfMutex);
+    auto f = openFile(file);
+    Handle dataset(H5Dopen2(f, path.toUtf8().constData(), H5P_DEFAULT), H5Dclose);
+    Handle space(H5Dget_space(dataset), H5Sclose);
+    auto dims = dimensions(space);
+    if (dims.size() != 3 || !dims[0] || !dims[1] || !dims[2] || dims[0] > 100000 || dims[1] > 2048 ||
+        dims[2] > 2048)
+        throw std::runtime_error(
+            "Spectroscopy requires [frames,y,x], at most 100000 frames and 2048 x 2048 pixels.");
+    std::vector<double> frame(size_t(dims[1] * dims[2]));
+    hsize_t count[] = {1, dims[1], dims[2]}, size = frame.size();
+    Handle memory(H5Screate_simple(1, &size, nullptr), H5Sclose);
+    for (quint64 i = 0; i < dims[0]; ++i) {
+        if (cancel.load())
+            throw std::runtime_error("Cancelled");
+        hsize_t start[] = {i, 0, 0};
+        check(H5Sselect_hyperslab(space, H5S_SELECT_SET, start, nullptr, count, nullptr));
+        check(H5Dread(dataset, H5T_NATIVE_DOUBLE, memory, space, H5P_DEFAULT, frame.data()));
+        visitor(int(i), frame.data(), int(dims[2]), int(dims[1]));
+    }
 }

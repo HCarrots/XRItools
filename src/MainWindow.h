@@ -1,6 +1,7 @@
 #pragma once
 #include "HdfFile.h"
 #include <QFutureWatcher>
+#include <QHash>
 #include <QMainWindow>
 #include <QTimer>
 #include <QVector>
@@ -19,6 +20,11 @@ class QTabWidget;
 class QProgressBar;
 class QToolButton;
 class SliceTableModel;
+class QAction;
+class SpectroscopyDialog;
+class ImagingDialog;
+class RoiDialog;
+class QStackedWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -26,6 +32,21 @@ class MainWindow : public QMainWindow {
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
     void openFile(const QString &path);
+    void openFiles(const QStringList &paths);
+    void activateFile(const QString &path);
+    QStringList openedFiles() const;
+    QString currentFile() const {
+        return m_file;
+    }
+    void closeCurrentFile();
+    void closeAllFiles();
+    bool exportFile(const QString &destination);
+    bool isExporting() const {
+        return m_exporting;
+    }
+    QString exportError() const {
+        return m_exportError;
+    }
     void selectPath(const QString &path);
     bool isReading() const {
         return m_reading || m_debounce.isActive() || m_pending;
@@ -34,6 +55,9 @@ class MainWindow : public QMainWindow {
         return m_slice;
     }
     void setSliceIndex(int dimension, int index);
+    SpectroscopyDialog *openSpectroscopy(int step = -1);
+    ImagingDialog *openImaging(int step = -1);
+    RoiDialog *openRoi(const QString &file = {}, const QString &scheme = {});
 
   protected:
     void dragEnterEvent(QDragEnterEvent *) override;
@@ -42,6 +66,12 @@ class MainWindow : public QMainWindow {
 
   private:
     void buildUi();
+    void showWorkspace(QWidget *page, const QString &title);
+    QTreeWidgetItem *fileRoot(const QString &file) const;
+    QTreeWidgetItem *itemAtPath(QTreeWidgetItem *root, const QString &path);
+    void rememberFile();
+    void syncFiles();
+    void clearPreview();
     void populate(QTreeWidgetItem *parent, const QString &path, int depth);
     void selectItem(QTreeWidgetItem *item);
     void configureAxes();
@@ -63,6 +93,14 @@ class MainWindow : public QMainWindow {
     QLineEdit *m_filter = nullptr;
     QLabel *m_path = nullptr, *m_summary = nullptr, *m_stats = nullptr;
     QComboBox *m_xAxis = nullptr, *m_yAxis = nullptr;
+    QComboBox *m_files = nullptr;
+    QLabel *m_fileCount = nullptr;
+    struct FileView {
+        QString path;
+        QVector<quint64> indices;
+        int x = -1, y = -1, tab = 0;
+    };
+    QHash<QString, FileView> m_fileViews;
     QVector<quint64> m_indices;
     int m_frameDimension = -1;
     ScientificPlot *m_plot = nullptr;
@@ -73,4 +111,20 @@ class MainWindow : public QMainWindow {
     QSpinBox *m_frame = nullptr;
     QToolButton *m_play = nullptr;
     QProgressBar *m_progress = nullptr;
+    QAction *m_roiAction = nullptr;
+    QAction *m_exportAction = nullptr, *m_closeFileAction = nullptr, *m_closeAllAction = nullptr,
+            *m_cancelExportAction = nullptr;
+    QFutureWatcher<QString> m_exportWatcher;
+    std::atomic_bool m_exportCancel{false};
+    bool m_exporting = false;
+    QString m_exportError;
+    QProgressBar *m_exportProgress = nullptr;
+    SpectroscopyDialog *m_spectroscopy = nullptr;
+    ImagingDialog *m_imaging = nullptr;
+    QStackedWidget *m_workspaces = nullptr;
+    QWidget *m_browser = nullptr, *m_roiReturn = nullptr;
+    QLabel *m_workspaceTitle = nullptr;
+    QToolButton *m_backToBrowser = nullptr;
+    QHash<QString, RoiDialog *> m_roiEditors;
+    bool m_explorerVisible = true;
 };

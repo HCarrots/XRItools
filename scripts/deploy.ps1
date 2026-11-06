@@ -45,4 +45,12 @@ foreach ($prefix in @((Split-Path $QtRoot -Parent), (Split-Path $Hdf5Root -Paren
         }
     }
 }
+$eigenNotices = Join-Path $OutputDirectory 'licenses\eigen3'
+New-Item -ItemType Directory -Path $eigenNotices -Force | Out-Null
+Copy-Item -LiteralPath "$projectRoot\third_party\eigen3\COPYING.MPL2", "$projectRoot\third_party\eigen3\COPYING.README", "$projectRoot\third_party\eigen3\COPYING.BSD" -Destination $eigenNotices -Force
+$imagingDocs = Join-Path $OutputDirectory 'docs'
+New-Item -ItemType Directory -Path $imagingDocs -Force | Out-Null
+Copy-Item -LiteralPath "$projectRoot\docs\imaging-migration.md", "$projectRoot\docs\imaging-comparison.json" -Destination $imagingDocs -Force
+Copy-Item -LiteralPath "$projectRoot\examples\DT_Be_ROI.txt" -Destination $OutputDirectory -Force
+Copy-Item -LiteralPath "$projectRoot\examples\imaging.15469.json" -Destination $OutputDirectory -Force
 Write-Host "Ready: $OutputDirectory\XRI.exe"

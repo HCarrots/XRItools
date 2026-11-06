@@ -1,6 +1,11 @@
 /build/
+/out/
 /.deps/
 /dist/
 /.vs/
 /Data/
 *.user
+*.nxs
+*.h5
+*.hdf5
+*.nx5

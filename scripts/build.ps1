@@ -2,6 +2,7 @@ param(
     [string]$QtRoot = "$env:USERPROFILE\miniconda3\envs\xrsabre\Library",
     [string]$Hdf5Root = $QtRoot,
     [string]$BuildDirectory = "build",
+    [switch]$Clean,
     [switch]$Test,
     [switch]$Run
 )
@@ -41,6 +42,10 @@ $env:VSLANG = '1033'
 if (![IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory = Join-Path $projectRoot $BuildDirectory }
 & $cmake -S $projectRoot -B $BuildDirectory -G Ninja '-DCMAKE_BUILD_TYPE=Release' "-DCMAKE_PREFIX_PATH=$QtRoot" "-DHDF5_ROOT=$Hdf5Root" '-DHDF5_USE_STATIC_LIBRARIES=OFF'
 if ($LASTEXITCODE) { throw 'CMake configuration failed.' }
+if ($Clean) {
+    & $cmake --build $BuildDirectory --target clean
+    if ($LASTEXITCODE) { throw 'Build cleanup failed.' }
+}
 & $cmake --build $BuildDirectory --parallel
 if ($LASTEXITCODE) { throw 'Build failed.' }
 if ($Test) {

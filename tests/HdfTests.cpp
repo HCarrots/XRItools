@@ -1,6 +1,11 @@
+#include "CrystalRoi.h"
 #include "HdfFile.h"
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSet>
 #include <QTemporaryDir>
 #include <cmath>
 #include <hdf5.h>
@@ -74,6 +79,50 @@ int main(int argc, char **argv) {
     QTemporaryDir dir;
     auto file = dir.filePath("回归测试.h5");
     fixtures(file);
+    CrystalRois rois;
+    QSet<QString> labels;
+    for (const auto &roi : rois.items())
+        labels.insert(roi.label);
+    expect(rois.items().size() == 75 && labels.size() == 75 && rois.items()[59].detector == "D_LAMBDA" &&
+               rois.items()[60].label == "VD-A1",
+           "75 unique crystals, 60 LAMBDA and 15 MINIPIX");
+    expect(rois.assign(0, QRect(500, 500, 16, 16), QSize(516, 516)),
+           "ROI includes last detector pixel with exclusive upper bounds");
+    expect(!rois.assign(1, QRect(500, 500, 17, 16), QSize(516, 516)) &&
+               !rois.assign(1, QRect(10, 10, -3, 4), QSize(516, 516)),
+           "reject out-of-bounds and reversed ROI");
+    rois.invalidate(1);
+    rois.invalidate(0);
+    expect(rois.items()[0].rect == QRect(500, 500, 16, 16) && rois.count(RoiState::Invalid) == 2,
+           "invalidate with or without geometry without losing crystal identity");
+    QVector<QSize> sizes{QSize(516, 516), QSize(256, 256)};
+    QString roiError;
+    CrystalRois restored;
+    auto serialized = rois.serialize("scan.nxs", sizes);
+    expect(restored.restore(serialized, sizes, &roiError) && restored.count(RoiState::Invalid) == 2 &&
+               restored.count(RoiState::Pending) == 73,
+           "round-trip invalid and pending states");
+    auto malformed = QJsonDocument::fromJson(serialized).object();
+    auto crystals = malformed["crystals"].toArray();
+    auto first = crystals[0].toObject();
+    first["x2"] = 9999;
+    crystals[0] = first;
+    malformed["crystals"] = crystals;
+    expect(!restored.restore(QJsonDocument(malformed).toJson(), sizes, &roiError) &&
+               restored.items()[0].rect == QRect(500, 500, 16, 16),
+           "reject invalid imported coordinates atomically");
+    expect(!restored.restore(serialized, {QSize(256, 256), QSize(256, 256)}, &roiError),
+           "reject detector geometry mismatch");
+    rois.clear(0);
+    expect(rois.items()[0].state == RoiState::Pending && rois.items()[0].rect.isEmpty(),
+           "clear ROI for manual reselection");
+    std::atomic_bool cancel{false};
+    auto projection = HdfFile::sumFrames(file, "/cube", cancel);
+    expect(projection.error.isEmpty() && projection.values.first() == 12 && projection.values.last() == 34 &&
+               projection.sum == 276,
+           "stream frame sum without loading full stack");
+    cancel = true;
+    expect(!HdfFile::sumFrames(file, "/cube", cancel).error.isEmpty(), "cancel frame sum");
     expect(HdfFile::inspect(file, "/cube").dims == QVector<quint64>({2, 3, 4}),
            "inspect multidimensional shape and Unicode path");
     auto children = HdfFile::children(file, "/");
