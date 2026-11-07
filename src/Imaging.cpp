@@ -1,3 +1,4 @@
+#include "BondVolume.h"
 #include "ImagingIO.h"
 #include "PlotStyle.h"
 #include <Eigen/Eigenvalues>
@@ -6,11 +7,13 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QImage>
 #include <QPainter>
 #include <QPainterPath>
 #include <QTextStream>
 #include <algorithm>
+#include <memory>
 #include <numeric>
 using namespace ImageUtil;
 namespace {
@@ -52,97 +55,107 @@ void writeGeometry(ImagingH5 &f, const QString &base, const ImagingRoi &r) {
     f.attributes(base, roiAttributes(r));
 }
 QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, const QString &directory,
-                             const std::atomic_bool &stop, Imaging::Progress progress) {
+                             const std::atomic_bool &stop, Imaging::Progress progress,
+                             const QVector<double> &weights) {
     const auto &g = v.calibration;
     auto acq = c["acquisition"].toObject();
     int nx = int(g.axes[0].size()), ne = int(g.axes[1].size()), width = g.imageSize.width(),
         height = g.imageSize.height(), countPixels = width * height;
     auto rawWeights = Imaging::energyWeights(g.axes[1]);
-    auto weights = Imaging::matchedWeights(g.axes[1], v.sample.axes[2]).first;
     quint64 count = 0;
     for (const auto &roi : v.rois)
         count += quint64(ne) * roi.pixels.size() * nx;
-    if (count > 134217728 || quint64(nx) * countPixels > 134217728)
+    if (count > 134217728 || (!directory.isEmpty() && quint64(nx) * countPixels > 134217728))
         fail("Calibration pixel/grid buffers exceed 1 GiB; use smaller ROIs or grid");
     QVector<std::vector<quint64>> counts;
     for (const auto &roi : v.rois)
         counts.append(std::vector<quint64>(size_t(ne) * roi.pixels.size() * nx, 0));
-    QVector<double> rawImage(countPixels, 0), band(qsizetype(nx) * countPixels, 0);
+    QVector<double> rawImage(directory.isEmpty() ? 0 : countPixels, 0),
+        band(directory.isEmpty() ? 0 : qsizetype(nx) * countPixels, 0);
     double *rawSum = rawImage.data(), *bandSum = band.data();
     ImagingH5 source(g.file);
-    source.frames(
-        "/entry/data/" + acq["detector"].toString(), c["runtime"].toObject()["chunk_frames"].toInt(), stop,
-        [&](int f, const quint64 *pixels, int, int) {
-            int x = g.indices[0][f], e = g.indices[1][f];
-            double factor = rawWeights[e] / g.dose[x * ne + e], *image = bandSum + qsizetype(x) * countPixels;
-            for (int p = 0; p < countPixels; ++p) {
-                rawSum[p] += double(pixels[p]);
-                image[p] += factor * double(pixels[p]);
-            }
-            for (int r = 0; r < v.rois.size(); ++r) {
-                const auto &roi = v.rois[r];
-                auto *buffer = counts[r].data();
-                qsizetype size = roi.pixels.size();
-                for (qsizetype p = 0; p < size; ++p) {
-                    auto point = roi.pixels[p];
-                    auto &target = buffer[(qsizetype(e) * size + p) * nx + x];
-                    quint64 value = pixels[point.y() * width + point.x()];
-                    if (target > std::numeric_limits<quint64>::max() - value)
-                        fail("Pooled photon count overflow");
-                    target += value;
-                }
-            }
-            if (progress && f % 32 == 0)
-                progress(QStringLiteral("薄膜像素提取 %1 / %2").arg(f + 1).arg(g.monitor.size()),
-                         5 + f * 20 / int(g.monitor.size()));
-        });
-    ImagingH5 out(directory + "/calibration.h5", true);
-    out.attributes("/", {{"schema", "XRI.calibration.v1"},
-                         {"source_file", g.file},
-                         {"roi_file", c["input"].toObject()["roi_table"]},
-                         {"monitor", acq["monitor"]},
-                         {"exposure_s", acq["calibration_exposure_s"]},
-                         {"foil_thickness_mm", acq["foil_thickness_mm"]},
-                         {"response_units", "counts / (monitor_current * s) * keV"},
-                         {"background_subtracted", false},
-                         {"absolute_density_calibrated", false},
-                         {"roi_stop_convention", "exclusive"},
-                         {"calibration_status", "provisional: inspect ROI tails and background"}});
-    writeVector(out, "x_mm", g.axes[0]);
-    writeVector(out, "energy_kev", g.axes[1]);
-    writeVector(out, "energy_weights_kev", rawWeights);
-    writeIndex(out, "occupancy_xe", g.occupancy, {quint64(nx), quint64(ne)});
-    ImageMatrix doses(ne, nx);
-    for (int e = 0; e < ne; ++e)
-        for (int x = 0; x < nx; ++x)
-            doses(e, x) = g.dose[x * ne + e];
-    writeMatrix(out, "dose_ex", doses);
-    writeIndex(out, "frames/x_index", g.indices[0]);
-    writeIndex(out, "frames/energy_index", g.indices[1]);
-    writeVector(out, "frames/x_setpoint_mm", g.coordinates[0]);
-    writeVector(out, "frames/energy_setpoint_kev", g.coordinates[1]);
-    writeVector(out, "frames/i0", g.monitor);
-    writeVector(out, "frames/exposure_s",
-                QVector<double>(g.monitor.size(), acq["calibration_exposure_s"].toDouble()));
-    writeVector(out, "frames/x_readback_mm",
-                source.contains("/entry/instrument/M_Stage_X") ? source.read("/entry/instrument/M_Stage_X")
-                                                               : g.coordinates[0]);
-    writeVector(out, "frames/energy_readback_kev",
-                source.contains("/entry/instrument/M_DCM_B5Energy")
-                    ? source.read("/entry/instrument/M_DCM_B5Energy")
-                    : g.coordinates[1]);
-    out.write("detectors/" + acq["detector"].toString() + "/raw_sum_rc", {quint64(height), quint64(width)},
-              rawImage.constData());
-    out.write("detectors/" + acq["detector"].toString() + "/band_response_xrc",
-              {quint64(nx), quint64(height), quint64(width)}, band.constData());
+    source.frames("/entry/data/" + acq["detector"].toString(),
+                  c["runtime"].toObject()["chunk_frames"].toInt(), stop,
+                  [&](int f, const quint64 *pixels, int, int) {
+                      int x = g.indices[0][f], e = g.indices[1][f];
+                      if (!rawImage.isEmpty()) {
+                          double factor = rawWeights[e] / g.dose[x * ne + e];
+                          auto image = bandSum + qsizetype(x) * countPixels;
+                          for (int p = 0; p < countPixels; ++p) {
+                              rawSum[p] += double(pixels[p]);
+                              image[p] += factor * double(pixels[p]);
+                          }
+                      }
+                      for (int r = 0; r < v.rois.size(); ++r) {
+                          const auto &roi = v.rois[r];
+                          auto *buffer = counts[r].data();
+                          qsizetype size = roi.pixels.size();
+                          for (qsizetype p = 0; p < size; ++p) {
+                              auto point = roi.pixels[p];
+                              auto &target = buffer[(qsizetype(e) * size + p) * nx + x];
+                              quint64 value = pixels[point.y() * width + point.x()];
+                              if (target > std::numeric_limits<quint64>::max() - value)
+                                  fail("Pooled photon count overflow");
+                              target += value;
+                          }
+                      }
+                      if (progress && f % 32 == 0)
+                          progress(QStringLiteral("薄膜像素提取 %1 / %2").arg(f + 1).arg(g.monitor.size()),
+                                   5 + f * 20 / int(g.monitor.size()));
+                  });
+    std::unique_ptr<ImagingH5> out;
+    if (!directory.isEmpty()) {
+        out = std::make_unique<ImagingH5>(directory + "/calibration.h5", true);
+        out->attributes("/", {{"schema", "XRI.calibration.v1"},
+                              {"source_file", g.file},
+                              {"roi_file", c["input"].toObject()["roi_table"]},
+                              {"monitor", acq["monitor"]},
+                              {"exposure_s", acq["calibration_exposure_s"]},
+                              {"foil_thickness_mm", acq["foil_thickness_mm"]},
+                              {"response_units", "counts / (monitor_current * s) * keV"},
+                              {"background_subtracted", false},
+                              {"absolute_density_calibrated", false},
+                              {"roi_stop_convention", "exclusive"},
+                              {"calibration_status", "provisional: inspect ROI tails and background"}});
+        writeVector(*out, "x_mm", g.axes[0]);
+        writeVector(*out, "energy_kev", g.axes[1]);
+        writeVector(*out, "energy_weights_kev", rawWeights);
+        writeIndex(*out, "occupancy_xe", g.occupancy, {quint64(nx), quint64(ne)});
+        ImageMatrix doses(ne, nx);
+        for (int e = 0; e < ne; ++e)
+            for (int x = 0; x < nx; ++x)
+                doses(e, x) = g.dose[x * ne + e];
+        writeMatrix(*out, "dose_ex", doses);
+        writeIndex(*out, "frames/x_index", g.indices[0]);
+        writeIndex(*out, "frames/energy_index", g.indices[1]);
+        writeVector(*out, "frames/x_setpoint_mm", g.coordinates[0]);
+        writeVector(*out, "frames/energy_setpoint_kev", g.coordinates[1]);
+        writeVector(*out, "frames/i0", g.monitor);
+        writeVector(*out, "frames/exposure_s",
+                    QVector<double>(g.monitor.size(), acq["calibration_exposure_s"].toDouble()));
+        writeVector(*out, "frames/x_readback_mm",
+                    source.contains("/entry/instrument/M_Stage_X")
+                        ? source.read("/entry/instrument/M_Stage_X")
+                        : g.coordinates[0]);
+        writeVector(*out, "frames/energy_readback_kev",
+                    source.contains("/entry/instrument/M_DCM_B5Energy")
+                        ? source.read("/entry/instrument/M_DCM_B5Energy")
+                        : g.coordinates[1]);
+        out->write("detectors/" + acq["detector"].toString() + "/raw_sum_rc",
+                   {quint64(height), quint64(width)}, rawImage.constData());
+        out->write("detectors/" + acq["detector"].toString() + "/band_response_xrc",
+                   {quint64(nx), quint64(height), quint64(width)}, band.constData());
+    }
     QVector<RoiData> selected;
     for (int r = 0; r < v.rois.size(); ++r) {
         cancel(stop);
         const auto &roi = v.rois[r];
         int np = int(roi.pixels.size());
         auto base = "rois/" + roi.key;
-        out.writeUInt(base + "/counts_epx", {quint64(ne), quint64(np), quint64(nx)}, counts[r].data());
-        writeGeometry(out, base, roi);
+        if (out)
+            out->writeUInt(base + "/counts_epx", {quint64(ne), quint64(np), quint64(nx)}, counts[r].data());
+        if (out)
+            writeGeometry(*out, base, roi);
         ImageMatrix raw = ImageMatrix::Zero(np, nx), rawVar = raw, matched = raw, matchedVar = raw;
         const auto *buffer = counts[r].data();
         for (int e = 0; e < ne; ++e)
@@ -155,8 +168,10 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
                     matched(p, x) += m * value;
                     matchedVar(p, x) += m * m * value;
                 }
-        writeMatrix(out, base + "/R_band_px", raw);
-        writeMatrix(out, base + "/R_band_variance_px", rawVar);
+        if (out) {
+            writeMatrix(*out, base + "/R_band_px", raw);
+            writeMatrix(*out, base + "/R_band_variance_px", rawVar);
+        }
         std::vector<quint64>().swap(counts[r]);
         if (!roi.excluded)
             selected.append({roi, std::move(matched), std::move(matchedVar), {}, {}});
@@ -169,7 +184,8 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
     auto acq = c["acquisition"].toObject();
     int ny = int(g.axes[0].size()), nz = int(g.axes[1].size()), ne = int(g.axes[2].size()),
         width = g.imageSize.width();
-    auto weights = Imaging::matchedWeights(v.calibration.axes[1], g.axes[2]);
+    const auto weights = directory.isEmpty() ? qMakePair(QVector<double>{}, Imaging::energyWeights(g.axes[2]))
+                                             : Imaging::matchedWeights(v.calibration.axes[1], g.axes[2]);
     quint64 size = 0;
     for (const auto &r : selected)
         size += r.roi.pixels.size() * quint64(ny) * nz;
@@ -197,6 +213,8 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                           progress(QStringLiteral("样品积分 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
                                    25 + frame * 20 / int(g.monitor.size()));
                   });
+    if (directory.isEmpty())
+        return;
     ImagingH5 out(directory + "/tomography_inputs.h5", true);
     bool canonical = true;
     for (int f = 0; f < g.monitor.size(); ++f)
@@ -241,6 +259,160 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                   r.variance.data());
         writeGeometry(out, base, r.roi);
     }
+}
+
+struct SpatialSolution {
+    QVector<RoiData> accepted;
+    QStringList keys;
+    QVector<ImageMatrix> response, operators;
+    QVector<double> gains, history;
+    ImageMatrix h, b, rho;
+    ImagingSolverInfo nnlsInfo;
+    bool gainConverged;
+    int gainIteration;
+    double dx;
+};
+
+SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &validation,
+                             QVector<RoiData> &selected, ImagingResult &result, const std::atomic_bool &stop,
+                             const Imaging::Progress &log, qsizetype energyChannels = 1) {
+    const auto &progress = log;
+    QVector<RoiData> accepted;
+    QVector<ImagingPsf> models;
+    auto acq = c["acquisition"].toObject(), rec = c["reconstruction"].toObject();
+    double pitch = acq["detector_pixel_pitch_mm"].toDouble();
+    for (int i = 0; i < selected.size(); ++i) {
+        cancel(stop);
+        try {
+            auto model = Imaging::fitPsf(selected[i].response, selected[i].roi.pixels,
+                                         validation.calibration.axes[0], c["psf"].toObject(), stop);
+            result.models[selected[i].roi.key] = model.json(pitch);
+            models.append(model);
+            accepted.append(std::move(selected[i]));
+        } catch (const std::exception &e) {
+            cancel(stop);
+            result.rejected[selected[i].roi.key] = QString::fromUtf8(e.what());
+            log("PSF rejected " + selected[i].roi.key + ": " + QString::fromUtf8(e.what()),
+                46 + i * 14 / int(selected.size()));
+        }
+        if (progress)
+            progress(QStringLiteral("PSF %1 / %2").arg(i + 1).arg(selected.size()),
+                     46 + (i + 1) * 14 / int(selected.size()));
+    }
+    if (!result.directory.isEmpty())
+        saveJson(result.directory + "/psf_models.json",
+                 {{"models", result.models}, {"rejected", result.rejected}});
+    if (accepted.isEmpty())
+        fail("All PSF models failed quality checks");
+    QStringList keys;
+    for (const auto &r : accepted)
+        keys.append(r.roi.key);
+    int anchor = keys.indexOf(rec["anchor_roi"].toString());
+    if (rec["fit_gains"].toBool() && anchor < 0)
+        fail("Gain anchor failed PSF quality checks; choose a verified anchor explicitly: " +
+             rec["anchor_roi"].toString());
+    QVector<double> lengths;
+    for (const auto &m : models)
+        lengths.append(m.sampleMmPerPixel);
+    auto originalX = validation.calibration.axes[0];
+    double dx = c["grid"].toObject()["x_step_mm"].isNull() ? percentile(lengths, 50)
+                                                           : c["grid"].toObject()["x_step_mm"].toDouble();
+    double cells = std::floor((originalX.last() - originalX.first()) / dx + 1e-9) + 1;
+    if (cells < 2 || cells > 4096)
+        fail("Sample-space X grid requires 2..4096 cells; adjust x_step_mm");
+    int nx = int(cells), ny = int(validation.sample.axes[0].size()),
+        nz = int(validation.sample.axes[1].size());
+    if (qsizetype(nx) * ny * nz > 16000000 / energyChannels)
+        fail(energyChannels > 1 ? QStringLiteral("四维体素超过 1600 万。请增大 X 步长或减少扫描范围。")
+                                : QStringLiteral("Reconstructed volume exceeds memory limit"));
+    QVector<double> x;
+    for (int i = 0; i < nx; ++i)
+        x.append((originalX.first() + originalX.last()) / 2 + dx * (i - (nx - 1) / 2.));
+    result.axes = {x, validation.sample.axes[0], validation.sample.axes[1]};
+    log(QString("Full grid: %1 X x %2 Y x %3 Z; dx=%4 mm; %5 accepted ROIs")
+            .arg(nx)
+            .arg(ny)
+            .arg(nz)
+            .arg(dx, 0, 'g', 12)
+            .arg(accepted.size()),
+        60);
+    double scale = dx / acq["foil_thickness_mm"].toDouble();
+    QVector<ImageMatrix> response, operators, grams, backs;
+    for (int i = 0; i < accepted.size(); ++i) {
+        response.append(Imaging::evaluatePsf(models[i], accepted[i].roi.pixels, x));
+        operators.append(response.last() * scale);
+        grams.append(operators.last().transpose() * operators.last());
+        backs.append(operators.last().transpose() * accepted[i].measured);
+    }
+    QVector<double> gains(accepted.size(), 1), history;
+    ImageMatrix h, b, rho;
+    auto terms = [&] {
+        h = ImageMatrix::Zero(nx, nx);
+        b = ImageMatrix::Zero(nx, ny * nz);
+        for (int i = 0; i < gains.size(); ++i) {
+            h.noalias() += gains[i] * gains[i] * grams[i];
+            b.noalias() += gains[i] * backs[i];
+        }
+    };
+    ImagingSolverInfo nnlsInfo;
+    bool gainConverged = false;
+    int gainIteration = 0;
+    log("4/6 Joint NNLS and anchored relative crystal gains", 62);
+    if (rec["fit_gains"].toBool()) {
+        auto bounds = rec["gain_bounds"].toArray();
+        for (int iteration = 1; iteration <= rec["max_gain_iterations"].toInt(); ++iteration) {
+            cancel(stop);
+            terms();
+            rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(),
+                                stop, &nnlsInfo, rho);
+            double difference = 0, norm = 0;
+            auto next = gains;
+            for (int i = 0; i < gains.size(); ++i) {
+                double numerator = (backs[i].array() * rho.array()).sum(),
+                       denominator = (rho.array() * (grams[i] * rho).array()).sum();
+                if (denominator > 0)
+                    next[i] = numerator / denominator;
+                next[i] = std::clamp(next[i], bounds[0].toDouble(), bounds[1].toDouble());
+                if (i == anchor)
+                    next[i] = 1;
+                difference += std::pow(next[i] - gains[i], 2);
+                norm += gains[i] * gains[i];
+            }
+            double change = std::sqrt(difference) / std::max(std::sqrt(norm), 1e-15);
+            history.append(change);
+            gains = std::move(next);
+            gainIteration = iteration;
+            if (iteration % 20 == 0 || iteration == 1)
+                log(QString("Gain iteration %1: relative change %2").arg(iteration).arg(change, 0, 'g', 7),
+                    65);
+            if (change < rec["gain_tolerance"].toDouble()) {
+                gainConverged = true;
+                break;
+            }
+        }
+        terms();
+        rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
+                            &nnlsInfo, rho);
+        gainConverged = gainConverged && nnlsInfo.converged;
+    } else {
+        terms();
+        rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
+                            &nnlsInfo);
+        gainConverged = nnlsInfo.converged;
+    }
+    return {std::move(accepted),
+            std::move(keys),
+            std::move(response),
+            std::move(operators),
+            std::move(gains),
+            std::move(history),
+            std::move(h),
+            std::move(b),
+            std::move(rho),
+            nnlsInfo,
+            gainConverged,
+            gainIteration,
+            dx};
 }
 void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVector<double>> &axes,
                   const QString &directory, const QString &method, const QJsonObject &metadata,
@@ -443,6 +615,150 @@ void diagnostics(const ImagingResult &result, const QString &path) {
         fail("Cannot save imaging diagnostics PNG");
 }
 } // namespace
+
+ImagingValidation BondImaging::validate(const QJsonObject &c, const std::atomic_bool &stop) {
+    auto out = Imaging::validate(c, stop, false);
+    const auto &foil = out.calibration.axes[1], &sample = out.sample.axes[2];
+    const bool matched = sample.first() >= foil.first() - 1e-10 && sample.last() <= foil.last() + 1e-10;
+    out.report["psf_energy_band"] = matched ? "sample-matched" : "foil-native";
+    return out;
+}
+
+BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool &stop,
+                            Imaging::Progress progress) {
+    const auto c = Imaging::config(supplied, QDir::currentPath());
+    const auto log = [&](const QString &message, int percent) {
+        cancel(stop);
+        if (progress)
+            progress(message, percent);
+    };
+    log(QStringLiteral("校验样品、薄膜、扫描坐标和 ROI"), 0);
+    const auto validation = validate(c, stop);
+    const auto &g = validation.sample;
+    const auto &energy = g.axes[2], &foil = validation.calibration.axes[1];
+    const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
+    const auto weights = matched ? Imaging::matchedWeights(foil, energy).first : Imaging::energyWeights(foil);
+    auto selected = calibration(c, validation, {}, stop, log, weights);
+    sample(c, validation, selected, {}, stop, log);
+    ImagingResult spatial;
+    const auto fit = solveSpatial(c, validation, selected, spatial, stop, log, energy.size());
+    const int nx = int(spatial.axes[0].size()), ny = int(g.axes[0].size()), nz = int(g.axes[1].size());
+    const int ne = int(energy.size()), nYZ = ny * nz;
+    const qsizetype total = qsizetype(nx) * nYZ * ne;
+    BondVolume out;
+    out.axes = {energy, spatial.axes[0], g.axes[0], g.axes[1]};
+    out.intensity.resize(total);
+    for (int x = 0; x < nx; ++x)
+        out.sensitivity.append(std::sqrt(std::max(0., fit.h(x, x))));
+    const double sensitivityFloor =
+        *std::max_element(out.sensitivity.cbegin(), out.sensitivity.cend()) * 1e-7;
+
+    // Stack the calibrated detector pixels once. A small batch allows a matrix product
+    // even when consecutive frames belong to different energies or spatial cells.
+    QVector<qsizetype> offsets;
+    for (const auto &item : fit.accepted)
+        for (auto pixel : item.roi.pixels)
+            offsets.append(qsizetype(pixel.y()) * g.imageSize.width() + pixel.x());
+    const qsizetype nPixels = offsets.size();
+    constexpr int batchSize = 16;
+    const qsizetype repeated = g.occupancy.size() - std::count(g.occupancy.cbegin(), g.occupancy.cend(), 1);
+    if (nPixels * (qsizetype(nx) + batchSize + repeated) > 32000000)
+        fail(QStringLiteral("四维反投影缓冲区过大，请缩小 ROI 或减少重复帧。"));
+    ImageMatrix forward(nPixels, nx);
+    qsizetype row = 0;
+    for (int i = 0; i < fit.accepted.size(); ++i) {
+        const auto &op = fit.operators[i];
+        forward.middleRows(row, op.rows()) = fit.gains[i] * op;
+        row += op.rows();
+    }
+    std::vector<ImageMatrix> backs(ne, ImageMatrix::Zero(nx, nYZ));
+    Eigen::MatrixXd batch(nPixels, batchSize);
+    QVector<int> cells;
+    QVector<double> norm(ne, 0.);
+    QHash<int, Eigen::VectorXd> pooled;
+    auto remaining = g.occupancy;
+    auto flush = [&] {
+        if (cells.isEmpty())
+            return;
+        Eigen::MatrixXd projected = forward.transpose() * batch.leftCols(cells.size());
+        for (int j = 0; j < cells.size(); ++j) {
+            int e = cells[j] % ne;
+            backs[e].col(cells[j] / ne) = projected.col(j);
+            norm[e] += batch.col(j).squaredNorm();
+        }
+        cells.clear();
+    };
+    const auto acq = c["acquisition"].toObject();
+    {
+        ImagingH5 source(g.file);
+        source.frames(
+            "/entry/data/" + acq["detector"].toString(), c["runtime"].toObject()["chunk_frames"].toInt(),
+            stop, [&](int frame, const quint64 *pixels, int, int) {
+                int cell = (g.indices[0][frame] * nz + g.indices[1][frame]) * ne + g.indices[2][frame];
+                const double factor = 1. / g.dose[cell];
+                if (g.occupancy[cell] == 1) {
+                    auto column = batch.col(cells.size());
+                    for (qsizetype i = 0; i < nPixels; ++i)
+                        column[i] = double(pixels[offsets[i]]) * factor;
+                } else {
+                    auto &counts = pooled[cell];
+                    if (!counts.size())
+                        counts.setZero(nPixels);
+                    for (qsizetype i = 0; i < nPixels; ++i)
+                        counts[i] += double(pixels[offsets[i]]);
+                    if (--remaining[cell])
+                        return;
+                    batch.col(cells.size()) = counts * factor;
+                    pooled.remove(cell);
+                }
+                cells.append(cell);
+                if (cells.size() == batchSize)
+                    flush();
+                if (frame % 128 == 0)
+                    log(QStringLiteral("按能量累积反投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                        66 + 12 * frame / int(g.monitor.size()));
+            });
+    }
+    flush();
+    QJsonArray channels;
+    const auto rec = c["reconstruction"].toObject();
+    const double bandNorm = fit.b.norm();
+    for (int e = 0; e < ne; ++e) {
+        log(QStringLiteral("独立求解能量通道 %1 / %2").arg(e + 1).arg(ne), 78 + 21 * e / ne);
+        ImagingSolverInfo info;
+        ImageMatrix initial =
+            bandNorm > 0 ? ImageMatrix(fit.rho * (backs[e].norm() / bandNorm)) : ImageMatrix{};
+        auto rho = Imaging::nnls(fit.h, backs[e], rec["nnls_max_iterations"].toInt(),
+                                 rec["nnls_tolerance"].toDouble(), stop, &info, initial);
+        const double error = norm[e] - 2 * (rho.array() * backs[e].array()).sum() +
+                             (rho.array() * (fit.h * rho).array()).sum();
+        channels.append(
+            QJsonObject{{"incident_kev", energy[e]},
+                        {"converged", info.converged},
+                        {"iterations", info.iterations},
+                        {"projected_kkt_relative", info.kkt},
+                        {"relative_l2_residual",
+                         norm[e] > 0 ? QJsonValue(std::sqrt(std::max(0., error) / norm[e])) : QJsonValue()}});
+        out.converged.append(info.converged);
+        std::copy_n(rho.data(), rho.size(), out.intensity.data() + qsizetype(e) * rho.size());
+    }
+    out.diagnostics = {{"schema", "XRI.bond.v1"},
+                       {"config", c},
+                       {"input_validation", validation.report},
+                       {"psf_band_kev", QJsonArray{matched ? energy.first() : foil.first(),
+                                                   matched ? energy.last() : foil.last()}},
+                       {"psf_models", spatial.models},
+                       {"psf_rejected", spatial.rejected},
+                       {"crystal_keys", json(fit.keys)},
+                       {"relative_gains", json(fit.gains)},
+                       {"gain_fit_converged", fit.gainConverged},
+                       {"gain_fit_iterations", fit.gainIteration},
+                       {"x_sensitivity_floor", sensitivityFloor},
+                       {"channel_diagnostics", channels}};
+    log(QStringLiteral("四维求解完成"), 100);
+    return out;
+}
+
 ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &stop, Progress progress) {
     auto c = config(supplied, QDir::currentPath());
     if (progress)
@@ -489,134 +805,22 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
              {"inputs", sources},
              {"started_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
         log("1/6 Extracting calibration pixels and pooled monitor doses", 3);
-        auto selected = calibration(c, validation, directory, stop, progress);
+        auto selected =
+            calibration(c, validation, directory, stop, progress,
+                        matchedWeights(validation.calibration.axes[1], validation.sample.axes[2]).first);
         log("2/6 Mapping sample YZE and matching energy integrals", 25);
         sample(c, validation, selected, directory, stop, progress);
         log("3/6 Fitting moving elliptical PSFs and affine trajectories", 46);
         ImagingResult result;
         result.directory = directory;
-        QVector<RoiData> accepted;
-        QVector<ImagingPsf> models;
-        auto acq = c["acquisition"].toObject(), rec = c["reconstruction"].toObject();
-        double pitch = acq["detector_pixel_pitch_mm"].toDouble();
-        for (int i = 0; i < selected.size(); ++i) {
-            cancel(stop);
-            try {
-                auto model = fitPsf(selected[i].response, selected[i].roi.pixels,
-                                    validation.calibration.axes[0], c["psf"].toObject(), stop);
-                result.models[selected[i].roi.key] = model.json(pitch);
-                models.append(model);
-                accepted.append(std::move(selected[i]));
-            } catch (const std::exception &e) {
-                cancel(stop);
-                result.rejected[selected[i].roi.key] = QString::fromUtf8(e.what());
-                log("PSF rejected " + selected[i].roi.key + ": " + QString::fromUtf8(e.what()),
-                    46 + i * 14 / int(selected.size()));
-            }
-            if (progress)
-                progress(QStringLiteral("PSF %1 / %2").arg(i + 1).arg(selected.size()),
-                         46 + (i + 1) * 14 / int(selected.size()));
-        }
-        saveJson(directory + "/psf_models.json", {{"models", result.models}, {"rejected", result.rejected}});
-        if (accepted.isEmpty())
-            fail("All PSF models failed quality checks");
-        QStringList keys;
-        for (const auto &r : accepted)
-            keys.append(r.roi.key);
-        int anchor = keys.indexOf(rec["anchor_roi"].toString());
-        if (rec["fit_gains"].toBool() && anchor < 0)
-            fail("Gain anchor failed PSF quality checks; choose a verified anchor explicitly: " +
-                 rec["anchor_roi"].toString());
-        QVector<double> lengths;
-        for (const auto &m : models)
-            lengths.append(m.sampleMmPerPixel);
-        auto originalX = validation.calibration.axes[0];
-        double dx = c["grid"].toObject()["x_step_mm"].isNull() ? percentile(lengths, 50)
-                                                               : c["grid"].toObject()["x_step_mm"].toDouble();
-        double cells = std::floor((originalX.last() - originalX.first()) / dx + 1e-9) + 1;
-        if (cells < 2 || cells > 4096)
-            fail("Sample-space X grid requires 2..4096 cells; adjust x_step_mm");
-        int nx = int(cells), ny = int(validation.sample.axes[0].size()),
-            nz = int(validation.sample.axes[1].size());
-        if (quint64(nx) * ny * nz > 16000000)
-            fail("Reconstructed volume exceeds memory limit");
-        QVector<double> x;
-        for (int i = 0; i < nx; ++i)
-            x.append((originalX.first() + originalX.last()) / 2 + dx * (i - (nx - 1) / 2.));
-        result.axes = {x, validation.sample.axes[0], validation.sample.axes[1]};
-        log(QString("Full grid: %1 X x %2 Y x %3 Z; dx=%4 mm; %5 accepted ROIs")
-                .arg(nx)
-                .arg(ny)
-                .arg(nz)
-                .arg(dx, 0, 'g', 12)
-                .arg(accepted.size()),
-            60);
-        double scale = dx / acq["foil_thickness_mm"].toDouble();
-        QVector<ImageMatrix> response, operators, grams, backs;
-        for (int i = 0; i < accepted.size(); ++i) {
-            response.append(evaluatePsf(models[i], accepted[i].roi.pixels, x));
-            operators.append(response.last() * scale);
-            grams.append(operators.last().transpose() * operators.last());
-            backs.append(operators.last().transpose() * accepted[i].measured);
-        }
-        QVector<double> gains(accepted.size(), 1), history;
-        ImageMatrix h, b, rho;
-        auto terms = [&] {
-            h = ImageMatrix::Zero(nx, nx);
-            b = ImageMatrix::Zero(nx, ny * nz);
-            for (int i = 0; i < gains.size(); ++i) {
-                h.noalias() += gains[i] * gains[i] * grams[i];
-                b.noalias() += gains[i] * backs[i];
-            }
-        };
-        ImagingSolverInfo nnlsInfo;
-        bool gainConverged = false;
-        int gainIteration = 0;
-        log("4/6 Joint NNLS and anchored relative crystal gains", 62);
-        if (rec["fit_gains"].toBool()) {
-            auto bounds = rec["gain_bounds"].toArray();
-            for (int iteration = 1; iteration <= rec["max_gain_iterations"].toInt(); ++iteration) {
-                cancel(stop);
-                terms();
-                rho = nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
-                           &nnlsInfo, rho);
-                double difference = 0, norm = 0;
-                auto next = gains;
-                for (int i = 0; i < gains.size(); ++i) {
-                    double numerator = (backs[i].array() * rho.array()).sum(),
-                           denominator = (rho.array() * (grams[i] * rho).array()).sum();
-                    if (denominator > 0)
-                        next[i] = numerator / denominator;
-                    next[i] = std::clamp(next[i], bounds[0].toDouble(), bounds[1].toDouble());
-                    if (i == anchor)
-                        next[i] = 1;
-                    difference += std::pow(next[i] - gains[i], 2);
-                    norm += gains[i] * gains[i];
-                }
-                double change = std::sqrt(difference) / std::max(std::sqrt(norm), 1e-15);
-                history.append(change);
-                gains = std::move(next);
-                gainIteration = iteration;
-                if (iteration % 20 == 0 || iteration == 1)
-                    log(QString("Gain iteration %1: relative change %2")
-                            .arg(iteration)
-                            .arg(change, 0, 'g', 7),
-                        65);
-                if (change < rec["gain_tolerance"].toDouble()) {
-                    gainConverged = true;
-                    break;
-                }
-            }
-            terms();
-            rho = nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
-                       &nnlsInfo, rho);
-            gainConverged = gainConverged && nnlsInfo.converged;
-        } else {
-            terms();
-            rho = nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
-                       &nnlsInfo);
-            gainConverged = nnlsInfo.converged;
-        }
+        auto solution = solveSpatial(c, validation, selected, result, stop, log);
+        const auto &[accepted, keys, response, operators, gains, history, h, b, rho, nnlsInfo, gainConverged,
+                     gainIteration, dx] = solution;
+        int nx = int(result.axes[0].size()), ny = int(result.axes[1].size()), nz = int(result.axes[2].size());
+        const auto &x = result.axes[0];
+        const auto &originalX = validation.calibration.axes[0];
+        const auto acq = c["acquisition"].toObject(), rec = c["reconstruction"].toObject();
+        const double pitch = acq["detector_pixel_pitch_mm"].toDouble();
         result.nnls = rho;
         result.primary = rho;
         QString method = "joint NNLS";

@@ -20,7 +20,7 @@ $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
 if (!$cmake) { $cmake = (Get-ChildItem -LiteralPath "$env:ProgramFiles\Microsoft Visual Studio" -Filter cmake.exe -Recurse | Select-Object -First 1).FullName }
 & $cmake "-DAPP=$OutputDirectory/XRI.exe" "-DOUTPUT=$OutputDirectory" "-DSEARCH_PATHS=$QtRoot/bin;$Hdf5Root/bin;$QtRoot/lib/qt6/bin" -P "$PSScriptRoot\copy-runtime.cmake"
 if ($LASTEXITCODE) { throw 'Runtime dependency deployment failed.' }
-Copy-Item -LiteralPath "$projectRoot\README.md", "$projectRoot\THIRD_PARTY.md" -Destination $OutputDirectory -Force
+Copy-Item -LiteralPath "$projectRoot\README.md", "$projectRoot\LICENSE", "$projectRoot\THIRD_PARTY.md" -Destination $OutputDirectory -Force
 # Conda packages retain their upstream notices in the package cache.
 $binaryNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 Get-ChildItem -LiteralPath $OutputDirectory -Recurse -Filter '*.dll' | ForEach-Object { [void]$binaryNames.Add($_.Name) }

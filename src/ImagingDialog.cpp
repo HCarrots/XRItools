@@ -6,6 +6,7 @@
 #include "WorkflowUi.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
+#include <algorithm>
 #include <limits>
 #include <numeric>
 namespace {
@@ -253,7 +254,48 @@ void ImagingDialog::buildUi() {
     addNumber(af, "acquisition.sample_exposure_s", tr("样品曝光 / s"));
     addNumber(af, "acquisition.foil_thickness_mm", tr("薄膜厚度 / mm"));
     addNumber(af, "acquisition.detector_pixel_pitch_mm", tr("探测器像素间距 / mm"));
-    addNumber(af, "runtime.chunk_frames", tr("每批读取帧数"), true);
+    auto scanLoops = new QWidget;
+    auto loopLayout = new QVBoxLayout(scanLoops);
+    loopLayout->setContentsMargins(0, 0, 0, 0);
+    auto loopTabs = new QTabWidget;
+    loopLayout->addWidget(loopTabs);
+    auto addLoops = [this, loopTabs](const QString &role, const QString &label, const QStringList &axes) {
+        auto page = new QWidget;
+        auto form = new QFormLayout(page);
+        auto order = new QComboBox;
+        const auto orderKey = "scan_loops." + role + "_order";
+        order->setObjectName(orderKey);
+        order->addItem(tr("自动（按文件计划）"), QString());
+        auto permutation = axes;
+        std::sort(permutation.begin(), permutation.end());
+        do {
+            order->addItem(permutation.join(QStringLiteral(" → ")), permutation.join(','));
+        } while (std::next_permutation(permutation.begin(), permutation.end()));
+        m_fields[orderKey] = order;
+        form->addRow(tr("循环顺序（外 → 内）"), order);
+        connect(order, &QComboBox::currentIndexChanged, this, &ImagingDialog::invalidate);
+        for (const auto &axis : axes) {
+            auto points = new QSpinBox;
+            const auto key = "scan_loops." + role + '_' + axis.toLower() + "_points";
+            points->setObjectName(key);
+            points->setRange(1, 100000);
+            points->setSpecialValueText(tr("自动"));
+            points->setKeyboardTracking(false);
+            points->setProperty("automaticLoopCount", true);
+            m_fields[key] = points;
+            form->addRow(tr("%1 层帧数（扫描点）").arg(axis), points);
+            connect(points, &QSpinBox::valueChanged, this, &ImagingDialog::invalidate);
+        }
+        loopTabs->addTab(page, label);
+    };
+    addLoops("sample", tr("样品成像"), {"Y", "Z", "DCM"});
+    addLoops("calibration", tr("薄膜标定"), {"X", "DCM"});
+    auto loopNote = new QLabel(
+        tr("手动顺序需与文件的扫描计划一致。各层帧数可单独指定，程序按文件扫描范围和逐帧坐标校验。"));
+    loopNote->setWordWrap(true);
+    loopLayout->addWidget(loopNote);
+    af->addRow(WorkflowUi::disclosure(tr("扫描循环与各层帧数"), scanLoops));
+    addNumber(af, "runtime.chunk_frames", tr("每批读取帧数（缓存）"), true);
     auto normNote = new QLabel(
         tr("每个网格单元使用 Σ计数 / Σ(I0 × 曝光)。I0 必须为正，不取绝对值，也不应用谱学的异常点替换。"));
     normNote->setWordWrap(true);
@@ -526,9 +568,13 @@ QJsonObject ImagingDialog::configuration() const {
         }
         if (auto box = qobject_cast<QCheckBox *>(i.value()))
             put(c, i.key(), box->isChecked());
-        else if (auto spin = qobject_cast<QSpinBox *>(i.value()))
-            put(c, i.key(), spin->value());
-        else if (auto edit = qobject_cast<QLineEdit *>(i.value())) {
+        else if (auto combo = qobject_cast<QComboBox *>(i.value()))
+            put(c, i.key(), combo->currentData().toString());
+        else if (auto spin = qobject_cast<QSpinBox *>(i.value())) {
+            const bool automatic =
+                spin->property("automaticLoopCount").toBool() && spin->value() == spin->minimum();
+            put(c, i.key(), automatic ? QJsonValue() : QJsonValue(spin->value()));
+        } else if (auto edit = qobject_cast<QLineEdit *>(i.value())) {
             auto text = edit->text().trimmed();
             int kind = edit->property("fieldKind").toInt();
             if (kind == 1) {
@@ -564,8 +610,10 @@ void ImagingDialog::applyConfiguration(const QJsonObject &config) {
         auto value = fieldValue(config, i.key());
         if (auto box = qobject_cast<QCheckBox *>(i.value()))
             box->setChecked(value.toBool());
+        else if (auto combo = qobject_cast<QComboBox *>(i.value()))
+            combo->setCurrentIndex(std::max(0, combo->findData(value.toString())));
         else if (auto spin = qobject_cast<QSpinBox *>(i.value()))
-            spin->setValue(value.toInt());
+            spin->setValue(value.toInt(spin->minimum()));
         else if (auto edit = qobject_cast<QLineEdit *>(i.value())) {
             int kind = edit->property("fieldKind").toInt();
             if (kind == 1)
@@ -692,7 +740,20 @@ void ImagingDialog::refreshValidation() {
             m_rois->setItem(row, col, cell(values[col]));
     }
     m_rois->resizeColumnsToContents();
-    m_validationText->setPlainText(QString::fromUtf8(QJsonDocument(m_validation.report).toJson()));
+    auto describeLoops = [this](const QString &key, const QString &label) {
+        auto report = m_validation.report[key].toObject();
+        auto order = report["loop_order_outer_to_inner"].toArray();
+        auto counts = report["loop_counts_outer_to_inner"].toArray();
+        QStringList layers;
+        for (qsizetype i = 0; i < order.size(); ++i)
+            layers.append(tr("%1（%2 点）").arg(order[i].toString()).arg(counts[i].toInt()));
+        return tr("%1（外 → 内） %2 · 共 %3 帧")
+            .arg(label, layers.join(QStringLiteral(" → ")))
+            .arg(report["actual_frames"].toInt());
+    };
+    m_validationText->setPlainText(describeLoops("calibration", tr("薄膜标定")) + '\n' +
+                                   describeLoops("sample", tr("样品成像")) + "\n\n" +
+                                   QString::fromUtf8(QJsonDocument(m_validation.report).toJson()));
 }
 void ImagingDialog::exclusions(bool exclude) {
     if (m_busy)

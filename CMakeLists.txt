@@ -21,7 +21,7 @@ if(MSVC)
 endif()
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Concurrent)
 find_package(HDF5 REQUIRED COMPONENTS C HL)
-add_library(xri_imaging STATIC src/Imaging.h src/ImagingIO.h src/ImagingIO.cpp
+add_library(xri_imaging STATIC src/Imaging.h src/ImagingIO.h src/ImagingIO.cpp src/BondVolume.cpp src/BondVolume.h
     src/ImagingConfig.cpp src/ImagingPsf.cpp src/ImagingSolver.cpp src/Imaging.cpp)
 target_include_directories(xri_imaging PUBLIC src third_party/eigen3 ${HDF5_INCLUDE_DIRS})
 target_compile_definitions(xri_imaging PUBLIC EIGEN_MPL2_ONLY NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -32,9 +32,20 @@ endif()
 qt_add_executable(XRI WIN32 src/main.cpp src/HdfFile.cpp src/HdfFile.h
     src/ScientificPlot.cpp src/ScientificPlot.h src/MainWindow.cpp src/MainWindow.h
     src/CrystalRoi.cpp src/CrystalRoi.h src/RoiDialog.cpp src/RoiDialog.h)
-set(SPECTROSCOPY_SOURCES src/Spectroscopy.cpp src/Spectroscopy.h
-    src/SpectrumPlot.cpp src/SpectrumPlot.h src/SpectroscopyDialog.cpp src/SpectroscopyDialog.h)
+qt_add_resources(XRI "app_icon" PREFIX "/" FILES assets/xri.png)
+if(WIN32)
+    target_sources(XRI PRIVATE assets/xri.rc)
+    target_include_directories(XRI PRIVATE "$<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/assets>")
+    set_property(SOURCE assets/xri.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/xri.ico")
+endif()
+set(SPECTRUM_CORE_SOURCES src/Spectroscopy.cpp src/Spectroscopy.h
+    src/SpectrumProcessing.cpp src/SpectrumProcessing.h src/ComptonProcessing.cpp src/ComptonProcessing.h)
+set(SPECTROSCOPY_SOURCES ${SPECTRUM_CORE_SOURCES}
+    src/SpectrumPlot.cpp src/SpectrumPlot.h src/SpectroscopyDialog.cpp src/SpectroscopyDialog.h
+    src/SpectrumProcessingPage.cpp src/SpectrumProcessingPage.h)
 target_sources(XRI PRIVATE ${SPECTROSCOPY_SOURCES})
+set(BOND_WIDGET_SOURCES src/BondWorkspace.cpp src/BondWorkspace.h src/BondFigures.cpp src/BondFigures.h)
+target_sources(XRI PRIVATE ${BOND_WIDGET_SOURCES})
 target_sources(XRI PRIVATE src/ImagingDialog.cpp src/ImagingDialog.h)
 target_include_directories(XRI PRIVATE ${HDF5_INCLUDE_DIRS})
 target_link_libraries(XRI PRIVATE Qt6::Widgets Qt6::Concurrent ${HDF5_LIBRARIES} xri_imaging)
@@ -57,7 +68,7 @@ if(BUILD_TESTING)
         src/ScientificPlot.cpp src/ScientificPlot.h src/HdfFile.cpp src/HdfFile.h
         src/CrystalRoi.cpp src/CrystalRoi.h src/RoiDialog.cpp src/RoiDialog.h)
     set_target_properties(xri_gui_tests PROPERTIES WIN32_EXECUTABLE FALSE)
-    target_sources(xri_gui_tests PRIVATE ${SPECTROSCOPY_SOURCES})
+    target_sources(xri_gui_tests PRIVATE ${SPECTROSCOPY_SOURCES} ${BOND_WIDGET_SOURCES})
     target_sources(xri_gui_tests PRIVATE src/ImagingDialog.cpp src/ImagingDialog.h)
     target_include_directories(xri_gui_tests PRIVATE src ${HDF5_INCLUDE_DIRS})
     target_link_libraries(xri_gui_tests PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Test ${HDF5_LIBRARIES} xri_imaging)
@@ -68,10 +79,10 @@ if(BUILD_TESTING)
     add_test(NAME gui_regression COMMAND xri_gui_tests)
     set_tests_properties(gui_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XRI_TEST_FILE=${CMAKE_SOURCE_DIR}/Data/15469_grid_scan_20261014231918_1.nxs")
     qt_add_executable(xri_spectroscopy_tests tests/SpectroscopyTests.cpp tests/SpectrumFixture.h
-        src/Spectroscopy.cpp src/Spectroscopy.h src/CrystalRoi.cpp src/CrystalRoi.h src/HdfFile.cpp src/HdfFile.h)
+        ${SPECTRUM_CORE_SOURCES} src/CrystalRoi.cpp src/CrystalRoi.h src/HdfFile.cpp src/HdfFile.h)
     set_target_properties(xri_spectroscopy_tests PROPERTIES WIN32_EXECUTABLE FALSE)
     target_include_directories(xri_spectroscopy_tests PRIVATE src ${HDF5_INCLUDE_DIRS})
-    target_link_libraries(xri_spectroscopy_tests PRIVATE Qt6::Core ${HDF5_LIBRARIES})
+    target_link_libraries(xri_spectroscopy_tests PRIVATE Qt6::Core ${HDF5_LIBRARIES} xri_imaging)
     if(MSVC)
         target_compile_options(xri_spectroscopy_tests PRIVATE /utf-8)
         target_compile_definitions(xri_spectroscopy_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

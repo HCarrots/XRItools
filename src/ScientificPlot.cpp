@@ -316,8 +316,9 @@ void ScientificPlot::mouseMoveEvent(QMouseEvent *e) {
         return;
     }
     auto hit = profileHit(e->position());
-    if (hit == ProfileDrag::None && m_profilePicking && e->modifiers().testFlag(Qt::ControlModifier) &&
-        m_data.yAxis >= 0 && !m_data.values.isEmpty() && plotRect(rect()).contains(e->position()))
+    if (hit == ProfileDrag::None && m_profilePicking &&
+        (m_pickAnywhere || e->modifiers().testFlag(Qt::ControlModifier)) && m_data.yAxis >= 0 &&
+        !m_data.values.isEmpty() && plotRect(rect()).contains(e->position()))
         hit = ProfileDrag::Both;
     if (hit == ProfileDrag::X)
         setCursor(Qt::SizeHorCursor);
@@ -390,8 +391,10 @@ void ScientificPlot::setRoiOverlays(const QVector<CrystalRoi> &rois, const QStri
 void ScientificPlot::mousePressEvent(QMouseEvent *e) {
     if (e->button() == Qt::LeftButton && m_profilePicking && m_data.yAxis >= 0 && !m_data.values.isEmpty() &&
         plotRect(rect()).contains(e->position())) {
-        const auto hit =
+        auto hit =
             e->modifiers().testFlag(Qt::ControlModifier) ? ProfileDrag::Both : profileHit(e->position());
+        if (m_pickAnywhere && hit == ProfileDrag::None)
+            hit = ProfileDrag::Both;
         if (hit != ProfileDrag::None) {
             setFocus();
             m_dragging = false;

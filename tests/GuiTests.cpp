@@ -1,3 +1,4 @@
+#include "BondWorkspace.h"
 #include "ImagingDialog.h"
 #include "ImagingFixture.h"
 #include "MainWindow.h"
@@ -13,12 +14,15 @@
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -26,13 +30,142 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QTreeWidget>
+#include <QWheelEvent>
 #include <QtTest>
 #include <cmath>
 
 class GuiTests : public QObject {
     Q_OBJECT
   private slots:
+    void bondWorkflow() {
+        QTemporaryDir temp;
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        auto open = window.findChild<QAction *>("OpenBondWorkspace");
+        QVERIFY(open);
+        open->trigger();
+        auto work = window.findChild<BondWorkspace *>("BondWorkspace");
+        QVERIFY(work && work->isVisible());
+        auto tabs = work->findChild<QTabWidget *>("BondSteps");
+        QVERIFY(tabs && !tabs->isTabEnabled(2));
+        const auto external = qEnvironmentVariable("XRI_BOND_TEST_VOLUME");
+        if (external.isEmpty()) {
+            work->applyConfiguration(ImagingFixture::create(temp.path(), false, true, true, true));
+            auto validate = work->findChild<QPushButton *>("CheckBondInputs");
+            auto run = work->findChild<QPushButton *>("RunBondVolume");
+            QVERIFY(validate && run && !run->isEnabled());
+            validate->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(tabs->currentIndex(), 1);
+            QVERIFY(run->isEnabled());
+            auto output = work->findChild<QLineEdit *>("BondOutput");
+            output->setText(temp.filePath("result.h5"));
+            run->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QVERIFY(work->hasResult() && QFile::exists(output->text()));
+            work->openVolume(output->text());
+        } else {
+            work->openVolume(external);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+        QVERIFY(work->hasResult());
+        QCOMPARE(tabs->currentIndex(), 2);
+        auto spectrum = work->findChild<SpectrumPlot *>("BondVoxelSpectrum");
+        auto slice = work->findChild<ScientificPlot *>("BondVoxelSlice");
+        auto figure = work->findChild<QWidget *>("BondEnergyPosition");
+        auto style = work->findChild<QComboBox *>("BondSpectralStyle");
+        auto source = work->findChild<QComboBox *>("BondViewSource");
+        auto channel = work->findChild<QSpinBox *>("BondSpectrumChannel");
+        auto plotTabs = work->findChild<QTabWidget *>("BondSpectralPlots");
+        QVERIFY(spectrum && slice && figure && style && source && channel && plotTabs);
+        QVERIFY(channel->isVisible() && !style->isVisible());
+        QVERIFY(slice->data().finiteCount > 0);
+        QVERIFY(spectrum->curves().size() == 1);
+        if (external.isEmpty()) {
+            const auto base = QRectF(slice->rect()).adjusted(82, 57, -130, -73);
+            const double scale = std::min(base.width() / 2., base.height() / 2.1);
+            const auto pick = base.center() - QPointF(.62 * scale, .8 * scale);
+            QTest::mouseClick(slice, Qt::LeftButton, Qt::NoModifier, pick.toPoint());
+            QCOMPARE(work->findChild<QSpinBox *>("BondVoxelY")->value(), 0);
+            QCOMPARE(work->findChild<QSpinBox *>("BondVoxelX")->value(), 2);
+            auto options = work->findChild<QToolButton *>("BondProcessingOptions");
+            auto background = work->findChild<QLineEdit *>("BondBackground");
+            auto apply = work->findChild<QPushButton *>("ApplyBondSpectralProcessing");
+            QVERIFY(options && background && apply && !apply->isVisible());
+            options->click();
+            background->setText("1:2");
+            apply->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(source->currentIndex(), 1);
+            source->setCurrentIndex(0);
+            QCOMPARE(spectrum->curves().size(), 1);
+            source->setCurrentIndex(1);
+            QCOMPARE(spectrum->curves().size(), 2);
+            source->setCurrentIndex(0);
+            options->click();
+        }
+        auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
+        if (!dir.isEmpty()) {
+            QVERIFY(QDir().mkpath(dir));
+            QVERIFY(window.grab().save(QDir(dir).filePath("voxel.png")));
+        }
+        plotTabs->setCurrentWidget(figure);
+        QVERIFY(figure->isVisible() && style->isVisible() && !channel->isVisible());
+        for (int representation = 0; representation < style->count(); ++representation) {
+            style->setCurrentIndex(representation);
+            const QPoint origin = figure->rect().center(), end = origin + QPoint(95, 30);
+            const auto initial = figure->grab().toImage();
+            QTest::mousePress(figure, Qt::LeftButton, Qt::NoModifier, origin);
+            QMouseEvent drag(QEvent::MouseMove, end, figure->mapToGlobal(end), Qt::NoButton, Qt::LeftButton,
+                             Qt::NoModifier);
+            QApplication::sendEvent(figure, &drag);
+            QTest::mouseRelease(figure, Qt::LeftButton, Qt::NoModifier, end);
+            const auto rotated = figure->grab().toImage();
+            QVERIFY(rotated != initial);
+            if (!dir.isEmpty()) {
+                const auto filename = representation == 0 ? "energy-position.png" : "waterfall.png";
+                QVERIFY(window.grab().save(QDir(dir).filePath(filename)));
+            }
+            QWheelEvent zoom(origin, figure->mapToGlobal(origin), {}, {0, 120}, Qt::NoButton, Qt::NoModifier,
+                             Qt::NoScrollPhase, false);
+            QApplication::sendEvent(figure, &zoom);
+            QVERIFY(figure->grab().toImage() != rotated);
+            QTest::mouseDClick(figure, Qt::LeftButton, Qt::NoModifier, origin);
+            QVERIFY(figure->grab().toImage() == initial);
+        }
+        work->selectStep(3);
+        auto mode = work->findChild<QComboBox *>("BondContrastMode");
+        auto map = work->findChild<QLabel *>("BondMapInfo");
+        auto montage = work->findChild<QWidget *>("BondMontage");
+        auto ea = work->findChild<QDoubleSpinBox *>("BondEa");
+        QVERIFY(mode && map && montage && ea);
+        QVERIFY(channel->isVisible() && !ea->isVisible());
+        const int previousChannel = channel->value();
+        channel->setValue(0);
+        QVERIFY(map->text().contains(QString::number(spectrum->curves().first().x.first(), 'g', 9)));
+        channel->setValue(previousChannel);
+        mode->setCurrentIndex(1);
+        QVERIFY(!channel->isVisible() && ea->isVisible());
+        QVERIFY(map->text().contains(QStringLiteral("有效体素")));
+        if (!dir.isEmpty())
+            QVERIFY(window.grab().save(QDir(dir).filePath("contrast-sections.png")));
+        auto surface = work->findChild<QWidget *>("BondIsosurface");
+        QVERIFY(surface);
+        auto figureTabs = qobject_cast<QTabWidget *>(surface->parentWidget()->parentWidget()->parentWidget());
+        QVERIFY(figureTabs);
+        figureTabs->setCurrentIndex(1);
+        auto build = work->findChild<QPushButton *>("BuildBondSurface");
+        QVERIFY(build && build->isVisible());
+        build->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+        auto status = work->findChild<QLabel *>("BondStatus");
+        QVERIFY(status->text().contains(QStringLiteral("三角形")));
+        if (!dir.isEmpty())
+            QVERIFY(window.grab().save(QDir(dir).filePath("contrast-isosurface.png")));
+    }
     void academicTicks() {
         for (auto range : {QPair<double, double>{0, 4095},
                            {-0.003, 0.007},
@@ -158,7 +291,7 @@ class GuiTests : public QObject {
         }
         QCOMPARE(labels, QStringList({QString::fromUtf8("文件"), QString::fromUtf8("数据浏览器"), "ROI",
                                       QString::fromUtf8("谱学"), QString::fromUtf8("成像"),
-                                      QString::fromUtf8("帮助")}));
+                                      QString::fromUtf8("化学键衬度分析"), QString::fromUtf8("帮助")}));
         auto browser = window.findChild<QMenu *>("DataBrowserMenu");
         auto fileMenu = window.findChild<QMenu *>("FileMenu");
         QVERIFY(browser && fileMenu);
@@ -268,6 +401,15 @@ class GuiTests : public QObject {
         auto dialog = window.findChild<ImagingDialog *>();
         QVERIFY(dialog);
         dialog->applyConfiguration(config);
+        auto order = dialog->findChild<QComboBox *>("scan_loops.sample_order");
+        auto points = dialog->findChild<QSpinBox *>("scan_loops.sample_dcm_points");
+        QVERIFY(order && points && order->count() == 7);
+        order->setCurrentIndex(order->findData(QStringLiteral("Y,Z,DCM")));
+        points->setValue(2);
+        auto loops = dialog->configuration()["scan_loops"].toObject();
+        QCOMPARE(loops["sample_order"].toString(), QStringLiteral("Y,Z,DCM"));
+        QCOMPARE(loops["sample_dcm_points"].toInt(), 2);
+        QVERIFY(loops["sample_y_points"].isNull());
         auto validate = dialog->findChild<QPushButton *>("ValidateImaging"),
              run = dialog->findChild<QPushButton *>("RunImaging");
         QVERIFY(validate && run);
@@ -403,10 +545,40 @@ class GuiTests : public QObject {
         QVERIFY(curve && !curve->curves().isEmpty());
         QVERIFY(std::abs(dialog->result().total[10] -
                          15 * (10 + .5 * dialog->result().energyTransferEv[10])) < 1e-5);
+        auto loadCurrent = dialog->findChild<QPushButton *>("LoadCurrentSpectrumForProcessing");
+        auto fitBackground = dialog->findChild<QPushButton *>("RunMomentumBackground");
+        auto corrected = dialog->findChild<SpectrumPlot *>("CorrectedCrystalSpectrum");
+        auto source = dialog->findChild<QComboBox *>("BackgroundSpectrumSource");
+        auto mode = dialog->findChild<QComboBox *>("BackgroundMode");
+        auto qMin = dialog->findChild<QDoubleSpinBox *>("HighMomentumMinimum");
+        QVERIFY(loadCurrent && fitBackground && corrected && source && mode && qMin);
+        dialog->selectStep(6);
+        QVERIFY(fitBackground->isEnabled() && !qMin->isVisible());
+        dialog->findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1.5,8.5:10");
+        fitBackground->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!corrected->curves().isEmpty(), 10000);
+        QCOMPARE(corrected->curves().first().x, dialog->result().energyTransferEv);
+        dialog->selectStep(7);
+        dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->setValue(2);
+        dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMaximum")->setValue(4);
+        QCOMPARE(corrected->curves().first().x.first(), 2.);
+        QCOMPARE(corrected->curves().first().x.last(), 4.);
+        dialog->selectStep(6);
+        mode->setCurrentIndex(1);
+        QVERIFY(qMin->isVisible() && !fitBackground->isEnabled() && corrected->curves().isEmpty());
+        dialog->selectStep(5);
+        QVERIFY(loadCurrent->isVisible());
+        loadCurrent->click();
+        dialog->selectStep(6);
+        source->setCurrentIndex(2);
+        qMin->setValue(100);
+        QVERIFY(fitBackground->isEnabled());
+        fitBackground->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!corrected->curves().isEmpty(), 10000);
         if (!qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS").isEmpty()) {
             auto directory = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
             QVERIFY(QDir().mkpath(directory));
-            for (int tab = 0; tab < 5; ++tab) {
+            for (int tab = 0; tab < 8; ++tab) {
                 dialog->selectStep(tab);
                 QTest::qWait(50);
                 QVERIFY(dialog->grab().save(directory + QString("/step%1.png").arg(tab)));
@@ -706,7 +878,8 @@ int main(int argc, char **argv) {
     QApplication app(argc, argv);
     if (!qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS").isEmpty() ||
         !qEnvironmentVariable("XRI_IMAGING_SCREENSHOTS").isEmpty() ||
-        !qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS").isEmpty()) {
+        !qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS").isEmpty() ||
+        !qEnvironmentVariable("XRI_BOND_SCREENSHOTS").isEmpty()) {
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/arial.ttf");
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
         app.setFont(QFont("Microsoft YaHei", 9));

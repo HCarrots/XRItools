@@ -1,4 +1,5 @@
 #include "Spectroscopy.h"
+#include "SpectrumProcessing.h"
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -505,18 +506,24 @@ QMap<QString, double> Spectroscopy::readAngles(const QString &file) {
     }
     return result;
 }
+static double analyzerAngle(const QString &label, double angle, double pitch) {
+    const QString module = label.section('-', 0, 0), crystal = label.section('-', 1, 1);
+    if (crystal.size() != 2 || crystal[0] < 'A' || crystal[0] > 'E' || crystal[1] < '1' || crystal[1] > '3')
+        return NAN;
+    constexpr double pi = 3.14159265358979323846;
+    double reverse = (module == "HB" || module == "HL") ? 1 : -1,
+           theta = (angle + pitch * (crystal[0].unicode() - 'C') * reverse) * pi / 180,
+           delta = pitch * (crystal[1].unicode() - '2') * pi / 180;
+    return std::acos(std::clamp(std::cos(theta) * std::cos(delta), -1.0, 1.0));
+}
 QPair<double, double> Spectroscopy::momentum(const QString &label, double angle, double incident,
                                              double final, const SpectrumSettings &s) {
-    const QString module = label.section('-', 0, 0), crystal = label.section('-', 1, 1);
-    if (crystal.size() != 2 || crystal[0] < 'A' || crystal[0] > 'E' || crystal[1] < '1' || crystal[1] > '3' ||
-        incident <= 0 || final <= 0 || s.crystalDistance <= 0 || s.crystalDiameter <= 0)
+    const double scattering = analyzerAngle(label, angle, s.modulePitchDegrees);
+    if (!std::isfinite(scattering) || incident <= 0 || final <= 0 || s.crystalDistance <= 0 ||
+        s.crystalDiameter <= 0)
         return {NAN, NAN};
     constexpr double pi = 3.14159265358979323846, hc = 12.398419297617678;
-    double reverse = (module == "HB" || module == "HL") ? 1 : -1,
-           theta = (angle + s.modulePitchDegrees * (crystal[0].unicode() - 'C') * reverse) * pi / 180,
-           delta = s.modulePitchDegrees * (crystal[1].unicode() - '2') * pi / 180;
-    double scattering = std::acos(std::clamp(std::cos(theta) * std::cos(delta), -1.0, 1.0)),
-           ki = 2 * pi * incident / hc, kf = 2 * pi * final / hc;
+    double ki = 2 * pi * incident / hc, kf = 2 * pi * final / hc;
     double q = std::sqrt(std::max(0.0, ki * ki + kf * kf - 2 * ki * kf * std::cos(scattering)));
     return {q,
             q > 1e-12 ? ki * kf * s.crystalDiameter * std::sin(scattering) / (q * s.crystalDistance) : NAN};
@@ -531,6 +538,8 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
     out.angles =
         s.angleSource == 2 ? s.angles : readAngles(s.angleSource == 0 ? s.elasticFile : scans.first().file);
     out.momentum.resize(75);
+    out.analyzerEnergyKev.fill(NAN, 75);
+    out.scatteringAngleDeg.fill(NAN, 75);
     out.included.fill(false, 75);
     out.reasons.resize(75);
     out.crystals.resize(75);
@@ -570,6 +579,9 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
             }
         auto &q = out.momentum[r];
         q = {double(sum / count), double(dsum / count), max - min, dmax - dmin};
+        out.analyzerEnergyKev[r] = fit.centerKev;
+        out.scatteringAngleDeg[r] = analyzerAngle(roi.label, out.angles[module], s.modulePitchDegrees) *
+                                    (180. / 3.14159265358979323846);
         if (s.excludedCrystals.contains(r)) {
             reason = QStringLiteral("手动排除");
             continue;
@@ -699,6 +711,10 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
             }
         }
         write("spectrum_all_data.txt", table(allHeaders, all));
+        auto hdfSpectrum = SpectrumProcessing::fromResult(result, c.adjusted, s.normalizeXrs);
+        for (const auto &scan : scans)
+            hdfSpectrum.sources.append(scan.file);
+        SpectrumProcessing::save(staging + "/spectra.h5", hdfSpectrum);
         write("spectrum_rois.txt", roiText.toUtf8());
         write("original_roi.roi.json", c.original.serialize(s.elasticFile, c.sizes));
         write("adjusted_roi.roi.json", c.adjusted.serialize(s.elasticFile, c.sizes));

@@ -13,6 +13,10 @@ class ScientificPlot : public QWidget {
     void setLogarithmic(bool enabled);
     void setPalette(int palette);
     void setAspectLocked(bool locked);
+    void setImageGrid(bool enabled) {
+        m_imageGrid = enabled;
+        update();
+    }
     void resetView();
     void setRoiSelectionEnabled(bool enabled);
     void setRoiOverlays(const QVector<CrystalRoi> &rois, const QString &selected);
@@ -23,6 +27,9 @@ class ScientificPlot : public QWidget {
             m_profileDrag = ProfileDrag::None;
             unsetCursor();
         }
+    }
+    void setPickAnywhere(bool enabled) {
+        m_pickAnywhere = enabled;
     }
     QPoint profilePosition() const {
         return m_profilePosition;
@@ -69,7 +76,7 @@ class ScientificPlot : public QWidget {
     bool m_roiEnabled = false, m_dragging = false;
     QPointF m_dragStart, m_dragEnd, m_screenStart;
     QPoint m_profilePosition{-1, -1};
-    bool m_profilePicking = false;
+    bool m_profilePicking = false, m_pickAnywhere = false;
     QString m_xLabel, m_yLabel;
     bool m_physicalAxes = false;
     double m_xOrigin = 0, m_yOrigin = 0, m_xStep = 1, m_yStep = 1;

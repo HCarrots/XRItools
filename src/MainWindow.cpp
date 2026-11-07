@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "BondWorkspace.h"
 #include "ImagingDialog.h"
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
@@ -165,9 +166,23 @@ void MainWindow::buildUi() {
     auto imaging = imagingMenu->addAction(tr("打开成像处理工作区"));
     imaging->setObjectName("ImagingStep0");
     connect(imaging, &QAction::triggered, this, [this] { openImaging(); });
+    auto chemicalBondMenu = menuBar()->addMenu(tr("化学键衬度分析(&O)"));
+    chemicalBondMenu->addAction(tr("打开四维衬度工作区"), this, [this] { openBondImaging(); })
+        ->setObjectName("OpenBondWorkspace");
     auto help = menuBar()->addMenu(tr("帮助(&H)"));
     help->addAction(tr("关于 XRI"), this, [this] {
-        QMessageBox::about(this, "XRI", tr("XRI 0.1 · 非弹性非共振数据处理工具 Hu Shiqi husq@ihep.ac.cn"));
+        QMessageBox::about(
+            this, tr("关于 XRI"),
+            tr("<h3>XRI 0.1</h3>"
+               "<p>非弹性非共振数据处理工具</p>"
+               "<p>用于同步辐射 HDF5 / NeXus 数据浏览、分析晶体 ROI "
+               "选取、谱学处理、三维成像与四维衬度分析。</p>"
+               "<p>作者：Hu Shiqi<br>"
+               "邮箱：<a href=\"mailto:husq@ihep.ac.cn\">husq@ihep.ac.cn</a><br>"
+               "Copyright &copy; 2026 Hu Shiqi</p>"
+               "<p>本项目源代码采用 <a href=\"https://opensource.org/license/mit\">MIT 开源协议</a>发布。<br>"
+               "第三方组件遵循各自许可证，详见随附的 THIRD_PARTY.md。</p>"
+               "<p>源代码：<a href=\"https://github.com/HCarrots/XRItools\">HCarrots/XRItools</a></p>"));
     });
     auto explorer = new QDockWidget(tr("文件列表与结构"), this);
     explorer->setObjectName("ExplorerDock");
@@ -449,6 +464,16 @@ ImagingDialog *MainWindow::openImaging(int step) {
         m_imaging->selectStep(step);
     showWorkspace(m_imaging, tr("成像 · grid_scan → 输入检查 → 三维重建 → 结果与诊断"));
     return m_imaging;
+}
+BondWorkspace *MainWindow::openBondImaging(int step) {
+    if (!m_bond) {
+        m_bond = new BondWorkspace(m_file, this);
+        m_workspaces->addWidget(m_bond);
+    }
+    if (step >= 0)
+        m_bond->selectStep(step);
+    showWorkspace(m_bond, tr("化学键衬度分析 · 四维重建 → 体素谱 → 衬度图"));
+    return m_bond;
 }
 RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
     if (source.isEmpty())

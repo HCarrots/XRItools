@@ -135,6 +135,37 @@ QString ImagingH5::text(const QString &path) const {
     check(H5Dread(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()));
     return QString::fromUtf8(bytes.constData());
 }
+QStringList ImagingH5::strings(const QString &path, int maxCount) const {
+    QMutexLocker lock(&HdfFile::ioMutex());
+    Handle ds(H5Dopen2(m_file, path.toUtf8().constData(), H5P_DEFAULT), H5Dclose),
+        type(H5Dget_type(ds), H5Tclose), space(H5Dget_space(ds), H5Sclose);
+    auto shape = dimensions(space);
+    if (shape.size() != 1 || !shape[0] || shape[0] > hsize_t(maxCount) || H5Tget_class(type) != H5T_STRING)
+        ImageUtil::fail(QStringLiteral("需要一维 HDF5 字符串标签数组：%1").arg(path));
+    const int count = int(shape[0]);
+    QStringList result;
+    if (H5Tis_variable_str(type) > 0) {
+        QVector<char *> values(count, nullptr);
+        auto status = H5Dread(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data());
+        if (status >= 0)
+            for (auto value : values)
+                result.append(QString::fromUtf8(value ? value : "").trimmed());
+        H5Treclaim(type, space, H5P_DEFAULT, values.data());
+        check(status);
+    } else {
+        auto width = H5Tget_size(type);
+        if (!width || width > 4096)
+            ImageUtil::fail(QStringLiteral("HDF5 晶体标签过长。"));
+        QByteArray bytes(qsizetype(width) * count, 0);
+        check(H5Dread(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()));
+        for (int i = 0; i < count; ++i) {
+            auto label = QByteArrayView(bytes.constData() + i * width, qsizetype(width));
+            auto zero = label.indexOf('\0');
+            result.append(QString::fromUtf8(zero < 0 ? label : label.first(zero)).trimmed());
+        }
+    }
+    return result;
+}
 void ImagingH5::writeData(const QString &path, const QVector<quint64> &shape, const void *data, hid_t disk,
                           hid_t memory, bool compressed) {
     QMutexLocker lock(&HdfFile::ioMutex());

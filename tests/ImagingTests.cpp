@@ -1,3 +1,4 @@
+#include "BondVolume.h"
 #include "CrystalRoi.h"
 #include "ImagingFixture.h"
 #include <QApplication>
@@ -24,6 +25,19 @@ int main(int argc, char **argv) {
     QApplication app(argc, argv);
     std::atomic_bool stop{false};
     try {
+        if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--bond-reference") {
+            auto config = Imaging::loadConfig(QString::fromLocal8Bit(argv[2]));
+            auto result = BondImaging::run(config, stop, [](const QString &text, int progress) {
+                std::cout << progress << " " << text.toUtf8().constData() << std::endl;
+            });
+            const auto path = QString::fromLocal8Bit(argv[3]);
+            BondImaging::save(path, result, stop);
+            auto reopened = BondImaging::load(path);
+            expect(reopened.axes == result.axes && reopened.converged == result.converged,
+                   "real four-dimensional result round-trips");
+            std::cout << QJsonDocument(reopened.diagnostics).toJson().constData();
+            return failures ? 1 : 0;
+        }
         if (argc == 3) {
             auto command = QString::fromLocal8Bit(argv[1]), path = QString::fromLocal8Bit(argv[2]);
             if (command == "--fixture") {
@@ -48,6 +62,72 @@ int main(int argc, char **argv) {
         expect(std::abs(std::accumulate(weights.first.begin(), weights.first.end(), 0.) - 3) < 1e-12,
                "reference interpolation preserves integrated constant spectrum");
         expect(throws([&] { Imaging::matchedWeights({1, 2}, {.9, 2}); }), "no energy extrapolation");
+        {
+            QTemporaryDir tmp;
+            auto canonical = ImagingFixture::create(tmp.filePath("canonical"), false, false, false, true);
+            auto reordered = ImagingFixture::create(tmp.filePath("reordered"), false, true, true, true);
+            const auto v = BondImaging::run(canonical, stop);
+            const auto w = BondImaging::run(reordered, stop);
+            expect(v.axes == w.axes && v.converged == QVector<bool>{true, true} &&
+                       w.converged == v.converged && v.voxelCount() == 21 * 2 * 2,
+                   "4D reconstruction preserves both independent energy channels with the imaging X grid");
+            double agreement = 0;
+            for (qsizetype i = 0; i < v.intensity.size(); ++i)
+                agreement = std::max(agreement, std::abs(v.intensity[i] - w.intensity[i]));
+            const auto a = BondImaging::energySlice(v, v.intensity, v.axes[0], 1, true);
+            const auto b = BondImaging::energySlice(v, v.intensity, v.axes[0], 2, true);
+            const auto mid = BondImaging::energySlice(v, v.intensity, v.axes[0], 1.5, true);
+            const auto peak = std::max_element(b.cbegin(), b.cend()) - b.cbegin();
+            expect(agreement < 1e-8 && peak / 4 == 10 && b[peak] > 0 &&
+                       std::abs(b[peak] / a[peak] - 3.) < 1e-6 && std::abs(mid[peak] - 2 * a[peak]) < 1e-6,
+                   "reordered duplicate frames preserve a known spectral peak and energy interpolation");
+            expect(throws([&] { BondImaging::energySlice(v, v.intensity, v.axes[0], .9, true); }),
+                   "4D energy interpolation rejects extrapolation");
+            auto bad = v;
+            bad.converged[1] = false;
+            expect(throws([&] { BondImaging::energySlice(bad, bad.intensity, bad.axes[0], 1.5, true); }) &&
+                       !BondImaging::energySlice(bad, bad.intensity, bad.axes[0], 2, false).isEmpty(),
+                   "unconverged channels stay available for raw diagnostics only");
+            auto missing = ImagingFixture::create(tmp.filePath("missing"), true);
+            expect(throws([&] { BondImaging::validate(missing, stop); }),
+                   "4D validation rejects missing cells");
+            auto resultPath = tmp.filePath("volume.h5");
+            BondImaging::save(resultPath, v, stop);
+            auto read = BondImaging::load(resultPath);
+            expect(read.axes == v.axes && read.intensity == v.intensity && read.converged == v.converged &&
+                       read.sensitivity == v.sensitivity && read.diagnostics == v.diagnostics &&
+                       throws([&] { BondImaging::save(resultPath, v, stop); }),
+                   "4D HDF5 round-trip retains data and diagnostics without overwriting");
+            std::atomic_bool cancelled{true};
+            auto cancelPath = tmp.filePath("cancelled.h5");
+            expect(throws([&] { BondImaging::run(canonical, cancelled); }) &&
+                       throws([&] { BondImaging::save(cancelPath, v, cancelled); }) &&
+                       !QFile::exists(cancelPath),
+                   "4D cancellation does not publish a partial result");
+        }
+        {
+            BondVolume v;
+            v.axes = {{0, 1, 2, 3, 4}, {0, 2}, {0, 1}, {0, 1}};
+            v.converged.fill(true, 5);
+            v.sensitivity = {1, 1};
+            for (int e = 0; e < 5; ++e)
+                for (qsizetype i = 0; i < v.voxelCount(); ++i)
+                    v.intensity.append(10 + 2 * e + (e == 2 ? (i ? 4 : -4) : 0));
+            BondSpectralSettings settings{{{0, 1}, {3, 4}}, QPair<double, double>{1, 3}};
+            auto corrected = BondImaging::process(v, v.axes[0], settings, stop);
+            expect(std::isnan(corrected[16]) && std::abs(corrected[17] - 1) < 1e-12 &&
+                       std::abs(corrected[9]) < 1e-12,
+                   "per-voxel subtraction removes a linear baseline and rejects nonpositive areas");
+            const auto mesh = BondImaging::surface(v, {0, 0, 0, 0, 2, 2, 2, 2}, .5, stop);
+            expect(!mesh.isEmpty() &&
+                       std::all_of(mesh.cbegin(), mesh.cend(),
+                                   [](const BondTriangle &triangle) {
+                                       return std::all_of(triangle.cbegin(), triangle.cend(), [](auto p) {
+                                           return std::abs(p.x() - .5f) < 1e-6;
+                                       });
+                                   }),
+                   "isosurface interpolation recovers the known physical plane X=0.5 mm");
+        }
         ImageMatrix h = ImageMatrix::Zero(2, 2), b(2, 2);
         h(0, 0) = 1;
         h(1, 1) = 1e-30;
@@ -123,6 +203,35 @@ int main(int argc, char **argv) {
                    repeatedValidation.report["calibration"].toObject()["repeated_frames"].toInt() == 1 &&
                    (repeatedResult.primary - result.primary).norm() < 1e-9,
                "reversed frame order and repeats pool counts/dose without changing reconstruction");
+        QTemporaryDir energyOuter;
+        auto alternate = ImagingFixture::create(energyOuter.path(), false, false, true);
+        auto detected = Imaging::validate(alternate, stop);
+        expect(detected.calibration.loopOrder == QStringList({"DCM", "X"}) &&
+                   detected.sample.loopOrder == QStringList({"DCM", "Z", "Y"}) &&
+                   detected.calibration.axes == validation.calibration.axes &&
+                   detected.sample.axes == validation.sample.axes,
+               "automatic scan loops support DCM as the outer axis with canonical physical grids");
+        auto loops = alternate["scan_loops"].toObject();
+        loops["calibration_order"] = "DCM,X";
+        loops["calibration_x_points"] = 9;
+        loops["calibration_dcm_points"] = 3;
+        loops["sample_order"] = "DCM,Z,Y";
+        loops["sample_y_points"] = 2;
+        loops["sample_z_points"] = 2;
+        loops["sample_dcm_points"] = 2;
+        alternate["scan_loops"] = loops;
+        auto alternateResult = Imaging::run(alternate, stop);
+        expect((alternateResult.primary - result.primary).norm() < 1e-9,
+               "manually selected loops and point counts preserve physical reconstruction");
+        loops["sample_dcm_points"] = 3;
+        alternate["scan_loops"] = loops;
+        expect(throws([&] { Imaging::validate(alternate, stop); }),
+               "manual point count rejects missing cells");
+        loops["sample_dcm_points"] = 2;
+        loops["sample_order"] = "Y,Z,DCM";
+        alternate["scan_loops"] = loops;
+        expect(throws([&] { Imaging::validate(alternate, stop); }),
+               "manual order rejects mismatched scan plan");
         CrystalRois shared;
         for (int i = 0; i < 75; ++i)
             shared.invalidate(i);

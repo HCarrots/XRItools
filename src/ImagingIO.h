@@ -11,6 +11,7 @@ class ImagingH5 {
     ImagingH5(const ImagingH5 &) = delete;
     QVector<double> read(const QString &, QVector<quint64> *shape = nullptr) const;
     QString text(const QString &) const;
+    QStringList strings(const QString &path, int maxCount) const;
     bool contains(const QString &) const;
     void write(const QString &, const QVector<quint64> &, const double *, bool compressed = true,
                bool float32 = false);

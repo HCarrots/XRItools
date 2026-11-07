@@ -2,6 +2,7 @@
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectrumPlot.h"
+#include "SpectrumProcessingPage.h"
 #include "WorkflowUi.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -124,7 +125,7 @@ SpectroscopyDialog::~SpectroscopyDialog() {
     m_watcher.waitForFinished();
 }
 void SpectroscopyDialog::selectStep(int step) {
-    m_tabs->setCurrentIndex(std::clamp(step, 0, 4));
+    m_tabs->setCurrentIndex(std::clamp(step, 0, m_tabs->count() - 1));
 }
 QString SpectroscopyDialog::statusText() const {
     return m_status->text();
@@ -523,7 +524,11 @@ void SpectroscopyDialog::buildUi() {
     rs->setSizes({400, 250});
     rb->addWidget(rs, 1);
     resLayout->addWidget(resultBody, 1);
-    m_tabs->addTab(resultPage, tr("5 叠加与结果"));
+    m_tabs->addTab(resultPage, tr("5 原始谱结果"));
+    m_processing = new SpectrumProcessingPage;
+    m_tabs->addTab(m_processing, tr("6 可选拼接"));
+    m_tabs->addTab(m_processing->analysisPage(), tr("7 扣背底"));
+    m_tabs->addTab(m_processing->resultPage(), tr("8 能区结果"));
     auto batchSet = [this](Qt::CheckState state) {
         bool changed = false;
         for (const auto &index : m_inclusion->selectionModel()->selectedRows()) {
@@ -697,6 +702,7 @@ void SpectroscopyDialog::invalidate(int stage) {
     }
     m_haveResult = false;
     m_result = SpectrumResult();
+    m_processing->setCurrentResult({});
     m_resultPlot->setCurves({}, {});
     m_resultChoice->clear();
     if (stage == 2) {
@@ -1013,6 +1019,11 @@ void SpectroscopyDialog::refreshResult() {
             }
     m_updating = false;
     refreshResultCurve();
+    auto spectrum =
+        SpectrumProcessing::fromResult(m_result, m_calibration.adjusted, m_resultSettings.normalizeXrs);
+    for (const auto &scan : m_scans)
+        spectrum.sources.append(scan.file);
+    m_processing->setCurrentResult(std::move(spectrum));
 }
 void SpectroscopyDialog::refreshResultCurve() {
     if (!m_haveResult)
@@ -1056,7 +1067,7 @@ void SpectroscopyDialog::save() {
         QDir(parent).filePath("spectrum_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
     QString error;
     if (Spectroscopy::saveResult(directory, m_resultSettings, m_calibration, m_scans, m_result, &error))
-        message(tr("已保存总谱、模组谱、单晶体谱、ROI、掩膜和完整参数：%1").arg(directory));
+        message(tr("已保存谱学 HDF5、总谱、模组谱、单晶体谱、ROI、掩膜和完整参数：%1").arg(directory));
     else
         message(error, true);
 }
@@ -1065,8 +1076,9 @@ void SpectroscopyDialog::refreshActions() {
     int step = m_tabs->currentIndex();
     m_previousButton->setVisible(step > 0);
     m_previousButton->setEnabled(!m_busy);
-    m_nextButton->setVisible(step < 4);
-    m_nextButton->setEnabled(!m_busy && (step < 2 || (step == 2 ? m_haveCalibration : m_haveScans)));
+    m_nextButton->setVisible(step < m_tabs->count() - 1);
+    m_nextButton->setEnabled(!m_busy &&
+                             (step < 2 || step >= 4 || (step == 2 ? m_haveCalibration : m_haveScans)));
     m_calibrateButton->setVisible(step == 1 || step == 2);
     m_extractButton->setVisible(step == 3);
     m_combineButton->setVisible(step == 4);

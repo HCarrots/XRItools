@@ -54,6 +54,7 @@ struct SpectrumResult {
     QVector<QVector<double>> crystals;
     QMap<QString, QVector<double>> modules;
     QVector<MomentumStats> momentum;
+    QVector<double> analyzerEnergyKev, scatteringAngleDeg;
     QVector<bool> included;
     QMap<QString, double> angles;
     QStringList reasons;

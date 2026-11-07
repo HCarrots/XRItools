@@ -11,6 +11,16 @@
 #include <limits>
 using namespace ImageUtil;
 namespace {
+const QStringList calibrationMotors{"M_Stage_X", "M_DCM_B5Energy"};
+const QStringList sampleMotors{"M_Stage_Y", "M_Stage_Z", "M_DCM_B5Energy"};
+
+QString loopAxis(const QString &motor) {
+    return motor == "M_DCM_B5Energy" ? QStringLiteral("DCM") : motor.right(1);
+}
+QString loopCountKey(const QString &role, const QString &axis) {
+    return role + '_' + axis.toLower() + "_points";
+}
+
 QJsonObject merge(const QJsonObject &defaults, const QJsonObject &input, const QString &prefix = {}) {
     auto result = defaults;
     for (auto i = input.begin(); i != input.end(); ++i) {
@@ -130,8 +140,8 @@ class Literal {
         return out;
     }
 };
-ImagingGrid grid(const QString &file, const QStringList &motors, double exposure, const QJsonObject &acq,
-                 const std::atomic_bool &stop) {
+ImagingGrid grid(const QString &file, const QString &role, const QStringList &motors, double exposure,
+                 const QJsonObject &acq, const QJsonObject &loops, const std::atomic_bool &stop) {
     cancel(stop);
     ImagingGrid result;
     result.file = file;
@@ -149,28 +159,40 @@ ImagingGrid grid(const QString &file, const QStringList &motors, double exposure
         name.replace('.', '_');
         actual.append(name);
     }
-    if (actual != motors) {
-        auto role = motors.size() == 2 ? QStringLiteral("薄膜标定") : QStringLiteral("样品成像");
+    auto roleLabel = role == "calibration" ? QStringLiteral("薄膜标定") : QStringLiteral("样品成像");
+    auto sortedActual = actual;
+    auto sortedMotors = motors;
+    sortedActual.sort();
+    sortedMotors.sort();
+    if (sortedActual != sortedMotors) {
         auto hint = actual.contains("M_DCM_B5Energy")
                         ? QStringLiteral("请选择扫描轴与用途匹配的文件。")
                         : QStringLiteral("该扫描计划没有能量轴，不能用于当前需要能量积分的处理流程。");
-        fail(QStringLiteral("%1文件的扫描轴不匹配：\n%2\n实际：%3\n需要：%4\n%5")
-                 .arg(role, file, actual.join(" → "), motors.join(" → "), hint));
+        fail(QStringLiteral("%1文件的扫描轴不匹配：\n%2\n实际：%3\n所需轴：%4\n%5")
+                 .arg(roleLabel, file, actual.join(", "), motors.join(", "), hint));
+    }
+    for (const auto &motor : actual)
+        result.loopOrder.append(loopAxis(motor));
+    const auto requestedOrder = loops[role + "_order"].toString();
+    if (!requestedOrder.isEmpty() && requestedOrder != result.loopOrder.join(',')) {
+        fail(QStringLiteral("%1文件的循环顺序与设置不符。\n%2\n文件（外到内）：%3\n设置（外到内）：%4")
+                 .arg(roleLabel, file, result.loopOrder.join(" → "), requestedOrder.split(',').join(" → ")));
     }
     qsizetype cells = 1;
     int frames = -1;
-    for (int k = 0; k < motors.size(); ++k) {
-        int start = 1 + 4 * k;
-        auto motor = args[start].toString();
-        motor.replace('.', '_');
+    // Downstream arrays keep their physical X/E or Y/Z/E axes for every scan order.
+    for (const auto &motor : motors) {
+        auto start = 1 + 4 * actual.indexOf(motor);
+        const auto axisName = loopAxis(motor);
+        const auto requestedCount = loops[loopCountKey(role, axisName)];
         double lo = args[start + 1].toDouble(NAN), hi = args[start + 2].toDouble(NAN),
-               n = args[start + 3].toDouble(NAN);
+               n = requestedCount.isNull() ? args[start + 3].toDouble(NAN) : requestedCount.toDouble();
         if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo) || n < 2 || n > 100000 ||
             std::floor(n) != n)
-            fail("Planned axes must increase with at least two points");
-        cells *= qsizetype(n);
-        if (cells > 10000000)
+            fail(QStringLiteral("%1的 %2 轴需要递增的扫描范围及至少两个点。").arg(roleLabel, axisName));
+        if (cells > 10000000 / int(n))
             fail("Imaging grid too large");
+        cells *= qsizetype(n);
         QVector<double> axis;
         for (int i = 0; i < int(n); ++i)
             axis.append(i == int(n) - 1 ? hi : lo + (hi - lo) * i / (n - 1));
@@ -182,7 +204,7 @@ ImagingGrid grid(const QString &file, const QStringList &motors, double exposure
         frames = int(coordinates.size());
         result.coordinates.append(coordinates);
         QVector<int> index;
-        double tolerance = k == motors.size() - 1 ? 1e-8 : 1e-6;
+        double tolerance = axisName == "DCM" ? 1e-8 : 1e-6;
         for (double c : coordinates) {
             if (!std::isfinite(c))
                 fail("Nonfinite frame coordinate");
@@ -191,7 +213,9 @@ ImagingGrid grid(const QString &file, const QStringList &motors, double exposure
             if (j > 0 && std::abs(c - axis[j - 1]) <= std::abs(c - axis[j]))
                 --j;
             if (std::abs(c - axis[j]) > tolerance)
-                fail("Frame setpoint outside planned grid tolerance: " + motor);
+                fail(QStringLiteral("%1的 %2 轴逐帧坐标与 %3 个扫描点不匹配。请核对扫描范围和该层帧数。")
+                         .arg(roleLabel, axisName)
+                         .arg(int(n)));
             index.append(j);
         }
         result.indices.append(index);
@@ -366,6 +390,13 @@ QJsonObject Imaging::defaults() {
                                     {"detector", "D_LAMBDA"},
                                     {"foil_thickness_mm", .05},
                                     {"detector_pixel_pitch_mm", .055}}},
+        {"scan_loops", QJsonObject{{"calibration_order", ""},
+                                   {"calibration_x_points", QJsonValue()},
+                                   {"calibration_dcm_points", QJsonValue()},
+                                   {"sample_order", ""},
+                                   {"sample_y_points", QJsonValue()},
+                                   {"sample_z_points", QJsonValue()},
+                                   {"sample_dcm_points", QJsonValue()}}},
         {"roi", QJsonObject{{"excluded_ids", QJsonArray()}, {"label_overrides", QJsonObject()}}},
         {"grid", QJsonObject{{"x_step_mm", QJsonValue()}}},
         {"psf", QJsonObject{{"min_peak_fraction", .3},
@@ -422,6 +453,30 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
         if (!value.isString() || value.toString().isEmpty() || value.toString().contains('/'))
             fail("Invalid detector/monitor name");
     }
+    const auto loops = c["scan_loops"].toObject();
+    auto checkLoops = [&](const QString &role, const QStringList &motors, const QString &label) {
+        QStringList expected;
+        for (const auto &motor : motors) {
+            auto axis = loopAxis(motor);
+            expected.append(axis);
+            auto count = loops[loopCountKey(role, axis)];
+            if (count.isNull())
+                continue;
+            double n = count.toDouble(NAN);
+            if (!(n >= 2 && n <= 100000) || std::floor(n) != n)
+                fail(QStringLiteral("%1的 %2 层帧数须为 2 至 100000 的整数。").arg(label, axis));
+        }
+        auto order = loops[role + "_order"];
+        if (order.isString() && order.toString().isEmpty())
+            return;
+        auto axes = order.toString().split(',');
+        axes.sort();
+        expected.sort();
+        if (!order.isString() || axes != expected)
+            fail(QStringLiteral("%1循环顺序须包含所需的每个轴，且每个轴只出现一次。").arg(label));
+    };
+    checkLoops("calibration", calibrationMotors, QStringLiteral("薄膜标定"));
+    checkLoops("sample", sampleMotors, QStringLiteral("样品成像"));
     if (!c["grid"].toObject()["x_step_mm"].isNull())
         positive("grid", "x_step_mm");
     for (const auto &key :
@@ -494,20 +549,23 @@ QJsonObject Imaging::loadConfig(const QString &file) {
         fail("Invalid imaging JSON: " + error.errorString());
     return config(doc.object(), QFileInfo(file).absolutePath());
 }
-ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool &stop) {
+ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool &stop,
+                                    bool requireMatchedBand) {
     auto validated = config(c, QDir::currentPath());
     auto inputs = validated["input"].toObject(), acq = validated["acquisition"].toObject();
     for (auto i = inputs.begin(); i != inputs.end(); ++i)
         if (!QFileInfo(i->toString()).isFile())
             fail("Input does not exist: " + i->toString());
     ImagingValidation out;
-    out.calibration = grid(inputs["calibration_nxs"].toString(), {"M_Stage_X", "M_DCM_B5Energy"},
-                           acq["calibration_exposure_s"].toDouble(), acq, stop);
-    out.sample = grid(inputs["sample_nxs"].toString(), {"M_Stage_Y", "M_Stage_Z", "M_DCM_B5Energy"},
-                      acq["sample_exposure_s"].toDouble(), acq, stop);
+    auto loops = validated["scan_loops"].toObject();
+    out.calibration = grid(inputs["calibration_nxs"].toString(), "calibration", calibrationMotors,
+                           acq["calibration_exposure_s"].toDouble(), acq, loops, stop);
+    out.sample = grid(inputs["sample_nxs"].toString(), "sample", sampleMotors,
+                      acq["sample_exposure_s"].toDouble(), acq, loops, stop);
     if (out.calibration.imageSize != out.sample.imageSize)
         fail("Calibration/sample detector dimensions differ");
-    matchedWeights(out.calibration.axes[1], out.sample.axes[2]);
+    if (requireMatchedBand)
+        matchedWeights(out.calibration.axes[1], out.sample.axes[2]);
     out.rois = roiTable(inputs["roi_table"].toString(), acq["detector"].toString(), out.calibration.imageSize,
                         validated["roi"].toObject());
     QStringList keys, excluded;
@@ -525,27 +583,32 @@ ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool
         fail("Gain anchor is not included: " + rec["anchor_roi"].toString());
     auto report = [](const ImagingGrid &g, const QStringList &motors, double exposure) {
         QJsonObject axes;
-        QJsonArray shape;
+        QMap<QString, qsizetype> counts;
+        QJsonArray shape, loopCounts;
         for (int i = 0; i < motors.size(); ++i) {
             axes[motors[i]] = json(g.axes[i]);
             shape.append(g.axes[i].size());
+            counts[loopAxis(motors[i])] = g.axes[i].size();
         }
+        for (const auto &axis : g.loopOrder)
+            loopCounts.append(counts.value(axis));
         return QJsonObject{{"source_file", g.file},
                            {"axes", axes},
                            {"grid_shape", shape},
+                           {"loop_order_outer_to_inner", json(g.loopOrder)},
+                           {"loop_counts_outer_to_inner", loopCounts},
                            {"actual_frames", g.monitor.size()},
                            {"expected_grid_cells", g.occupancy.size()},
                            {"repeated_frames", g.monitor.size() - g.occupancy.size()},
                            {"image_shape", QJsonArray{g.imageSize.height(), g.imageSize.width()}},
                            {"exposure_s", exposure}};
     };
-    out.report = {{"calibration", report(out.calibration, {"M_Stage_X", "M_DCM_B5Energy"},
-                                         acq["calibration_exposure_s"].toDouble())},
-                  {"sample", report(out.sample, {"M_Stage_Y", "M_Stage_Z", "M_DCM_B5Energy"},
-                                    acq["sample_exposure_s"].toDouble())},
-                  {"roi_keys", json(keys)},
-                  {"excluded_roi_ids", json(excluded)},
-                  {"roi_pixels", pixels}};
+    out.report = {
+        {"calibration", report(out.calibration, calibrationMotors, acq["calibration_exposure_s"].toDouble())},
+        {"sample", report(out.sample, sampleMotors, acq["sample_exposure_s"].toDouble())},
+        {"roi_keys", json(keys)},
+        {"excluded_roi_ids", json(excluded)},
+        {"roi_pixels", pixels}};
     return out;
 }
 QVector<double> Imaging::energyWeights(const QVector<double> &axis) {

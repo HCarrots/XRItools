@@ -15,6 +15,10 @@ class SpectrumPlot : public QWidget {
     Q_OBJECT
   public:
     explicit SpectrumPlot(QWidget *parent = nullptr);
+    void setFineGrid(bool enabled) {
+        m_fineGrid = enabled;
+        update();
+    }
     void setCurves(const QVector<SpectrumCurve> &, const QString &title,
                    const QString &xLabel = "Energy (keV)", const QString &yLabel = "Intensity (a.u.)");
     const QVector<SpectrumCurve> &curves() const {
@@ -34,4 +38,5 @@ class SpectrumPlot : public QWidget {
     QString m_title, m_xLabel, m_yLabel;
     QRectF m_extent, m_view;
     bool m_grid = true, m_minorTicks = true, m_hasData = false;
+    bool m_fineGrid = false;
 };

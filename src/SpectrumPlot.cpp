@@ -73,10 +73,12 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
         return QPointF(a.left() + (x - m_view.left()) / m_view.width() * a.width(),
                        a.bottom() - (y - m_view.top()) / m_view.height() * a.height());
     };
-    PlotStyle::axis(p, a, PlotStyle::ticks(m_view.left(), m_view.right(), std::max(2, int(a.width() / 100))),
-                    m_view.left(), m_view.right(), true, false, m_grid, m_minorTicks);
-    PlotStyle::axis(p, a, PlotStyle::ticks(m_view.top(), m_view.bottom(), std::max(2, int(a.height() / 60))),
-                    m_view.top(), m_view.bottom(), false, false, m_grid, m_minorTicks);
+    int xTicks = std::clamp(int(a.width() / (m_fineGrid ? 55 : 100)), 2, m_fineGrid ? 20 : 10);
+    int yTicks = std::clamp(int(a.height() / (m_fineGrid ? 34 : 60)), 2, m_fineGrid ? 20 : 10);
+    PlotStyle::axis(p, a, PlotStyle::ticks(m_view.left(), m_view.right(), xTicks), m_view.left(),
+                    m_view.right(), true, false, m_grid, m_minorTicks, 9, m_fineGrid);
+    PlotStyle::axis(p, a, PlotStyle::ticks(m_view.top(), m_view.bottom(), yTicks), m_view.top(),
+                    m_view.bottom(), false, false, m_grid, m_minorTicks, 9, m_fineGrid);
     p.save();
     p.setClipRect(a);
     for (int k = 0; k < m_curves.size(); ++k) {

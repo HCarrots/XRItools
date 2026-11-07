@@ -16,6 +16,7 @@ class QPushButton;
 class QProgressBar;
 class ScientificPlot;
 class SpectrumPlot;
+class SpectrumProcessingPage;
 
 class SpectroscopyDialog : public QDialog {
     Q_OBJECT
@@ -100,6 +101,7 @@ class SpectroscopyDialog : public QDialog {
     ScientificPlot *m_images[2]{};
     SpectrumPlot *m_elasticPlot = nullptr, *m_i0Plot = nullptr, *m_scanPlot = nullptr,
                  *m_resultPlot = nullptr;
+    SpectrumProcessingPage *m_processing = nullptr;
     QComboBox *m_angleSource = nullptr;
     QMap<QString, QDoubleSpinBox *> m_angles;
     QVector<QCheckBox *> m_modules;

@@ -17,6 +17,7 @@ struct ImagingRoi {
 };
 struct ImagingGrid {
     QString file;
+    QStringList loopOrder;
     QVector<QVector<double>> axes, coordinates;
     QVector<QVector<int>> indices;
     QVector<int> occupancy;
@@ -54,7 +55,8 @@ class Imaging {
     static QJsonObject defaults();
     static QJsonObject config(const QJsonObject &, const QString &baseDirectory);
     static QJsonObject loadConfig(const QString &file);
-    static ImagingValidation validate(const QJsonObject &, const std::atomic_bool &cancel);
+    static ImagingValidation validate(const QJsonObject &, const std::atomic_bool &cancel,
+                                      bool requireMatchedBand = true);
     static ImagingResult run(const QJsonObject &, const std::atomic_bool &, Progress = {});
     static QVector<double> energyWeights(const QVector<double> &);
     static QPair<QVector<double>, QVector<double>> matchedWeights(const QVector<double> &,

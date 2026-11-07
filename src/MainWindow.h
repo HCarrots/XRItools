@@ -23,6 +23,7 @@ class SliceTableModel;
 class QAction;
 class SpectroscopyDialog;
 class ImagingDialog;
+class BondWorkspace;
 class RoiDialog;
 class QStackedWidget;
 
@@ -57,6 +58,7 @@ class MainWindow : public QMainWindow {
     void setSliceIndex(int dimension, int index);
     SpectroscopyDialog *openSpectroscopy(int step = -1);
     ImagingDialog *openImaging(int step = -1);
+    BondWorkspace *openBondImaging(int step = -1);
     RoiDialog *openRoi(const QString &file = {}, const QString &scheme = {});
 
   protected:
@@ -121,6 +123,7 @@ class MainWindow : public QMainWindow {
     QProgressBar *m_exportProgress = nullptr;
     SpectroscopyDialog *m_spectroscopy = nullptr;
     ImagingDialog *m_imaging = nullptr;
+    BondWorkspace *m_bond = nullptr;
     QStackedWidget *m_workspaces = nullptr;
     QWidget *m_browser = nullptr, *m_roiReturn = nullptr;
     QLabel *m_workspaceTitle = nullptr;

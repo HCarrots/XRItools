@@ -1,6 +1,7 @@
 # Third-party components
 
-XRI dynamically links the following libraries. Their original licenses continue to apply.
+XRI's own source code is released under the MIT License; see LICENSE.
+Third-party components retain their original licenses. XRI uses the following libraries.
 
 - Qt 6: Qt Core, Gui, Widgets, Concurrent, Svg and PrintSupport; LGPL v3 / GPL / commercial options, depending on the Qt distribution. Qt source and license information: https://www.qt.io/licensing/open-source-lgpl-obligations and https://download.qt.io/archive/qt/ . This project does not modify Qt.
 - HDF5: The HDF Group's HDF5 license. https://www.hdfgroup.org/licenses/ . This project does not modify HDF5.

@@ -1,3 +1,4 @@
+#include "BondWorkspace.h"
 #include "ImagingDialog.h"
 #include "MainWindow.h"
 #include "RoiDialog.h"
@@ -7,6 +8,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include <QPointer>
 #include <QStyleFactory>
 #include <QTimer>
@@ -17,6 +19,7 @@ int main(int argc, char *argv[]) {
     QCoreApplication::setOrganizationName("XRI");
     QCoreApplication::setApplicationName("XRI");
     QCoreApplication::setApplicationVersion("0.1.0");
+    app.setWindowIcon(QIcon(QStringLiteral(":/assets/xri.png")));
     // Keep Qt Widgets' Windows platform style, native dialogs, menus and frame.
     if (auto style = QStyleFactory::create("windowsvista"))
         app.setStyle(style);
@@ -33,6 +36,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"imaging", "Open the imaging workbench"});
     parser.addOption({"imaging-config", "Load imaging JSON configuration", "path"});
     parser.addOption({"imaging-result", "View an existing imaging result directory", "path"});
+    parser.addOption({"bond-result", "Open an existing four-dimensional contrast result", "path"});
     parser.addOption({"smoke-test", "Render current dataset and exit with verification status", "directory"});
     parser.process(app);
     MainWindow window;
@@ -46,6 +50,7 @@ int main(int argc, char *argv[]) {
     QPointer<RoiDialog> roiEditor;
     QPointer<SpectroscopyDialog> spectroscopy;
     QPointer<ImagingDialog> imaging;
+    QPointer<BondWorkspace> bond;
     bool startupOk = true;
     if (parser.isSet("imaging") || parser.isSet("imaging-config") || parser.isSet("imaging-result")) {
         imaging = window.openImaging();
@@ -56,6 +61,10 @@ int main(int argc, char *argv[]) {
     }
     if (parser.isSet("spectroscopy"))
         spectroscopy = window.openSpectroscopy();
+    if (parser.isSet("bond-result")) {
+        bond = window.openBondImaging();
+        bond->openVolume(parser.value("bond-result"));
+    }
     if (parser.isSet("roi-editor") && !args.isEmpty()) {
         roiEditor = window.openRoi();
         if (parser.isSet("roi-profiles"))
@@ -69,23 +78,28 @@ int main(int argc, char *argv[]) {
         int *attempts = new int(0);
         QObject::connect(
             timer, &QTimer::timeout, &window,
-            [&window, &app, timer, directory, attempts, roiEditor, spectroscopy, imaging, startupOk] {
+            [&window, &app, timer, directory, attempts, roiEditor, spectroscopy, imaging, bond, startupOk] {
                 if (++*attempts > 1200) {
                     timer->stop();
                     delete attempts;
                     app.exit(2);
                     return;
                 }
-                if (window.isReading() || (roiEditor && roiEditor->isLoading()))
+                if (window.isReading() || (roiEditor && roiEditor->isLoading()) || (bond && bond->isBusy()))
                     return;
                 timer->stop();
                 delete attempts;
                 auto data = window.currentData();
-                bool ok = startupOk && ((imaging && imaging->hasResult()) ||
-                                        (data.error.isEmpty() && !data.values.isEmpty()));
+                bool ok = startupOk && (bond ? bond->hasResult()
+                                             : ((imaging && imaging->hasResult()) ||
+                                                (data.error.isEmpty() && !data.values.isEmpty())));
                 if (roiEditor)
                     ok = roiEditor->imagesReady() && window.grab().save(directory + "/window.png") && ok;
-                else if (imaging)
+                else if (bond) {
+                    ok = window.grab().save(directory + "/voxel.png") && ok;
+                    bond->selectStep(3);
+                    ok = window.grab().save(directory + "/sections.png") && ok;
+                } else if (imaging)
                     ok = window.grab().save(directory + "/window.png") && ok;
                 else if (spectroscopy)
                     ok = window.grab().save(directory + "/window.png") && ok;

@@ -27,7 +27,7 @@ inline Ticks ticks(double lo, double hi, int count = 5, bool logarithmic = false
     const double span = hi - lo;
     if (!std::isfinite(span))
         return t;
-    const double rough = span / std::clamp(count, 2, 10);
+    const double rough = span / std::clamp(count, 2, 20);
     const double base = std::pow(10., std::floor(std::log10(rough)));
     if (!(base > 0) || !std::isfinite(base))
         return t;
@@ -60,7 +60,7 @@ inline Ticks ticks(double lo, double hi, int count = 5, bool logarithmic = false
         t.minor.clear();
     }
     double first = std::ceil(lo / t.step - 1e-10) * t.step;
-    for (int i = 0; i < 24; ++i) {
+    for (int i = 0; i < 42; ++i) {
         double v = first + i * t.step;
         if (v > hi + t.step * 1e-9)
             break;
@@ -69,7 +69,7 @@ inline Ticks ticks(double lo, double hi, int count = 5, bool logarithmic = false
     }
     const double small = t.step / 5;
     first = std::ceil(lo / small) * small;
-    for (int i = 0; i < 120; ++i) {
+    for (int i = 0; i < 210; ++i) {
         double v = first + i * small;
         if (v > hi + small * 1e-9)
             break;
@@ -104,7 +104,7 @@ inline QColor curveColor(int index) {
     return QColor(colors[index % 7]);
 }
 inline void axis(QPainter &p, const QRectF &r, const Ticks &t, double lo, double hi, bool horizontal,
-                 bool down, bool grid, bool minor = true, int fontPoints = 9) {
+                 bool down, bool grid, bool minor = true, int fontPoints = 9, bool fineGrid = false) {
     const double a = transform(lo, t.logarithmic), b = transform(hi, t.logarithmic);
     if (!(b > a))
         return;
@@ -116,6 +116,7 @@ inline void axis(QPainter &p, const QRectF &r, const Ticks &t, double lo, double
     };
     p.save();
     p.setFont(QFont(QStringLiteral("Arial"), fontPoints));
+    const QFontMetricsF metrics(p.font());
     for (int major = 0; major <= 1; ++major) {
         if (!major && !minor)
             continue;
@@ -124,8 +125,9 @@ inline void axis(QPainter &p, const QRectF &r, const Ticks &t, double lo, double
             double pos = position(v);
             if (!std::isfinite(pos))
                 continue;
-            if (major && grid) {
-                p.setPen(QPen(QColor(210, 216, 221), .6, Qt::DashLine));
+            if (grid && (major || fineGrid)) {
+                p.setPen(fineGrid ? QPen(major ? QColor(192, 192, 192) : QColor(229, 229, 229), .6)
+                                  : QPen(QColor(210, 216, 221), .6, Qt::DashLine));
                 if (horizontal)
                     p.drawLine(QPointF(pos, r.top()), QPointF(pos, r.bottom()));
                 else
@@ -136,9 +138,14 @@ inline void axis(QPainter &p, const QRectF &r, const Ticks &t, double lo, double
             if (horizontal) {
                 p.drawLine(QPointF(pos, r.bottom()), QPointF(pos, r.bottom() - length));
                 p.drawLine(QPointF(pos, r.top()), QPointF(pos, r.top() + length));
-                if (major && std::abs(pos - previousLabel) >= 80) {
-                    p.drawText(QRectF(pos - 48, r.bottom() + 7, 96, 20), Qt::AlignHCenter, label(v, t));
-                    previousLabel = pos;
+                if (major) {
+                    const auto text = label(v, t);
+                    const double spacing =
+                        fineGrid ? std::max(52., metrics.horizontalAdvance(text) + 10) : 80.;
+                    if (std::abs(pos - previousLabel) >= spacing) {
+                        p.drawText(QRectF(pos - 48, r.bottom() + 7, 96, 20), Qt::AlignHCenter, text);
+                        previousLabel = pos;
+                    }
                 }
             } else {
                 p.drawLine(QPointF(r.left(), pos), QPointF(r.left() + length, pos));

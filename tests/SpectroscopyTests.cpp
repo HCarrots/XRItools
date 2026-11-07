@@ -1,5 +1,8 @@
+#include "ComptonProcessing.h"
+#include "ImagingIO.h"
 #include "Spectroscopy.h"
 #include "SpectrumFixture.h"
+#include "SpectrumProcessing.h"
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -34,6 +37,50 @@ int main(int argc, char **argv) {
     std::atomic_bool cancel{false};
     SpectrumSettings s;
     try {
+        if (argc == 3 && QString::fromLocal8Bit(argv[1]) == "--compton-reference") {
+            QDir root(QString::fromLocal8Bit(argv[2]));
+            auto load = [&](const QString &name) {
+                return SpectrumProcessing::load(
+                    root.filePath("workspace/data/" + name + "/" + name + "_all_data.txt"), {});
+            };
+            const auto wide = load("Compton_all_crystal");
+            const auto stitched =
+                SpectrumProcessing::replaceEdges(wide, {load("O_K_530_550"), load("Ni_L_840_870")}, cancel);
+            qsizetype replacements = 0;
+            for (const auto &origin : stitched.pointSources)
+                replacements +=
+                    std::count_if(origin.cbegin(), origin.cend(), [](int source) { return source > 0; });
+            expect(replacements == 22788 && stitched.energyEv == wide.energyEv &&
+                       stitched.crystals.keys() == wide.crystals.keys(),
+                   "reference O K and Ni L scans replace the expected 22788 wide-scan samples");
+            ComptonSettings settings;
+            settings.hfTable = root.filePath("xrsana/resources/data/ComptonProfiles.dat");
+            settings.composition = "Li:1, Ni:0.9, Co:0.05, Mn:0.05, O:2";
+            settings.normalization = {{80, 970}};
+            settings.coreTail = {{700, 740}, {930, 970}};
+            settings.cleanReference = {{120, 510}, {580, 620}, {680, 740}, {920, 970}};
+            settings.highResidual = settings.lowLinear = {{460, 510}};
+            auto result = analyzeCompton(wide, stitched, settings, cancel);
+            int high = 0, low = 0;
+            for (auto it = result.crystals.cbegin(); it != result.crystals.cend(); ++it) {
+                if (it->high)
+                    ++high;
+                else
+                    ++low;
+                expect(it->high == (wide.geometry.value(it.key()).qMean >= settings.highQMin),
+                       "successful crystal uses the selected q branch");
+            }
+            std::cout << "High=" << high << " Low=" << low << " References=" << result.references.size()
+                      << " PearsonR2=" << result.referenceFit.rSquared
+                      << " PearsonCenter=" << result.referenceFit.centerEv
+                      << " PearsonWidth=" << result.referenceFit.fwhmEv << '\n';
+            for (auto it = result.failures.cbegin(); it != result.failures.cend(); ++it)
+                std::cout << "Excluded " << it.key().toStdString() << " " << it.value().toUtf8().constData()
+                          << '\n';
+            expect(high > 0 && low > 0 && result.referenceFit.rSquared > .8,
+                   "real reduced scans produce high-q valence subtraction and low-q linear results");
+            return failures ? 1 : 0;
+        }
         if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--real-elastic") {
             std::cout << "Inspect real detectors\n";
             s.elasticFile = QString::fromLocal8Bit(argv[2]);
@@ -195,6 +242,80 @@ int main(int argc, char **argv) {
                "saved outputs contain physical convention, individual curves, ROIs and masks");
         expect(!Spectroscopy::saveResult(output, s, c, scans, result, &errorText),
                "existing result directory never overwritten");
+        auto saved = SpectrumProcessing::stitch({output + "/spectra.h5"}, {}, cancel);
+        expect(saved.energyEv == result.energyTransferEv && saved.crystals["VB-A1"] == result.crystals[0],
+               "step five saves an HDF5 spectrum that can be loaded for processing");
+        auto first = temp.path() + "/part-a.h5", second = temp.path() + "/part-b.h5";
+        SpectrumProcessing::save(first, {{0, 1, 2}, {{"A", {1, 2, 3}}, {"B", {10, 20, 30}}}, "counts", {}});
+        {
+            ImagingH5 hdf(second, true);
+            const double axis[]{.003, .002, .001};
+            const double values[]{40, 5, 50, 7, 60, 9};
+            hdf.write("/axis", {3}, axis);
+            hdf.writeStrings("/labels", {"B", "A"});
+            hdf.write("/values", {3, 2}, values);
+        }
+        SpectrumHdfLayout external{"/axis", "/labels", "/values", "counts", true, true};
+        auto converted = SpectrumProcessing::stitch({second}, external, cancel);
+        auto convertedPath = temp.path() + "/converted.h5";
+        SpectrumProcessing::save(convertedPath, converted);
+        auto stitched = SpectrumProcessing::stitch({first, convertedPath, first}, {}, cancel);
+        expect(stitched.energyEv == QVector<double>({0, 1, 2, 3}) &&
+                   stitched.crystals["A"] == QVector<double>({1, 5.5, 5, 5}) &&
+                   stitched.crystals["B"] == QVector<double>({10, 40, 40, 40}) &&
+                   stitched.sources.size() == 2,
+               "align crystal names and energy points, average overlap and ignore repeated input files");
+        auto wide = SpectrumProcessing::load(first, {});
+        ProcessedSpectrum edge{{1, 2}, {{"A", {50, 60}}, {"C", {9, 10}}}, "counts", {"edge"}};
+        auto replaced = SpectrumProcessing::replaceEdges(wide, {edge}, cancel);
+        expect(replaced.energyEv == wide.energyEv && replaced.crystals["A"] == QVector<double>({1, 50, 60}) &&
+                   replaced.crystals["B"] == wide.crystals["B"] && !replaced.crystals.contains("C") &&
+                   replaced.pointSources["A"] == QVector<int>({0, 1, 1}),
+               "near-edge replacement preserves wide axes, unmeasured crystals and source identity");
+        expect(throws([&] { SpectrumProcessing::replaceEdges(wide, {edge, edge}, cancel); }),
+               "overlapping replacements require a source decision");
+        auto stitchedPath = temp.path() + "/stitched.h5";
+        SpectrumProcessing::save(stitchedPath, replaced);
+        auto reopened = SpectrumProcessing::load(stitchedPath, {});
+        expect(reopened.crystals == replaced.crystals && reopened.wideCrystals == wide.crystals &&
+                   reopened.pointSources == replaced.pointSources && reopened.sources == replaced.sources,
+               "stitched HDF5 retains the original Compton reference and per-point provenance");
+        QVector<double> energy, line, compton;
+        for (int i = 0; i <= 100; ++i) {
+            double e = i * .1, u = 2 * (e - 4.2) / 3.4;
+            energy.append(e);
+            line.append(8 + .7 * e + (i == 50 ? 13 : 0));
+            compton.append(3 + 27 * std::pow(1 + std::expm1(std::log(2.) / 2.5) * u * u, -2.5));
+        }
+        auto linear = SpectrumProcessing::fit(energy, line, {false, {{0, 2}, {8, 10}}}, cancel);
+        expect(close(linear.corrected[50], 13, 1e-9) && close(linear.corrected[10], 0, 1e-9),
+               "linear fit subtracts independent sidebands and keeps excluded signal peak");
+        auto secondLine = line;
+        for (qsizetype i = 0; i < energy.size(); ++i)
+            secondLine[i] = 20 - .4 * energy[i] + (i == 50 ? 5 : 0);
+        ProcessedSpectrum edgeOnly{energy, {{"A", line}, {"B", secondLine}}, "counts", {}};
+        edgeOnly.geometry["B"].qMean = 12;
+        const auto edgePath = temp.path() + "/edge_only.h5";
+        SpectrumProcessing::save(edgePath, edgeOnly);
+        const auto direct = analyzeLinear(SpectrumProcessing::load(edgePath, {}), {{0, 2}, {8, 10}}, cancel);
+        expect(direct.failures.isEmpty() && direct.crystals.size() == 2 && !direct.crystals.value("B").high &&
+                   close(direct.crystals.value("A").fit.corrected.value(50), 13) &&
+                   close(direct.crystals.value("B").fit.corrected.value(50), 5) &&
+                   direct.parameters.value("background_mode").toString() == "linear_only",
+               "edge-only linear processing fits high-q and unknown-q crystals independently without a wide "
+               "scan");
+        auto pearson = SpectrumProcessing::fit(energy, compton, {true, {{0, 10}}}, cancel);
+        expect(close(pearson.centerEv, 4.2, 1e-5) && close(pearson.fwhmEv, 3.4, 1e-5) &&
+                   close(pearson.exponent, 2.5, 1e-4) && close(pearson.corrected[42], 0, 1e-5),
+               "Pearson VII fit recovers known Compton center, FWHM and shape");
+        auto correctedPath = temp.path() + "/corrected.h5";
+        SpectrumProcessing::save(correctedPath, {energy, {{"A", line}, {"B", compton}}, "counts", {}},
+                                 {{"A", linear}});
+        SpectrumHdfLayout correctedLayout;
+        correctedLayout.intensity = "/entry/spectrum/corrected";
+        auto corrected = SpectrumProcessing::stitch({correctedPath}, correctedLayout, cancel);
+        expect(corrected.crystals.size() == 1 && close(corrected.crystals["A"][50], 13),
+               "exported corrected matrix preserves the fitted crystal and omits unprocessed rows");
         if (argc > 1) {
             QDir().mkpath(QString::fromLocal8Bit(argv[1]));
             auto directory = QString::fromLocal8Bit(argv[1]);
