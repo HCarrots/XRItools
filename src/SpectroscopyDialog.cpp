@@ -217,7 +217,7 @@ void SpectroscopyDialog::buildUi() {
     m_normalizeElastic->setChecked(true);
     m_normalizeXrs = new QCheckBox(tr("XRS 谱除以 |I0|"));
     m_normalizeXrs->setChecked(true);
-    m_repair = new QCheckBox(tr("修复孤立 I0 跌落与对应帧（邻点比例 < 0.7）"));
+    m_repair = new QCheckBox(tr("修复glitch与对应帧（邻点比例 < 0.7）"));
     m_repair->setChecked(true);
     cf->addRow(m_normalizeElastic);
     cf->addRow(m_normalizeXrs);

@@ -442,7 +442,7 @@ void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVe
                    {{"definition", "sqrt(sum_a,p A_a[p,x]^2); includes fitted gains and dx/foil thickness"}});
     writeVector(out, "gram_eigenvalues", eigenvalues);
 }
-void diagnostics(const ImagingResult &result, const QString &path) {
+QImage diagnosticImage(const ImagingResult &result, bool bondBand = false) {
     auto color = [](double t) {
         const std::array<QColor, 5> stops{QColor("#440154"), QColor("#3b528b"), QColor("#21918c"),
                                           QColor("#5ec962"), QColor("#fde725")};
@@ -606,13 +606,15 @@ void diagnostics(const ImagingResult &result, const QString &path) {
     p.drawText(QRectF(-125, -12, 250, 24), Qt::AlignCenter, "Detector row (pixel)");
     p.restore();
     p.drawText(QRect(40, 925, 1420, 45), Qt::AlignCenter | Qt::TextWordWrap,
-               "Provisional relative Kapton-equivalent density. No sample background subtraction or "
-               "geometric postprocessing. Inspect PSF, sensitivity, rank and residuals together.");
+               bondBand
+                   ? "Integrated-band fit used to determine shared crystal gains. Inspect individual "
+                     "energy channels in the four-dimensional HDF5 result."
+                   : "Provisional relative Kapton-equivalent density. No sample background subtraction or "
+                     "geometric postprocessing. Inspect PSF, sensitivity, rank and residuals together.");
     p.end();
     canvas.setDotsPerMeterX(11811);
     canvas.setDotsPerMeterY(11811);
-    if (!canvas.save(path))
-        fail("Cannot save imaging diagnostics PNG");
+    return canvas;
 }
 } // namespace
 
@@ -660,6 +662,10 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
         for (auto pixel : item.roi.pixels)
             offsets.append(qsizetype(pixel.y()) * g.imageSize.width() + pixel.x());
     const qsizetype nPixels = offsets.size();
+    const auto output = c["output"].toObject();
+    const bool saveBandDiagnostics = output["save_diagnostics"].toBool();
+    if (saveBandDiagnostics && nPixels * (qsizetype(nx) + 2 * qsizetype(nYZ)) > 32000000)
+        fail(QStringLiteral("积分谱诊断超过内存上限，请缩小 ROI 或关闭详细诊断。"));
     constexpr int batchSize = 16;
     const qsizetype repeated = g.occupancy.size() - std::count(g.occupancy.cbegin(), g.occupancy.cend(), 1);
     if (nPixels * (qsizetype(nx) + batchSize + repeated) > 32000000)
@@ -755,6 +761,22 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
                        {"gain_fit_iterations", fit.gainIteration},
                        {"x_sensitivity_floor", sensitivityFloor},
                        {"channel_diagnostics", channels}};
+    if (saveBandDiagnostics) {
+        for (int i = 0; i < fit.accepted.size(); ++i) {
+            cancel(stop);
+            ImageMatrix op = fit.gains[i] * fit.operators[i];
+            ImageMatrix predicted = op * fit.rho;
+            ImageMatrix residual = predicted - fit.accepted[i].measured;
+            out.bandDiagnostics.append(
+                {fit.keys[i], std::move(op), std::move(predicted), std::move(residual)});
+        }
+    }
+    if (output["plots"].toBool()) {
+        cancel(stop);
+        spatial.primary = fit.rho;
+        spatial.sensitivity = out.sensitivity;
+        out.diagnosticImage = diagnosticImage(spatial, true);
+    }
     log(QStringLiteral("四维求解完成"), 100);
     return out;
 }
@@ -1005,8 +1027,9 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                         base + "/pixels_rc", {quint64(accepted[i].roi.pixels.size()), 2}, pixels.constData());
                 }
         }
-        if (c["output"].toObject()["plots"].toBool())
-            diagnostics(result, directory + "/diagnostics.png");
+        if (c["output"].toObject()["plots"].toBool() &&
+            !diagnosticImage(result).save(directory + "/diagnostics.png"))
+            fail("Cannot save imaging diagnostics PNG");
         saveJson(directory + "/summary.json", result.summary);
         log("Completed: " + directory + "/reconstruction.h5", 100);
         return result;

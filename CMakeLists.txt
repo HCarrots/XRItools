@@ -44,7 +44,8 @@ set(SPECTROSCOPY_SOURCES ${SPECTRUM_CORE_SOURCES}
     src/SpectrumPlot.cpp src/SpectrumPlot.h src/SpectroscopyDialog.cpp src/SpectroscopyDialog.h
     src/SpectrumProcessingPage.cpp src/SpectrumProcessingPage.h)
 target_sources(XRI PRIVATE ${SPECTROSCOPY_SOURCES})
-set(BOND_WIDGET_SOURCES src/BondWorkspace.cpp src/BondWorkspace.h src/BondFigures.cpp src/BondFigures.h)
+set(BOND_WIDGET_SOURCES src/BondWorkspace.cpp src/BondWorkspace.h src/BondFigures.cpp src/BondFigures.h
+    src/ImagingInputUi.h)
 target_sources(XRI PRIVATE ${BOND_WIDGET_SOURCES})
 target_sources(XRI PRIVATE src/ImagingDialog.cpp src/ImagingDialog.h)
 target_include_directories(XRI PRIVATE ${HDF5_INCLUDE_DIRS})

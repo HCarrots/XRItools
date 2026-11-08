@@ -71,6 +71,11 @@ qsizetype BondVolume::voxel(int x, int y, int z) const {
     return (qsizetype(x) * axes[2].size() + y) * axes[3].size() + z;
 }
 
+QString BondImaging::diagnosticPngPath(const QString &path) {
+    const QFileInfo result(path);
+    return result.dir().filePath(result.completeBaseName() + ".diagnostics.png");
+}
+
 void BondImaging::save(const QString &path, const BondVolume &volume, const std::atomic_bool &stop) {
     cancel(stop);
     QVector<quint64> shape;
@@ -84,10 +89,17 @@ void BondImaging::save(const QString &path, const BondVolume &volume, const std:
     const QFileInfo target(path);
     if (target.exists())
         fail(QStringLiteral("结果文件已存在，请选择新文件名。"));
+    const bool plots = !volume.diagnosticImage.isNull();
+    const auto png = diagnosticPngPath(target.absoluteFilePath());
+    if (plots && QFileInfo::exists(png))
+        fail(QStringLiteral("诊断 PNG 已存在，请选择新的结果文件名。"));
     QTemporaryDir temp(QDir(target.absolutePath()).filePath(".xri-bond-XXXXXX"));
     if (!temp.isValid())
         fail(QStringLiteral("无法在输出目录建立临时文件。"));
     const auto staged = temp.filePath("volume.h5");
+    const auto stagedPng = temp.filePath("diagnostics.png");
+    if (plots && !volume.diagnosticImage.save(stagedPng))
+        fail(QStringLiteral("无法写入诊断 PNG。"));
     {
         ImagingH5 hdf(staged, true);
         auto axis = [&](const QString &name, const QVector<double> &data) {
@@ -108,10 +120,23 @@ void BondImaging::save(const QString &path, const BondVolume &volume, const std:
                                    {"schema", "XRI.bond.v1"}});
         hdf.writeText("/entry/bond/diagnostics_json",
                       QString::fromUtf8(QJsonDocument(volume.diagnostics).toJson(QJsonDocument::Compact)));
+        for (const auto &item : volume.bandDiagnostics) {
+            cancel(stop);
+            const auto base = "/entry/bond/band_diagnostics/" + item.crystal;
+            const auto rows = quint64(item.forward.rows());
+            hdf.write(base + "/operator_px", {rows, shape[1]}, item.forward.data());
+            hdf.write(base + "/predicted_pyz", {rows, shape[2], shape[3]}, item.predicted.data());
+            hdf.write(base + "/residual_pyz", {rows, shape[2], shape[3]}, item.residual.data());
+        }
     }
     cancel(stop);
-    if (!QFile::rename(staged, target.absoluteFilePath()))
+    if (plots && !QFile::rename(stagedPng, png))
+        fail(QStringLiteral("无法提交诊断 PNG。"));
+    if (!QFile::rename(staged, target.absoluteFilePath())) {
+        if (plots)
+            QFile::remove(png);
         fail(QStringLiteral("无法提交四维结果文件。"));
+    }
 }
 
 BondVolume BondImaging::load(const QString &path) {

@@ -25,7 +25,12 @@ class BondWorkspace : public QWidget {
     explicit BondWorkspace(const QString &sample, QWidget *parent = nullptr);
     ~BondWorkspace() override;
     bool importConfiguration(const QString &);
+    bool saveConfiguration(const QString &);
     void applyConfiguration(const QJsonObject &);
+    void setAvailableFiles(const QStringList &files) {
+        m_availableFiles = files;
+    }
+    void useRoiDraft(const QString &file, const QString &path);
     void start(bool validateOnly);
     void openVolume(const QString &);
     bool isBusy() const;
@@ -33,6 +38,9 @@ class BondWorkspace : public QWidget {
         return m_volume.voxelCount() > 0;
     }
     void selectStep(int);
+
+  signals:
+    void roiRequested(const QString &file);
 
   private:
     struct Work {
@@ -64,6 +72,10 @@ class BondWorkspace : public QWidget {
     void changeEnergyUnits();
 
     QJsonObject m_base;
+    QMap<QString, QWidget *> m_inputs;
+    QStringList m_availableFiles;
+    QByteArray m_roiBytes;
+    QPair<QString, QString> m_pendingRoi;
     bool m_refreshing = false;
     std::atomic_bool m_stop{false};
     QFutureWatcher<Work> m_watcher;
@@ -73,13 +85,11 @@ class BondWorkspace : public QWidget {
     bool m_transfer = false, m_normalized = false;
     QString m_fieldLabel;
     QTabWidget *m_tabs = nullptr, *m_figures = nullptr;
-    QLineEdit *m_sample = nullptr, *m_foil = nullptr, *m_roi = nullptr, *m_output = nullptr,
-              *m_monitor = nullptr, *m_detector = nullptr, *m_anchor = nullptr, *m_background = nullptr,
-              *m_normalization = nullptr;
+    QLineEdit *m_sample = nullptr, *m_roi = nullptr, *m_output = nullptr, *m_anchor = nullptr,
+              *m_background = nullptr, *m_normalization = nullptr;
     QCheckBox *m_fitGains = nullptr, *m_loss = nullptr, *m_secondSurface = nullptr;
-    QDoubleSpinBox *m_sampleExposure = nullptr, *m_foilExposure = nullptr, *m_analyzer = nullptr,
-                   *m_ea = nullptr, *m_eb = nullptr, *m_level = nullptr, *m_level2 = nullptr,
-                   *m_tolerance = nullptr;
+    QDoubleSpinBox *m_analyzer = nullptr, *m_ea = nullptr, *m_eb = nullptr, *m_level = nullptr,
+                   *m_level2 = nullptr, *m_tolerance = nullptr;
     QComboBox *m_mode = nullptr, *m_dataSource = nullptr, *m_spectralStyle = nullptr;
     QSpinBox *m_channel = nullptr, *m_x = nullptr, *m_y = nullptr, *m_z = nullptr, *m_firstZ = nullptr,
              *m_countZ = nullptr, *m_strideZ = nullptr, *m_iterations = nullptr;

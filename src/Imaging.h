@@ -54,7 +54,7 @@ class Imaging {
     using Progress = std::function<void(const QString &, int)>;
     static QJsonObject defaults();
     static QJsonObject config(const QJsonObject &, const QString &baseDirectory);
-    static QJsonObject loadConfig(const QString &file);
+    static QJsonObject loadConfig(const QString &file, QString *bondOutputFile = nullptr);
     static ImagingValidation validate(const QJsonObject &, const std::atomic_bool &cancel,
                                       bool requireMatchedBand = true);
     static ImagingResult run(const QJsonObject &, const std::atomic_bool &, Progress = {});

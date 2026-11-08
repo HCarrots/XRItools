@@ -1,15 +1,17 @@
 #include "BondWorkspace.h"
 #include "BondFigures.h"
 #include "ImagingIO.h"
+#include "ImagingInputUi.h"
 #include "ScientificPlot.h"
 #include "SpectrumPlot.h"
 #include "WorkflowUi.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 #include <cmath>
+#include <limits>
+#include <utility>
 
 namespace {
-const QString scans = QStringLiteral("NeXus / HDF5 (*.nxs *.h5 *.hdf5);;All files (*)");
 const QString volumes = QStringLiteral("XRI four-dimensional HDF5 (*.h5 *.hdf5)");
 
 QLabel *hint(const QString &text = {}) {
@@ -112,62 +114,96 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     auto filePage = new QWidget;
     auto fileLayout = new QVBoxLayout(filePage);
     auto fileActions = new QHBoxLayout;
-    auto import = new QPushButton(tr("载入成像配置…"));
-    auto reopen = new QPushButton(tr("打开四维结果…"));
+    auto import = new QPushButton(tr("导入旧版 JSON 配置…"));
+    auto saveConfig = new QPushButton(tr("保存当前配置…"));
+    auto reopen = new QPushButton(tr("查看已有四维重建…"));
     fileActions->addWidget(import);
+    fileActions->addWidget(saveConfig);
     fileActions->addWidget(reopen);
     fileActions->addStretch();
     fileLayout->addLayout(fileActions);
-    auto files = new QFormLayout;
-    auto path = [&](const QString &label, const QString &name, const QString &filter, bool output = false) {
-        auto edit = new QLineEdit;
-        edit->setObjectName(name);
-        auto browse = new QPushButton(tr("浏览…"));
-        auto row = new QHBoxLayout;
-        row->addWidget(edit, 1);
-        row->addWidget(browse);
-        files->addRow(label, row);
-        connect(browse, &QPushButton::clicked, this, [=] {
-            auto selected = output ? QFileDialog::getSaveFileName(this, label, edit->text(), filter, nullptr,
-                                                                  QFileDialog::DontConfirmOverwrite)
-                                   : QFileDialog::getOpenFileName(this, label, edit->text(), filter);
-            if (!selected.isEmpty()) {
-                if (output && QFileInfo(selected).suffix().isEmpty())
-                    selected += ".h5";
-                edit->setText(selected);
-            }
-        });
-        return edit;
+    auto columns = new QHBoxLayout;
+    auto column = [&](int stretch) {
+        auto body = new QWidget;
+        auto layout = new QVBoxLayout(body);
+        auto scroll = new QScrollArea;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(body);
+        columns->addWidget(scroll, stretch);
+        return layout;
     };
-    m_sample = path(tr("样品 Y/Z/能量扫描"), "BondSample", scans);
-    m_foil = path(tr("薄膜 X/能量扫描"), "BondFoil", scans);
-    m_roi = path(tr("分析晶体 ROI 表"), "BondRois", tr("ROI 表 (*.txt *.tsv *.csv *.json);;All files (*)"));
-    m_sampleExposure = number(5, 0, 100000, 0);
-    m_foilExposure = number(5, 0, 100000, 0);
-    m_sampleExposure->setSpecialValueText(tr("待确认"));
-    m_foilExposure->setSpecialValueText(tr("待确认"));
-    files->addRow(tr("样品曝光 / s"), m_sampleExposure);
-    files->addRow(tr("薄膜曝光 / s"), m_foilExposure);
-    m_monitor = new QLineEdit("D_SiC_Current1");
-    m_detector = new QLineEdit("D_LAMBDA");
-    fileLayout->addLayout(files);
-    auto acquisition = new QWidget;
-    auto acquisitionFields = new QFormLayout(acquisition);
-    acquisitionFields->addRow(tr("I₀ 通道"), m_monitor);
-    acquisitionFields->addRow(tr("探测器"), m_detector);
-    fileLayout->addWidget(WorkflowUi::disclosure(tr("采集通道"), acquisition));
-    fileLayout->addWidget(
-        hint(tr("成像配置同时带入扫描循环、X 网格、薄膜参数和 ROI 排除项。请核对曝光及所选晶体。")));
+    auto left = column(3);
+    auto right = column(2);
+    auto addText = [this](QFormLayout *form, const QString &key, const QString &label, int kind = 0) {
+        auto edit = new QLineEdit;
+        edit->setObjectName(key);
+        edit->setProperty("fieldKind", kind);
+        m_inputs[key] = edit;
+        form->addRow(label, edit);
+        connect(edit, &QLineEdit::textChanged, this, &BondWorkspace::invalidateInputs);
+    };
+    auto addNumber = [this, &addText](QFormLayout *form, const QString &key, const QString &label,
+                                      bool integer = false) {
+        if (!integer) {
+            addText(form, key, label, 1);
+            return;
+        }
+        auto spin = new QSpinBox;
+        spin->setObjectName(key);
+        spin->setRange(1, std::numeric_limits<int>::max() - 1);
+        spin->setKeyboardTracking(false);
+        m_inputs[key] = spin;
+        form->addRow(label, spin);
+        connect(spin, &QSpinBox::valueChanged, this, &BondWorkspace::invalidateInputs);
+    };
+    ImagingInputUi::build(
+        this, left, right, m_inputs, m_availableFiles, addText, addNumber, [this] { invalidateInputs(); },
+        [this](const QString &file) {
+            if (!QFileInfo(file).isFile())
+                status(tr("请先选择样品文件。"), true);
+            else
+                emit roiRequested(file);
+        });
+    m_sample = static_cast<QLineEdit *>(m_inputs["input.sample_nxs"]);
+    m_roi = static_cast<QLineEdit *>(m_inputs["input.roi_table"]);
+    left->addStretch();
+
+    auto output = new QGroupBox(tr("结果与诊断"));
+    auto outputForm = new QFormLayout(output);
+    m_output = new QLineEdit;
+    m_output->setObjectName("BondOutput");
+    auto chooseOutput = new QPushButton(tr("浏览…"));
+    auto outputRow = new QHBoxLayout;
+    outputRow->addWidget(m_output, 1);
+    outputRow->addWidget(chooseOutput);
+    outputForm->addRow(tr("新四维结果文件"), outputRow);
+    connect(chooseOutput, &QPushButton::clicked, this, [this] {
+        auto path = QFileDialog::getSaveFileName(this, tr("保存四维结果"), m_output->text(), volumes, nullptr,
+                                                 QFileDialog::DontConfirmOverwrite);
+        if (!path.isEmpty())
+            m_output->setText(QFileInfo(path).suffix().isEmpty() ? path + ".h5" : path);
+    });
+    auto flag = [&](const QString &key, const QString &label) {
+        auto box = new QCheckBox(label);
+        box->setObjectName(key);
+        m_inputs[key] = box;
+        outputForm->addRow(box);
+    };
+    flag("output.save_diagnostics", tr("保存积分谱的各晶体正演矩阵、预测和残差"));
+    flag("output.plots", tr("保存积分谱诊断 PNG"));
+    outputForm->addRow(hint(
+        tr("结果保存为四维 HDF5，保留各能量通道及其收敛诊断。诊断 PNG 保存到同一目录，已有文件不会覆盖。")));
+    right->addWidget(output);
+    right->addStretch();
+    fileLayout->addLayout(columns, 1);
     auto next = new QPushButton(tr("校验输入并继续"));
     next->setObjectName("CheckBondInputs");
-    fileLayout->addWidget(next, 0, Qt::AlignLeft);
-    fileLayout->addStretch();
-    m_tabs->addTab(filePage, tr("1 样品与标定"));
+    fileLayout->addWidget(next, 0, Qt::AlignRight);
+    m_tabs->addTab(filePage, tr("1 文件与 ROI"));
 
     auto runPage = new QWidget;
     auto runLayout = new QVBoxLayout(runPage);
-    files = new QFormLayout;
-    m_output = path(tr("保存四维结果"), "BondOutput", volumes, true);
     auto solver = new QWidget;
     auto solverForm = new QFormLayout(solver);
     m_fitGains = new QCheckBox(tr("拟合相对晶体增益"));
@@ -198,7 +234,6 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     details->addTab(m_diagnostics, tr("诊断详情"));
     runLayout->addWidget(details, 1);
     runLayout->addWidget(WorkflowUi::disclosure(tr("求解设置"), solver));
-    runLayout->addLayout(files);
     m_run = new QPushButton(tr("开始重建并保存"));
     m_run->setObjectName("RunBondVolume");
     m_run->setEnabled(false);
@@ -375,6 +410,12 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         if (!path.isEmpty())
             importConfiguration(path);
     });
+    connect(saveConfig, &QPushButton::clicked, this, [this] {
+        const auto path =
+            QFileDialog::getSaveFileName(this, tr("保存当前配置"), "bond.config.json", "JSON (*.json)");
+        if (!path.isEmpty())
+            saveConfiguration(path);
+    });
     connect(reopen, &QPushButton::clicked, this, [this] {
         auto path = QFileDialog::getOpenFileName(this, tr("选择 XRI 四维结果"), {}, volumes);
         if (!path.isEmpty())
@@ -388,23 +429,19 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         m_stop.store(true);
         status(tr("正在取消…"));
     });
-    for (auto edit : {m_sample, m_foil, m_roi, m_detector, m_monitor})
-        connect(edit, &QLineEdit::textChanged, this, [this] { invalidateInputs(); });
-    for (auto spin : {m_sampleExposure, m_foilExposure})
-        connect(spin, &QDoubleSpinBox::valueChanged, this, [this] { invalidateInputs(); });
     connect(m_crystals, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
         if (item->column() != 0)
             return;
-        auto config = m_base.value("roi").toObject();
-        auto excluded = config.value("excluded_ids").toArray();
+        auto field = m_inputs["roi.excluded_ids"];
+        auto excluded = ImagingInputUi::read(field, "roi.excluded_ids").toArray();
         const auto id = item->data(Qt::UserRole).toString();
         for (int i = int(excluded.size()) - 1; i >= 0; --i)
             if (excluded[i].toString() == id)
                 excluded.removeAt(i);
         if (item->checkState() == Qt::Unchecked)
             excluded.append(id);
-        config["excluded_ids"] = excluded;
-        m_base["roi"] = config;
+        const QSignalBlocker block(field);
+        ImagingInputUi::write(field, excluded);
     });
     connect(m_loss, &QCheckBox::toggled, this, [this] { changeEnergyUnits(); });
     connect(m_analyzer, &QDoubleSpinBox::valueChanged, this, [this] { changeEnergyUnits(); });
@@ -449,7 +486,10 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         m_viewBar->setEnabled(true);
         m_cancel->hide();
         m_progress->hide();
+        const auto pending = std::exchange(m_pendingRoi, {});
         if (!result.error.isEmpty()) {
+            if (!pending.second.isEmpty())
+                useRoiDraft(pending.first, pending.second);
             status(result.error, true);
             return;
         }
@@ -476,9 +516,19 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             m_surface->setMesh(m_volume.axes, (*result.surfaces)[0], (*result.surfaces)[1],
                                result.meshCaption, result.surfaceColors);
         status(result.message);
+        if (!pending.second.isEmpty())
+            useRoiDraft(pending.first, pending.second);
     });
-    if (HdfFile::formatFromFileName(sample) == ScanFormat::GridScan)
-        m_sample->setText(sample);
+    auto initial = Imaging::defaults();
+    auto input = initial.value("input").toObject();
+    if (!sample.isEmpty() && HdfFile::formatFromFileName(sample) != ScanFormat::Scan)
+        input["sample_nxs"] = QFileInfo(sample).absoluteFilePath();
+    initial["input"] = input;
+    auto defaults = initial.value("acquisition").toObject();
+    defaults["calibration_exposure_s"] = .5;
+    defaults["sample_exposure_s"] = .5;
+    initial["acquisition"] = defaults;
+    applyConfiguration(initial);
     syncViewControls();
 }
 
@@ -514,10 +564,28 @@ void BondWorkspace::syncViewControls() {
 }
 
 void BondWorkspace::invalidateInputs() {
+    QFile roi(m_roi->text().trimmed());
+    m_roiBytes = roi.open(QIODevice::ReadOnly) ? roi.readAll() : QByteArray{};
     m_run->setEnabled(false);
     m_crystals->setRowCount(0);
     m_quality->setText(tr("请先在第 1 步校验输入。"));
     m_diagnostics->clear();
+}
+
+void BondWorkspace::useRoiDraft(const QString &file, const QString &path) {
+    if (QFileInfo(m_sample->text().trimmed()).canonicalFilePath() != file)
+        return;
+    if (isBusy()) {
+        m_pendingRoi = {file, path};
+        return;
+    }
+    QFile roi(path);
+    if (!roi.open(QIODevice::ReadOnly))
+        return;
+    if (m_roi->text() != path)
+        m_roi->setText(path);
+    else if (roi.readAll() != m_roiBytes)
+        invalidateInputs();
 }
 
 void BondWorkspace::status(const QString &text, bool error) {
@@ -548,7 +616,10 @@ bool BondWorkspace::importConfiguration(const QString &path) {
     if (isBusy())
         return false;
     try {
-        applyConfiguration(Imaging::loadConfig(path));
+        QString output;
+        applyConfiguration(Imaging::loadConfig(path, &output));
+        if (!output.isEmpty())
+            m_output->setText(output);
         status(tr("已载入成像配置，请核对文件和曝光。"));
         return true;
     } catch (const std::exception &error) {
@@ -557,42 +628,55 @@ bool BondWorkspace::importConfiguration(const QString &path) {
     }
 }
 
+bool BondWorkspace::saveConfiguration(const QString &path) {
+    try {
+        auto config = configuration();
+        if (!m_output->text().trimmed().isEmpty())
+            config["bond_output_file"] = QFileInfo(m_output->text().trimmed()).absoluteFilePath();
+        ImageUtil::saveJson(path, config);
+        status(tr("配置已保存到 %1").arg(path));
+        return true;
+    } catch (const std::exception &error) {
+        status(QString::fromUtf8(error.what()), true);
+        return false;
+    }
+}
+
 void BondWorkspace::applyConfiguration(const QJsonObject &config) {
+    if (isBusy())
+        return;
     m_base = config;
-    const auto input = config.value("input").toObject(), acq = config.value("acquisition").toObject(),
-               rec = config.value("reconstruction").toObject();
-    m_sample->setText(input.value("sample_nxs").toString());
-    m_foil->setText(input.value("calibration_nxs").toString());
-    m_roi->setText(input.value("roi_table").toString());
-    invalidateInputs();
-    m_sampleExposure->setValue(acq.value("sample_exposure_s").toDouble());
-    m_foilExposure->setValue(acq.value("calibration_exposure_s").toDouble());
-    m_monitor->setText(acq.value("monitor").toString("D_SiC_Current1"));
-    m_detector->setText(acq.value("detector").toString("D_LAMBDA"));
+    for (auto it = m_inputs.cbegin(); it != m_inputs.cend(); ++it) {
+        const auto keys = it.key().split('.');
+        const QSignalBlocker block(it.value());
+        ImagingInputUi::write(it.value(), config.value(keys[0]).toObject().value(keys[1]));
+    }
+    const auto rec = config.value("reconstruction").toObject();
     m_fitGains->setChecked(rec.value("fit_gains").toBool(true));
     m_anchor->setText(rec.value("anchor_roi").toString());
     m_iterations->setValue(rec.value("nnls_max_iterations").toInt(20000));
     m_tolerance->setValue(rec.value("nnls_tolerance").toDouble(1e-7));
+    const auto folder = config.value("runtime").toObject().value("output_dir").toString();
+    const auto sample = QFileInfo(m_sample->text()).completeBaseName();
+    m_output->setText(folder.isEmpty() ? QString{} : QDir(folder).filePath(sample + "_bond.h5"));
+    invalidateInputs();
 }
 
 QJsonObject BondWorkspace::configuration() const {
     auto c = m_base;
-    c["input"] = QJsonObject{{"sample_nxs", m_sample->text().trimmed()},
-                             {"calibration_nxs", m_foil->text().trimmed()},
-                             {"roi_table", m_roi->text().trimmed()}};
-    auto acq = c.value("acquisition").toObject(), rec = c.value("reconstruction").toObject(),
-         runtime = c.value("runtime").toObject();
-    acq["sample_exposure_s"] = m_sampleExposure->value();
-    acq["calibration_exposure_s"] = m_foilExposure->value();
-    acq["monitor"] = m_monitor->text().trimmed();
-    acq["detector"] = m_detector->text().trimmed();
+    for (auto it = m_inputs.cbegin(); it != m_inputs.cend(); ++it) {
+        const auto keys = it.key().split('.');
+        auto group = c.value(keys[0]).toObject();
+        group[keys[1]] = ImagingInputUi::read(it.value(), it.key());
+        c[keys[0]] = group;
+    }
+    auto rec = c.value("reconstruction").toObject(), runtime = c.value("runtime").toObject();
     rec["fit_gains"] = m_fitGains->isChecked();
     rec["anchor_roi"] = m_anchor->text().trimmed();
     rec["nnls_max_iterations"] = m_iterations->value();
     rec["nnls_tolerance"] = m_tolerance->value();
     const auto output = m_output->text().trimmed();
     runtime["output_dir"] = output.isEmpty() ? QDir::currentPath() : QFileInfo(output).absolutePath();
-    c["acquisition"] = acq;
     c["reconstruction"] = rec;
     c["runtime"] = runtime;
     return Imaging::config(c, QDir::currentPath());
@@ -620,10 +704,13 @@ void BondWorkspace::start(bool validateOnly) {
         if (!validateOnly) {
             if (QFileInfo(path).suffix().isEmpty())
                 path += ".h5";
-            if (!QFileInfo(path).absoluteDir().exists())
-                ImageUtil::fail(tr("四维结果的保存目录不存在。"));
             if (QFileInfo::exists(path))
                 ImageUtil::fail(tr("结果文件已存在，请选择新文件名。"));
+            if (config["output"].toObject()["plots"].toBool() &&
+                QFileInfo::exists(BondImaging::diagnosticPngPath(path)))
+                ImageUtil::fail(tr("诊断 PNG 已存在，请选择新的结果文件名。"));
+            if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+                ImageUtil::fail(tr("无法建立四维结果的保存目录。"));
             m_output->setText(path);
             config = configuration();
         }
@@ -649,6 +736,8 @@ void BondWorkspace::start(bool validateOnly) {
                     Qt::QueuedConnection);
             });
             BondImaging::save(path, *out.volume, m_stop);
+            out.volume->bandDiagnostics.clear();
+            out.volume->diagnosticImage = {};
             out.message = tr("四维结果已保存到 %1").arg(path);
             return out;
         });

@@ -1,5 +1,6 @@
 #include "ImagingDialog.h"
 #include "ImagingIO.h"
+#include "ImagingInputUi.h"
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectrumPlot.h"
@@ -174,8 +175,32 @@ void ImagingDialog::buildUi() {
     auto inputLayout = new QHBoxLayout(m_inputs);
     auto left = new QWidget;
     auto ll = new QVBoxLayout(left);
-    auto files = new QGroupBox(tr("原始文件与共用 ROI"));
-    auto ff = new QFormLayout(files);
+    inputLayout->addWidget(scrollBody(left), 3);
+    auto right = new QWidget;
+    auto rr = new QVBoxLayout(right);
+    ImagingInputUi::build(
+        this, ll, rr, m_fields, m_availableFiles, addText, addNumber, [this] { invalidate(); },
+        [this](const QString &file) {
+            if (!QFileInfo::exists(file)) {
+                status(tr("请先选择样品文件。"), true);
+                return;
+            }
+            if (!isWindow()) {
+                emit roiRequested(file);
+                return;
+            }
+            RoiDialog dialog(file, tr("成像数据处理"), this);
+            dialog.exec();
+            const auto canonical = QFileInfo(file).canonicalFilePath();
+            const auto draft =
+                QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/roi-drafts/" +
+                QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha256).toHex() + ".json";
+            if (QFileInfo::exists(draft))
+                useRoiDraft(canonical, draft);
+            else
+                status(tr("此样品尚无共用 ROI 草稿，请先选取或载入已有方案。"), true);
+        });
+    ll->addStretch();
     auto fileField = [this](QFormLayout *form, const QString &key, const QString &label,
                             bool output = false) {
         auto row = new QWidget;
@@ -208,112 +233,6 @@ void ImagingDialog::buildUi() {
                 edit->setText(path);
         });
     };
-    fileField(ff, "input.calibration_nxs", tr("薄膜标定"));
-    fileField(ff, "input.sample_nxs", tr("样品成像"));
-    fileField(ff, "input.roi_table", tr("ROI 方案 / TSV"));
-    auto roiButtons = new QHBoxLayout;
-    auto selectRoi = new QPushButton(tr("选取共用 ROI…"));
-    roiButtons->addWidget(selectRoi);
-    ff->addRow(roiButtons);
-    auto roiNote = new QLabel(tr("保留框内固定像素，不做自动寻峰或阈值掩膜。旧 TSV 的平移/扩展按表应用。共用 "
-                                 "ROI 中的失效晶体保持排除；仅使用所选探测器。"));
-    roiNote->setWordWrap(true);
-    ff->addRow(roiNote);
-    ll->addWidget(files);
-    auto useDraft = [this] {
-        auto sample = qobject_cast<QLineEdit *>(m_fields["input.sample_nxs"])->text();
-        auto canonical = QFileInfo(sample).canonicalFilePath();
-        auto path = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/roi-drafts/" +
-                    QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha256).toHex() +
-                    ".json";
-        if (canonical.isEmpty() || !QFileInfo::exists(path)) {
-            status(tr("此样品尚无共用 ROI 草稿，请先选取或载入已有方案。"), true);
-            return;
-        }
-        qobject_cast<QLineEdit *>(m_fields["input.roi_table"])->setText(path);
-    };
-    connect(selectRoi, &QPushButton::clicked, this, [this, useDraft] {
-        auto file = qobject_cast<QLineEdit *>(m_fields["input.sample_nxs"])->text();
-        if (!QFileInfo::exists(file)) {
-            status(tr("请先选择样品文件。"), true);
-            return;
-        }
-        if (!isWindow()) {
-            emit roiRequested(file);
-            return;
-        }
-        RoiDialog dialog(file, tr("成像数据处理"), this);
-        dialog.exec();
-        useDraft();
-    });
-    auto acq = new QGroupBox(tr("采集与尺度（沿用原成像归一化）"));
-    auto af = new QFormLayout(acq);
-    addText(af, "acquisition.detector", tr("探测器"));
-    addText(af, "acquisition.monitor", tr("入射监测通道"));
-    addNumber(af, "acquisition.calibration_exposure_s", tr("薄膜曝光 / s"));
-    addNumber(af, "acquisition.sample_exposure_s", tr("样品曝光 / s"));
-    addNumber(af, "acquisition.foil_thickness_mm", tr("薄膜厚度 / mm"));
-    addNumber(af, "acquisition.detector_pixel_pitch_mm", tr("探测器像素间距 / mm"));
-    auto scanLoops = new QWidget;
-    auto loopLayout = new QVBoxLayout(scanLoops);
-    loopLayout->setContentsMargins(0, 0, 0, 0);
-    auto loopTabs = new QTabWidget;
-    loopLayout->addWidget(loopTabs);
-    auto addLoops = [this, loopTabs](const QString &role, const QString &label, const QStringList &axes) {
-        auto page = new QWidget;
-        auto form = new QFormLayout(page);
-        auto order = new QComboBox;
-        const auto orderKey = "scan_loops." + role + "_order";
-        order->setObjectName(orderKey);
-        order->addItem(tr("自动（按文件计划）"), QString());
-        auto permutation = axes;
-        std::sort(permutation.begin(), permutation.end());
-        do {
-            order->addItem(permutation.join(QStringLiteral(" → ")), permutation.join(','));
-        } while (std::next_permutation(permutation.begin(), permutation.end()));
-        m_fields[orderKey] = order;
-        form->addRow(tr("循环顺序（外 → 内）"), order);
-        connect(order, &QComboBox::currentIndexChanged, this, &ImagingDialog::invalidate);
-        for (const auto &axis : axes) {
-            auto points = new QSpinBox;
-            const auto key = "scan_loops." + role + '_' + axis.toLower() + "_points";
-            points->setObjectName(key);
-            points->setRange(1, 100000);
-            points->setSpecialValueText(tr("自动"));
-            points->setKeyboardTracking(false);
-            points->setProperty("automaticLoopCount", true);
-            m_fields[key] = points;
-            form->addRow(tr("%1 层帧数（扫描点）").arg(axis), points);
-            connect(points, &QSpinBox::valueChanged, this, &ImagingDialog::invalidate);
-        }
-        loopTabs->addTab(page, label);
-    };
-    addLoops("sample", tr("样品成像"), {"Y", "Z", "DCM"});
-    addLoops("calibration", tr("薄膜标定"), {"X", "DCM"});
-    auto loopNote = new QLabel(
-        tr("手动顺序需与文件的扫描计划一致。各层帧数可单独指定，程序按文件扫描范围和逐帧坐标校验。"));
-    loopNote->setWordWrap(true);
-    loopLayout->addWidget(loopNote);
-    af->addRow(WorkflowUi::disclosure(tr("扫描循环与各层帧数"), scanLoops));
-    addNumber(af, "runtime.chunk_frames", tr("每批读取帧数（缓存）"), true);
-    auto normNote = new QLabel(
-        tr("每个网格单元使用 Σ计数 / Σ(I0 × 曝光)。I0 必须为正，不取绝对值，也不应用谱学的异常点替换。"));
-    normNote->setWordWrap(true);
-    af->addRow(normNote);
-    ll->addWidget(WorkflowUi::disclosure(tr("采集与物理尺度"), acq, true));
-    ll->addStretch();
-    inputLayout->addWidget(scrollBody(left), 3);
-    auto right = new QWidget;
-    auto rr = new QVBoxLayout(right);
-    auto rois = new QGroupBox(tr("ROI 编号与标签"));
-    auto rf = new QFormLayout(rois);
-    addText(rf, "roi.excluded_ids", tr("排除原编号（逗号分隔）"), 2);
-    addText(rf, "roi.label_overrides", tr("标签修正（JSON）"), 3);
-    auto labels = new QLabel(tr("例如排除 31,44，标签修正 {\"35\":\"VU-A3\"}。增益锚点使用 原编号_标签，例如 "
-                                "36_VU-C1。默认不猜测占位框或自动更换锚点。"));
-    labels->setWordWrap(true);
-    rf->addRow(labels);
-    rr->addWidget(WorkflowUi::disclosure(tr("高级：ROI 排除与标签修正"), rois));
     auto output = new QGroupBox(tr("结果与诊断"));
     auto of = new QFormLayout(output);
     fileField(of, "runtime.output_dir", tr("新输出目录"), true);
@@ -566,38 +485,7 @@ QJsonObject ImagingDialog::configuration() const {
             put(c, i.key(), QJsonValue());
             continue;
         }
-        if (auto box = qobject_cast<QCheckBox *>(i.value()))
-            put(c, i.key(), box->isChecked());
-        else if (auto combo = qobject_cast<QComboBox *>(i.value()))
-            put(c, i.key(), combo->currentData().toString());
-        else if (auto spin = qobject_cast<QSpinBox *>(i.value())) {
-            const bool automatic =
-                spin->property("automaticLoopCount").toBool() && spin->value() == spin->minimum();
-            put(c, i.key(), automatic ? QJsonValue() : QJsonValue(spin->value()));
-        } else if (auto edit = qobject_cast<QLineEdit *>(i.value())) {
-            auto text = edit->text().trimmed();
-            int kind = edit->property("fieldKind").toInt();
-            if (kind == 1) {
-                bool ok;
-                double v = text.toDouble(&ok);
-                if (!ok || !std::isfinite(v))
-                    ImageUtil::fail("Invalid numeric parameter: " + i.key());
-                put(c, i.key(), v);
-            } else if (kind == 2) {
-                QJsonArray ids;
-                for (const auto &id : text.split(QRegularExpression("[,，;；\\s]+"), Qt::SkipEmptyParts))
-                    ids.append(id);
-                put(c, i.key(), ids);
-            } else if (kind == 3 || kind == 4) {
-                QJsonParseError error;
-                auto doc = QJsonDocument::fromJson(text.toUtf8(), &error);
-                if (error.error != QJsonParseError::NoError || (kind == 3 && !doc.isObject()) ||
-                    (kind == 4 && !doc.isArray()))
-                    ImageUtil::fail("Invalid JSON parameter: " + i.key());
-                put(c, i.key(), kind == 3 ? QJsonValue(doc.object()) : QJsonValue(doc.array()));
-            } else
-                put(c, i.key(), text);
-        }
+        put(c, i.key(), ImagingInputUi::read(i.value(), i.key()));
     }
     return Imaging::config(c, QDir::currentPath());
 }
@@ -608,30 +496,7 @@ void ImagingDialog::applyConfiguration(const QJsonObject &config) {
     m_base = config;
     for (auto i = m_fields.begin(); i != m_fields.end(); ++i) {
         auto value = fieldValue(config, i.key());
-        if (auto box = qobject_cast<QCheckBox *>(i.value()))
-            box->setChecked(value.toBool());
-        else if (auto combo = qobject_cast<QComboBox *>(i.value()))
-            combo->setCurrentIndex(std::max(0, combo->findData(value.toString())));
-        else if (auto spin = qobject_cast<QSpinBox *>(i.value()))
-            spin->setValue(value.toInt(spin->minimum()));
-        else if (auto edit = qobject_cast<QLineEdit *>(i.value())) {
-            int kind = edit->property("fieldKind").toInt();
-            if (kind == 1)
-                edit->setText(value.isNull() ? "0" : QString::number(value.toDouble(), 'g', 15));
-            else if (kind == 2) {
-                QStringList ids;
-                for (auto id : value.toArray())
-                    ids.append(id.toString());
-                edit->setText(ids.join(','));
-            } else if (kind == 3)
-                edit->setText(
-                    QString::fromUtf8(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)));
-            else if (kind == 4)
-                edit->setText(
-                    QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact)));
-            else
-                edit->setText(value.toString());
-        }
+        ImagingInputUi::write(i.value(), value);
         if (m_auto.contains(i.key())) {
             m_auto[i.key()]->setChecked(value.isNull());
             i.value()->setEnabled(!value.isNull());

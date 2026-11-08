@@ -536,7 +536,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
     c["roi"] = roi;
     return c;
 }
-QJsonObject Imaging::loadConfig(const QString &file) {
+QJsonObject Imaging::loadConfig(const QString &file, QString *bondOutputFile) {
     QFile f(file);
     if (!f.open(QIODevice::ReadOnly))
         fail("Cannot open imaging config: " + file);
@@ -547,7 +547,14 @@ QJsonObject Imaging::loadConfig(const QString &file) {
     auto doc = QJsonDocument::fromJson(bytes, &error);
     if (error.error != QJsonParseError::NoError || !doc.isObject())
         fail("Invalid imaging JSON: " + error.errorString());
-    return config(doc.object(), QFileInfo(file).absolutePath());
+    auto object = doc.object();
+    const auto output = object.take("bond_output_file");
+    if (bondOutputFile) {
+        const auto path = output.toString().trimmed();
+        *bondOutputFile =
+            path.isEmpty() ? QString{} : QFileInfo(QFileInfo(file).absoluteDir(), path).absoluteFilePath();
+    }
+    return config(object, QFileInfo(file).absolutePath());
 }
 ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool &stop,
                                     bool requireMatchedBand) {

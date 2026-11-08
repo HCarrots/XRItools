@@ -51,9 +51,36 @@ class GuiTests : public QObject {
         QVERIFY(work && work->isVisible());
         auto tabs = work->findChild<QTabWidget *>("BondSteps");
         QVERIFY(tabs && !tabs->isTabEnabled(2));
+        const auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
         const auto external = qEnvironmentVariable("XRI_BOND_TEST_VOLUME");
         if (external.isEmpty()) {
             work->applyConfiguration(ImagingFixture::create(temp.path(), false, true, true, true));
+            auto sampleOrder = work->findChild<QComboBox *>("scan_loops.sample_order");
+            auto sampleY = work->findChild<QSpinBox *>("scan_loops.sample_y_points");
+            auto diagnosticPng = work->findChild<QCheckBox *>("output.plots");
+            auto diagnostics = work->findChild<QCheckBox *>("output.save_diagnostics");
+            auto output = work->findChild<QLineEdit *>("BondOutput");
+            QVERIFY(sampleOrder && sampleY && diagnosticPng && diagnostics && output);
+            sampleOrder->setCurrentIndex(sampleOrder->findData("DCM,Z,Y"));
+            sampleY->setValue(2);
+            diagnosticPng->setChecked(true);
+            diagnostics->setChecked(true);
+            output->setText(temp.filePath("result.h5"));
+            const auto configPath = temp.filePath("bond-config.json");
+            QVERIFY(work->saveConfiguration(configPath));
+            sampleOrder->setCurrentIndex(0);
+            sampleY->setValue(1);
+            diagnosticPng->setChecked(false);
+            output->clear();
+            QVERIFY(work->importConfiguration(configPath));
+            QCOMPARE(sampleOrder->currentData().toString(), QStringLiteral("DCM,Z,Y"));
+            QCOMPARE(sampleY->value(), 2);
+            QCOMPARE(output->text(), temp.filePath("result.h5"));
+            QVERIFY(diagnosticPng->isChecked() && diagnostics->isChecked());
+            if (!dir.isEmpty()) {
+                QVERIFY(QDir().mkpath(dir));
+                QVERIFY(window.grab().save(QDir(dir).filePath("files-and-roi.png")));
+            }
             auto validate = work->findChild<QPushButton *>("CheckBondInputs");
             auto run = work->findChild<QPushButton *>("RunBondVolume");
             QVERIFY(validate && run && !run->isEnabled());
@@ -61,11 +88,12 @@ class GuiTests : public QObject {
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QCOMPARE(tabs->currentIndex(), 1);
             QVERIFY(run->isEnabled());
-            auto output = work->findChild<QLineEdit *>("BondOutput");
-            output->setText(temp.filePath("result.h5"));
             run->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QVERIFY(work->hasResult() && QFile::exists(output->text()));
+            QVERIFY(QFile::exists(BondImaging::diagnosticPngPath(output->text())));
+            QVERIFY(!HdfFile::inspect(output->text(), "/entry/bond/band_diagnostics/1_test/residual_pyz")
+                         .dims.isEmpty());
             work->openVolume(output->text());
         } else {
             work->openVolume(external);
@@ -107,7 +135,6 @@ class GuiTests : public QObject {
             source->setCurrentIndex(0);
             options->click();
         }
-        auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
         if (!dir.isEmpty()) {
             QVERIFY(QDir().mkpath(dir));
             QVERIFY(window.grab().save(QDir(dir).filePath("voxel.png")));
@@ -227,6 +254,17 @@ class GuiTests : public QObject {
         auto roi = image->findChild<QLineEdit *>("input.roi_table");
         QVERIFY(QFileInfo::exists(roi->text()));
         QVERIFY(!image->findChild<QPushButton *>("RunImaging")->isVisible());
+        auto bond = window.openBondImaging();
+        auto bondSample = bond->findChild<QLineEdit *>("input.sample_nxs");
+        auto bondRoi = bond->findChild<QLineEdit *>("input.roi_table");
+        auto selectRoi = bond->findChild<QPushButton *>("SelectImagingInputRoi");
+        QVERIFY(bondSample && bondRoi && selectRoi);
+        bondSample->setText(file);
+        selectRoi->click();
+        QCOMPARE(stack->currentWidget(), editor);
+        editor->findChild<QPushButton *>("ReturnFromRoi")->click();
+        QCOMPARE(stack->currentWidget(), bond);
+        QCOMPARE(bondRoi->text(), roi->text());
         window.findChild<QAction *>("ShowDataBrowser")->trigger();
         QCOMPARE(stack->currentWidget(), browser);
         QCOMPARE(window.currentFile(), QFileInfo(file).canonicalFilePath());

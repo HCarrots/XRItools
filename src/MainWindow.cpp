@@ -414,6 +414,8 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
             m_spectroscopy->useRoiDraft(file, path);
         if (m_imaging)
             m_imaging->useRoiDraft(file, path);
+        if (m_bond)
+            m_bond->useRoiDraft(file, path);
     }
     auto explorer = findChild<QDockWidget *>("ExplorerDock");
     if (m_workspaces->currentWidget() == m_browser && page != m_browser)
@@ -469,7 +471,11 @@ BondWorkspace *MainWindow::openBondImaging(int step) {
     if (!m_bond) {
         m_bond = new BondWorkspace(m_file, this);
         m_workspaces->addWidget(m_bond);
+        connect(m_bond, &BondWorkspace::roiRequested, this, [this](const QString &file) {
+            openRoi(file, m_bond->findChild<QLineEdit *>("input.roi_table")->text());
+        });
     }
+    m_bond->setAvailableFiles(openedFiles());
     if (step >= 0)
         m_bond->selectStep(step);
     showWorkspace(m_bond, tr("化学键衬度分析 · 四维重建 → 体素谱 → 衬度图"));
@@ -488,6 +494,10 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
     if (source.isEmpty() && m_workspaces->currentWidget() == m_imaging) {
         selected = m_imaging->findChild<QLineEdit *>("input.sample_nxs")->text();
         roiScheme = m_imaging->findChild<QLineEdit *>("input.roi_table")->text();
+    }
+    if (source.isEmpty() && m_workspaces->currentWidget() == m_bond) {
+        selected = m_bond->findChild<QLineEdit *>("input.sample_nxs")->text();
+        roiScheme = m_bond->findChild<QLineEdit *>("input.roi_table")->text();
     }
     const QString file = QFileInfo(selected).canonicalFilePath();
     if (file.isEmpty()) {
@@ -508,6 +518,8 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
                 openSpectroscopy(0);
             else if (m_roiReturn == m_imaging)
                 openImaging(0);
+            else if (m_roiReturn == m_bond)
+                openBondImaging(0);
             else
                 showWorkspace(m_browser, tr("数据浏览器"));
         });
@@ -608,6 +620,8 @@ void MainWindow::syncFiles() {
         m_spectroscopy->setAvailableFiles(openedFiles());
     if (m_imaging)
         m_imaging->setAvailableFiles(openedFiles());
+    if (m_bond)
+        m_bond->setAvailableFiles(openedFiles());
     QSignalBlocker block(m_files);
     m_files->clear();
     for (const auto &file : openedFiles()) {
