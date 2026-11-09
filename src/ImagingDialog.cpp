@@ -108,20 +108,20 @@ void ImagingDialog::selectStep(int step) {
 }
 void ImagingDialog::buildUi() {
     auto root = new QVBoxLayout(this);
+    WorkflowUi::compact(root);
     m_configTools = new QWidget;
     auto toolbar = new QHBoxLayout(m_configTools);
     toolbar->setContentsMargins(0, 0, 0, 0);
-    m_importButton = new QPushButton(tr("导入旧版 JSON 配置…"));
+    m_importButton = new QPushButton(tr("载入已有方案…"));
     m_importButton->setObjectName("ImportImagingConfig");
     m_exportButton = new QPushButton(tr("保存当前配置…"));
     auto load = new QPushButton(tr("查看已有重建…"));
     toolbar->addWidget(m_importButton);
     toolbar->addWidget(m_exportButton);
     toolbar->addWidget(load);
-    toolbar->addStretch();
-    root->addWidget(m_configTools);
     m_tabs = new QTabWidget;
     m_tabs->setObjectName("ImagingSteps");
+    m_tabs->setCornerWidget(m_configTools);
     root->addWidget(m_tabs, 1);
     auto addText = [this](QFormLayout *layout, const QString &key, const QString &label, int kind = 0) {
         auto edit = new QLineEdit;
@@ -173,6 +173,7 @@ void ImagingDialog::buildUi() {
     };
     m_inputs = new QWidget;
     auto inputLayout = new QHBoxLayout(m_inputs);
+    WorkflowUi::compact(inputLayout);
     auto left = new QWidget;
     auto ll = new QVBoxLayout(left);
     inputLayout->addWidget(scrollBody(left), 3);
@@ -313,6 +314,7 @@ void ImagingDialog::buildUi() {
     m_tabs->addTab(m_parameters, tr("2 重建参数"));
     auto review = new QWidget;
     auto rvl = new QVBoxLayout(review);
+    WorkflowUi::compact(rvl);
     auto batch = new QHBoxLayout;
     batch->addWidget(new QLabel(tr("ROI 保持固定像素顺序；支持 Ctrl / Shift 多选")));
     batch->addStretch();
@@ -321,7 +323,8 @@ void ImagingDialog::buildUi() {
     batch->addWidget(m_excludeButton);
     batch->addWidget(m_includeButton);
     rvl->addLayout(batch);
-    auto split = new QSplitter(Qt::Vertical);
+    auto split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
     m_rois = new QTableWidget(0, 8);
     m_rois->setObjectName("ImagingRois");
     m_rois->setHorizontalHeaderLabels({tr("原编号"), tr("标签 / 锚点键"), tr("状态"), tr("像素"), tr("PSF"),
@@ -335,13 +338,14 @@ void ImagingDialog::buildUi() {
     m_validationText = new QPlainTextEdit;
     m_validationText->setReadOnly(true);
     split->addWidget(m_validationText);
-    split->setSizes({450, 220});
+    split->setSizes({840, 420});
     rvl->addWidget(split, 1);
     m_tabs->addTab(review, tr("3 输入与标定检查"));
     connect(m_excludeButton, &QPushButton::clicked, this, [this] { exclusions(true); });
     connect(m_includeButton, &QPushButton::clicked, this, [this] { exclusions(false); });
     auto volume = new QWidget;
     auto vl = new QVBoxLayout(volume);
+    WorkflowUi::compact(vl);
     auto tools = new QHBoxLayout;
     m_method = new QComboBox;
     m_method->addItem(tr("主结果"), 0);
@@ -393,8 +397,10 @@ void ImagingDialog::buildUi() {
     diagnostic->addTab(m_sensitivity, tr("X 灵敏度"));
     auto trajectories = new QWidget;
     auto tl = new QVBoxLayout(trajectories);
+    WorkflowUi::compact(tl);
     m_psfChoice = new QComboBox;
-    tl->addWidget(m_psfChoice);
+    m_psfChoice->setMinimumContentsLength(12);
+    tl->addWidget(m_psfChoice, 0, Qt::AlignLeft);
     m_trajectory = new SpectrumPlot;
     tl->addWidget(m_trajectory, 1);
     diagnostic->addTab(trajectories, tr("质心轨迹"));
@@ -410,14 +416,13 @@ void ImagingDialog::buildUi() {
     diagnostic->addTab(m_summary, tr("完整摘要"));
     m_tabs->addTab(diagnostic, tr("5 诊断与日志"));
     connect(m_psfChoice, &QComboBox::currentIndexChanged, this, [this] { refreshTrajectory(); });
-    m_status = new QLabel(tr("可导入旧程序配置，或选择薄膜、样品和 ROI 后校验输入。"));
+    m_status = new QLabel(tr("可载入已有方案，或选择薄膜、样品和 ROI 后校验输入。"));
     m_status->setObjectName("ImagingStatus");
     m_status->setWordWrap(true);
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    root->addWidget(m_status);
     m_progress = new QProgressBar;
+    m_progress->setMaximumWidth(140);
     m_progress->hide();
-    root->addWidget(m_progress);
     auto actions = new QHBoxLayout;
     m_validateButton = new QPushButton(tr("仅校验输入"));
     m_validateButton->setObjectName("ValidateImaging");
@@ -431,7 +436,8 @@ void ImagingDialog::buildUi() {
     m_nextButton = new QPushButton(tr("下一步"));
     m_nextButton->setObjectName("NextImagingStep");
     actions->addWidget(m_previousButton);
-    actions->addStretch();
+    actions->addWidget(m_status, 1);
+    actions->addWidget(m_progress);
     actions->addWidget(m_validateButton);
     actions->addWidget(m_runButton);
     actions->addWidget(m_nextButton);
@@ -453,7 +459,7 @@ void ImagingDialog::buildUi() {
         status(tr("正在取消，等待当前读取或迭代结束…"));
     });
     connect(m_importButton, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("导入成像 JSON 配置"), {}, "JSON (*.json)");
+        auto path = QFileDialog::getOpenFileName(this, tr("载入已有方案"), {}, "JSON (*.json)");
         if (!path.isEmpty())
             importConfiguration(path);
     });
@@ -511,7 +517,7 @@ bool ImagingDialog::importConfiguration(const QString &path) {
     try {
         auto c = Imaging::loadConfig(path);
         applyConfiguration(c);
-        status(tr("已导入旧版配置：%1。请核对原文件路径和新输出目录。旧结果不会覆盖。").arg(path));
+        status(tr("已载入方案 %1。请核对原文件路径并选择新的输出目录。").arg(path));
         return true;
     } catch (const std::exception &e) {
         status(QString::fromUtf8(e.what()), true);
@@ -526,7 +532,7 @@ void ImagingDialog::invalidate() {
     m_haveResult = false;
     m_result = ImagingResult();
     m_image->setData({});
-    m_info->setText(tr("参数已变更，需重新校验或重建。"));
+    m_info->hide();
     m_summary->clear();
     m_sensitivity->setCurves({}, {});
     m_spectrum->setCurves({}, {});
@@ -671,6 +677,7 @@ void ImagingDialog::refreshResult() {
                              !m_result.tv.size()                ? tr("关闭")
                              : summary["tv_converged"].toBool() ? tr("收敛")
                                                                 : tr("未收敛，主结果回退 NNLS")));
+    m_info->show();
     m_sensitivity->setCurves({{"Sensitivity", axes[0], m_result.sensitivity, QColor(0, 80, 160), false}},
                              tr("完整 X 范围的灵敏度（含增益和 Δx / 薄膜厚度）"), "X (mm)", "sqrt(sum A^2)");
     QVector<double> index;
@@ -699,6 +706,8 @@ void ImagingDialog::refreshResult() {
             m_rois->item(row, 7)->setText(m_result.rejected[key].toString());
         }
     }
+    for (int column : {4, 5, 6})
+        m_rois->resizeColumnToContents(column);
     refreshTrajectory();
     refreshImage();
 }

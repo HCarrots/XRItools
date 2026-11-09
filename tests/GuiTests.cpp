@@ -8,6 +8,7 @@
 #include "SpectroscopyDialog.h"
 #include "SpectrumFixture.h"
 #include "SpectrumPlot.h"
+#include "SpectrumProcessing.h"
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -18,6 +19,7 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -124,6 +126,10 @@ class GuiTests : public QObject {
             auto apply = work->findChild<QPushButton *>("ApplyBondSpectralProcessing");
             QVERIFY(options && background && apply && !apply->isVisible());
             options->click();
+            if (!dir.isEmpty()) {
+                QTest::qWait(60);
+                QVERIFY(window.grab().save(QDir(dir).filePath("voxel-processing.png")));
+            }
             background->setText("1:2");
             apply->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
@@ -131,12 +137,54 @@ class GuiTests : public QObject {
             source->setCurrentIndex(0);
             QCOMPARE(spectrum->curves().size(), 1);
             source->setCurrentIndex(1);
-            QCOMPARE(spectrum->curves().size(), 2);
+            QCOMPARE(spectrum->curves().size(), 3);
+            auto mode = work->findChild<QComboBox *>("BondBackgroundMode");
+            auto widePath = work->findChild<QLineEdit *>("BondWideSpectrum");
+            auto status = work->findChild<QLabel *>("BondStatus");
+            QVERIFY(mode && widePath && status);
+            ProcessedSpectrum reference;
+            reference.energyEv = {0, 1000};
+            reference.intensityUnit = "a.u.";
+            reference.crystals = {{"test", {1, 2}}, {"other", {2, 1}}};
+            reference.geometry = {{"test", {5, 1, 60}}, {"other", {12, 1, 120}}};
+            auto referencePath = temp.filePath("wide.h5");
+            SpectrumProcessing::save(referencePath, reference);
+            mode->setCurrentIndex(1);
+            widePath->setText(referencePath);
+            apply->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(source->itemText(1), QStringLiteral("低 q 线性扣除"));
+            auto showTransfer = work->findChild<QCheckBox *>("BondShowEnergyTransfer");
+            auto analyzer = work->findChild<QDoubleSpinBox *>("BondAnalyzerReference");
+            QVERIFY(showTransfer && analyzer);
+            analyzer->setValue(1);
+            showTransfer->setChecked(true);
+            QCOMPARE(source->currentIndex(), 1);
+            QCOMPARE(background->text(), QStringLiteral("1:2"));
+            showTransfer->setChecked(false);
+
+            const auto original = work->findChild<QLineEdit *>("BondOutput")->text();
+            auto mixed = BondImaging::load(original);
+            mixed.diagnostics.remove("crystal_labels"); // Exercise the legacy file's ROI keys.
+            mixed.diagnostics["crystal_keys"] = QJsonArray{"1_test", "2_other"};
+            auto mixedPath = temp.filePath("mixed.h5");
+            std::atomic_bool stop{false};
+            BondImaging::save(mixedPath, mixed, stop);
+            work->openVolume(mixedPath);
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            apply->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QVERIFY(status->text().contains(QStringLiteral("联合了多个晶体")));
+            QCOMPARE(source->count(), 1);
+            work->openVolume(original);
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            mode->setCurrentIndex(0);
             source->setCurrentIndex(0);
             options->click();
         }
         if (!dir.isEmpty()) {
             QVERIFY(QDir().mkpath(dir));
+            QTest::qWait(60);
             QVERIFY(window.grab().save(QDir(dir).filePath("voxel.png")));
         }
         plotTabs->setCurrentWidget(figure);

@@ -1,10 +1,12 @@
 #include "BondWorkspace.h"
 #include "BondFigures.h"
+#include "ComptonProcessing.h"
 #include "ImagingIO.h"
 #include "ImagingInputUi.h"
 #include "ScientificPlot.h"
 #include "SpectrumPlot.h"
 #include "WorkflowUi.h"
+#include <QJsonArray>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 #include <cmath>
@@ -18,6 +20,9 @@ QLabel *hint(const QString &text = {}) {
     auto label = new QLabel(text);
     label->setWordWrap(true);
     label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto policy = label->sizePolicy();
+    policy.setVerticalPolicy(QSizePolicy::Maximum);
+    label->setSizePolicy(policy);
     return label;
 }
 
@@ -83,12 +88,29 @@ DataSlice image(int width, int height, const QString &title, const std::function
 QString compact(double value) {
     return QString::number(value, 'g', 9);
 }
+
+QStringList contributingCrystals(const BondVolume &volume) {
+    const auto keys = volume.diagnostics.value("crystal_keys").toArray();
+    const auto labels = volume.diagnostics.value("crystal_labels").toArray();
+    QStringList result;
+    for (qsizetype i = 0; i < keys.size(); ++i) {
+        const auto key = keys[i].toString();
+        const auto label = labels.size() == keys.size() ? labels[i].toString() : key.section('_', 1);
+        if (label.isEmpty() || result.contains(label))
+            ImageUtil::fail(QObject::tr("重建结果的晶体标签缺失或重复，无法匹配逐晶体参考谱。"));
+        result.append(label);
+    }
+    if (result.isEmpty())
+        ImageUtil::fail(QObject::tr("重建结果缺少实际参与求解的晶体信息。"));
+    return result;
+}
 } // namespace
 
 BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     : QWidget(parent), m_base(Imaging::defaults()) {
     setObjectName("BondWorkspace");
     auto root = new QVBoxLayout(this);
+    WorkflowUi::compact(root);
     m_tabs = new QTabWidget;
     m_tabs->setObjectName("BondSteps");
     m_viewBar = new QWidget;
@@ -108,13 +130,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_selectedEnergy = new QLabel;
     energyPicker->addWidget(m_selectedEnergy);
     viewRow->addWidget(m_singleEnergy);
-    viewRow->addStretch();
-    root->addWidget(m_viewBar);
+    m_tabs->setCornerWidget(m_viewBar);
     root->addWidget(m_tabs, 1);
     auto filePage = new QWidget;
     auto fileLayout = new QVBoxLayout(filePage);
+    WorkflowUi::compact(fileLayout);
     auto fileActions = new QHBoxLayout;
-    auto import = new QPushButton(tr("导入旧版 JSON 配置…"));
+    auto import = new QPushButton(tr("载入已有方案…"));
     auto saveConfig = new QPushButton(tr("保存当前配置…"));
     auto reopen = new QPushButton(tr("查看已有四维重建…"));
     fileActions->addWidget(import);
@@ -204,6 +226,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
 
     auto runPage = new QWidget;
     auto runLayout = new QVBoxLayout(runPage);
+    WorkflowUi::compact(runLayout);
     auto solver = new QWidget;
     auto solverForm = new QFormLayout(solver);
     m_fitGains = new QCheckBox(tr("拟合相对晶体增益"));
@@ -233,15 +256,20 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     details->addTab(m_crystals, tr("晶体 ROI"));
     details->addTab(m_diagnostics, tr("诊断详情"));
     runLayout->addWidget(details, 1);
-    runLayout->addWidget(WorkflowUi::disclosure(tr("求解设置"), solver));
+    auto solveActions = new QHBoxLayout;
+    solveActions->addWidget(WorkflowUi::disclosureButton(tr("求解设置"), solver));
+    solveActions->addStretch();
+    runLayout->addWidget(solver);
     m_run = new QPushButton(tr("开始重建并保存"));
     m_run->setObjectName("RunBondVolume");
     m_run->setEnabled(false);
-    runLayout->addWidget(m_run, 0, Qt::AlignRight);
+    solveActions->addWidget(m_run);
+    runLayout->addLayout(solveActions);
     m_tabs->addTab(runPage, tr("2 四维重建"));
 
     auto voxelPage = new QWidget;
     auto voxelLayout = new QVBoxLayout(voxelPage);
+    WorkflowUi::compact(voxelLayout);
     auto coordinates = new QHBoxLayout;
     coordinates->addWidget(new QLabel(tr("空间索引")));
     m_x = index("BondVoxelX");
@@ -257,7 +285,6 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     coordinates->addWidget(m_y);
     coordinates->addWidget(new QLabel("Z"));
     coordinates->addWidget(m_z);
-    coordinates->addStretch();
     m_spectralStyleControl = new QWidget;
     auto styleRow = new QHBoxLayout(m_spectralStyleControl);
     styleRow->setContentsMargins(0, 0, 0, 0);
@@ -266,37 +293,73 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_spectralStyle->setObjectName("BondSpectralStyle");
     m_spectralStyle->addItems({tr("三维曲面"), tr("谱线瀑布")});
     styleRow->addWidget(m_spectralStyle);
-    coordinates->addWidget(m_spectralStyleControl);
-    voxelLayout->addLayout(coordinates);
 
     auto energyOptions = new QWidget;
     auto energyRow = new QHBoxLayout(energyOptions);
+    energyRow->setContentsMargins(0, 0, 0, 0);
     m_loss = new QCheckBox(tr("显示能量转移"));
+    m_loss->setObjectName("BondShowEnergyTransfer");
     m_analyzer = number(8, 0., 100., 0.);
+    m_analyzer->setObjectName("BondAnalyzerReference");
     m_analyzer->setSpecialValueText(tr("待输入"));
     m_analyzer->setToolTip(tr("输入适用于所有已选晶体的分析器参考能量。"));
     energyRow->addWidget(m_loss);
     energyRow->addWidget(new QLabel(tr("分析器参考 / keV")));
     energyRow->addWidget(m_analyzer);
     energyRow->addStretch();
-    voxelLayout->addWidget(WorkflowUi::disclosure(tr("能量坐标设置"), energyOptions));
+    coordinates->addSpacing(6);
+    coordinates->addWidget(WorkflowUi::disclosureButton(tr("能量坐标设置"), energyOptions));
     auto processing = new QWidget;
-    auto fitRow = new QHBoxLayout(processing);
+    auto processingLayout = new QVBoxLayout(processing);
+    processingLayout->setContentsMargins(0, 0, 0, 0);
+    auto fitRow = new QHBoxLayout;
+    m_backgroundMode = new QComboBox;
+    m_backgroundMode->setObjectName("BondBackgroundMode");
+    m_backgroundMode->addItems({tr("逐体素线性扣除"), tr("按 q 分流（高 q 康普顿与低 q 线性）")});
+    createComptonOptions();
+    auto reference = new QPushButton(tr("宽谱与康普顿参数…"));
+    reference->setObjectName("BondComptonParameters");
+    reference->hide();
+    connect(reference, &QPushButton::clicked, this, [this] { m_comptonOptions->exec(); });
+    auto modeRow = new QHBoxLayout;
+    modeRow->addWidget(m_backgroundMode);
+    modeRow->addWidget(reference);
+    modeRow->addStretch();
+    processingLayout->addLayout(modeRow);
     m_background = new QLineEdit;
     m_background->setObjectName("BondBackground");
     m_background->setPlaceholderText(tr("起点:终点，可填多段"));
     m_normalization = new QLineEdit;
+    m_normalization->setObjectName("BondAreaNormalization");
     m_normalization->setPlaceholderText(tr("起点:终点"));
     auto apply = new QPushButton(tr("应用谱处理"));
     apply->setObjectName("ApplyBondSpectralProcessing");
-    fitRow->addWidget(new QLabel(tr("线性背底")));
+    auto linearLabel = new QLabel(tr("线性拟合 / keV"));
+    fitRow->addWidget(linearLabel);
     fitRow->addWidget(m_background, 2);
-    fitRow->addWidget(new QLabel(tr("面积归一化")));
+    auto normalizationLabel = new QLabel(tr("面积归一化 / keV"));
+    normalizationLabel->setToolTip(tr("可选。在扣背底之后对指定区间积分并归一化。"));
+    fitRow->addWidget(normalizationLabel);
     fitRow->addWidget(m_normalization, 1);
     fitRow->addWidget(apply);
-    auto processingOptions = WorkflowUi::disclosure(tr("谱处理 · 扣背底与归一化"), processing);
-    processingOptions->findChild<QToolButton *>()->setObjectName("BondProcessingOptions");
-    voxelLayout->addWidget(processingOptions);
+    processingLayout->addLayout(fitRow);
+    auto processingHint = hint(tr("线性拟合可填多段入射能区。仅做面积归一化时，线性拟合区留空。"));
+    processingLayout->addWidget(processingHint);
+    connect(m_backgroundMode, &QComboBox::currentIndexChanged, this,
+            [this, reference, linearLabel, processingHint](int mode) {
+                reference->setVisible(mode != 0);
+                linearLabel->setText(mode ? tr("低 q 拟合 / keV") : tr("线性拟合 / keV"));
+                processingHint->setText(mode ? tr("纯低 q 体数据使用线性扣除。高 q 需单晶体重建和同一样品的逐晶体宽谱。")
+                                             : tr("线性拟合可填多段入射能区。仅做面积归一化时，线性拟合区留空。"));
+            });
+    auto processingOptions = WorkflowUi::disclosureButton(tr("扣背底与归一化"), processing);
+    processingOptions->setObjectName("BondProcessingOptions");
+    coordinates->addWidget(processingOptions);
+    coordinates->addStretch();
+    coordinates->addWidget(m_spectralStyleControl);
+    voxelLayout->addLayout(coordinates);
+    voxelLayout->addWidget(energyOptions);
+    voxelLayout->addWidget(processing);
     m_voxelInfo = hint(tr("载入四维结果后可点击 XY 切片查看单体素谱。"));
     voxelLayout->addWidget(m_voxelInfo);
     m_plots = new QTabWidget;
@@ -319,11 +382,12 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_plots->addTab(m_spectralFigure, tr("沿 X 三维谱图"));
     voxelLayout->addWidget(m_plots, 1);
     auto toFigures = new QPushButton(tr("查看衬度结果"));
-    voxelLayout->addWidget(toFigures, 0, Qt::AlignRight);
+    m_plots->setCornerWidget(toFigures);
     m_tabs->addTab(voxelPage, tr("3 选点与谱处理"));
 
     auto figurePage = new QWidget;
     auto figureLayout = new QVBoxLayout(figurePage);
+    WorkflowUi::compact(figureLayout);
     auto mapRow = new QHBoxLayout;
     m_mode = new QComboBox;
     m_mode->setObjectName("BondContrastMode");
@@ -349,6 +413,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_figures = new QTabWidget;
     auto montagePage = new QWidget;
     auto montageLayout = new QVBoxLayout(montagePage);
+    WorkflowUi::compact(montageLayout);
     auto montageRow = new QHBoxLayout;
     m_firstZ = index("BondFirstZ");
     m_countZ = index("BondCountZ");
@@ -369,6 +434,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_figures->addTab(montagePage, tr("XY 切片组"));
     auto surfacePage = new QWidget;
     auto surfaceLayout = new QVBoxLayout(surfacePage);
+    WorkflowUi::compact(surfaceLayout);
     auto surfaceRow = new QHBoxLayout;
     m_level = number(12, -1e12, 1e12, 0);
     m_level2 = number(12, -1e12, 1e12, 0);
@@ -406,7 +472,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     root->addLayout(footer);
 
     connect(import, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("选择成像配置"), {}, "JSON (*.json)");
+        auto path = QFileDialog::getOpenFileName(this, tr("载入已有方案"), {}, "JSON (*.json)");
         if (!path.isEmpty())
             importConfiguration(path);
     });
@@ -503,10 +569,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         if (result.processed) {
             m_processed = std::move(*result.processed);
             m_normalized = result.normalized;
+            m_subtracted = result.subtracted;
             {
                 const QSignalBlocker block(m_dataSource);
                 if (m_dataSource->count() == 1)
-                    m_dataSource->addItem(tr("谱处理后"));
+                    m_dataSource->addItem(result.processingMethod);
+                else
+                    m_dataSource->setItemText(1, result.processingMethod);
                 m_dataSource->setCurrentIndex(1);
             }
             refreshVoxel();
@@ -620,7 +689,7 @@ bool BondWorkspace::importConfiguration(const QString &path) {
         applyConfiguration(Imaging::loadConfig(path, &output));
         if (!output.isEmpty())
             m_output->setText(output);
-        status(tr("已载入成像配置，请核对文件和曝光。"));
+        status(tr("已载入方案，请核对文件和曝光。"));
         return true;
     } catch (const std::exception &error) {
         status(QString::fromUtf8(error.what()), true);
@@ -783,6 +852,7 @@ void BondWorkspace::installVolume(BondVolume volume) {
     m_volume = std::move(volume);
     m_processed.clear();
     m_normalized = false;
+    m_subtracted = false;
     if (m_dataSource->count() > 1)
         m_dataSource->removeItem(1);
     m_background->clear();
@@ -865,7 +935,7 @@ QString BondWorkspace::energyLabel() const {
 
 QString BondWorkspace::intensityLabel() const {
     if (showingProcessed() && m_normalized)
-        return m_transfer ? tr("面积归一强度 (1/eV)") : tr("面积归一强度 (1/keV)");
+        return tr("面积归一强度 (1/keV)");
     return showingProcessed() ? tr("扣背底后的相对强度") : tr("相对强度");
 }
 
@@ -897,18 +967,12 @@ void BondWorkspace::changeEnergyUnits() {
     }
     m_ea->setValue(transfer ? 1000 * (ea - m_referenceKev) : ea);
     m_eb->setValue(transfer ? 1000 * (eb - m_referenceKev) : eb);
-    m_background->clear();
-    m_normalization->clear();
-    m_processed.clear();
-    m_normalized = false;
-    if (m_dataSource->count() > 1)
-        m_dataSource->removeItem(1);
     m_refreshing = false;
     syncViewControls();
     refreshVoxel();
     refreshMap();
     if (!m_loss->isChecked() || transfer)
-        status(tr("能量坐标已更新，拟合区间按当前单位重新输入。"));
+        status(tr("显示能量坐标已更新。谱处理使用设置中标明的单位。"));
 }
 
 void BondWorkspace::refreshVoxel(bool refreshSection, bool refreshSlice) {
@@ -940,6 +1004,12 @@ void BondWorkspace::refreshVoxel(bool refreshSection, bool refreshSlice) {
     QVector<SpectrumCurve> curves;
     if (showingProcessed() && !m_normalized)
         curves.append({tr("重建原始谱"), e, raw, QColor("#929292"), true});
+    if (showingProcessed() && !m_normalized && m_subtracted) {
+        QVector<double> removed(e.size());
+        for (qsizetype i = 0; i < e.size(); ++i)
+            removed[i] = raw[i] - current[i];
+        curves.append({tr("扣除项"), e, removed, QColor("#b04a00"), true});
+    }
     if (!showingProcessed() && std::any_of(m_volume.converged.cbegin(), m_volume.converged.cend(),
                                            [](bool valid) { return !valid; }))
         m_voxelInfo->setText(tr("X %1 · Y %2 · Z %3 mm    原始谱含未收敛通道，详见重建诊断")
@@ -1050,28 +1120,141 @@ void BondWorkspace::refreshMontage() {
                           m_mode->currentIndex() == 1 || m_lo < 0., intensityLabel());
 }
 
+void BondWorkspace::createComptonOptions() {
+    m_comptonOptions = new QDialog(this);
+    m_comptonOptions->setWindowTitle(tr("按 q 分流的参考与参数"));
+    auto form = new QFormLayout(m_comptonOptions);
+    form->addRow(hint(tr("请选择同一样品、相同晶体标定且已做 I0 归一化的逐晶体宽谱。晶体按平均 q 分流。"
+                         "高 q 体素的能量转移按宽谱记录的晶体分析器能量计算。")));
+    auto fileRow = [&](const QString &label, const QString &name, const QString &filter) {
+        auto edit = new QLineEdit;
+        edit->setObjectName(name);
+        auto browse = new QPushButton(tr("浏览…"));
+        auto row = new QHBoxLayout;
+        row->addWidget(edit, 1);
+        row->addWidget(browse);
+        form->addRow(label, row);
+        connect(browse, &QPushButton::clicked, m_comptonOptions, [this, edit, label, filter] {
+            auto path = QFileDialog::getOpenFileName(m_comptonOptions, label, edit->text(), filter);
+            if (!path.isEmpty())
+                edit->setText(path);
+        });
+        return edit;
+    };
+    m_wideSpectrum = fileRow(tr("逐晶体宽谱"), "BondWideSpectrum", tr("逐晶体谱 (*.h5 *.hdf5 *.txt *.tsv)"));
+    m_highQ = number(3, 0, 1000, 9.5);
+    form->addRow(tr("高 q 最低值 / Å⁻¹"), m_highQ);
+    m_hfTable = fileRow(tr("HF 壳层表"), "BondHFTable", tr("DABAX (*.dat);;所有文件 (*)"));
+    const QSettings saved;
+    m_hfTable->setText(saved.value("spectroscopy/hfTable").toString());
+    m_composition = new QLineEdit(saved.value("spectroscopy/hfComposition").toString());
+    m_composition->setObjectName("BondHFComposition");
+    m_composition->setPlaceholderText("Li:1, Ni:0.9, Co:0.05, Mn:0.05, O:2");
+    form->addRow(tr("元素及原子计量"), m_composition);
+    m_coreScale = number(4, 0, 100, 1);
+    form->addRow(tr("HF 芯谱比例"), m_coreScale);
+    m_valenceCutoff = number(3, .01, 10000, 20);
+    form->addRow(tr("价电子结合能上限 / eV"), m_valenceCutoff);
+    const QStringList labels{tr("宽谱 HF 归一化"), tr("宽谱芯谱尾部直线"), tr("宽谱价电子轮廓拟合"),
+                             tr("体素高 q 残余直线"), tr("体素参考幅度匹配")};
+    const QStringList names{"HFNormalization", "CoreTail", "CleanReference", "HighResidual", "MatchWindow"};
+    for (qsizetype i = 0; i < labels.size(); ++i) {
+        m_comptonWindows[i] = new QLineEdit;
+        m_comptonWindows[i]->setObjectName("BondCompton" + names[i]);
+        m_comptonWindows[i]->setPlaceholderText(i == 0 || i == 4 ? tr("起点:终点")
+                                                               : tr("起点:终点，可填多段"));
+        form->addRow(labels[i] + tr(" / eV"), m_comptonWindows[i]);
+    }
+    form->addRow(hint(tr("体素幅度匹配使用一段与宽谱共有、避开待分析吸收边的能区。"
+                         "低 q 只需逐晶体谱中的 q 和主页面的线性拟合区间。")));
+    auto buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, m_comptonOptions, &QDialog::reject);
+    form->addRow(buttons);
+}
+
 void BondWorkspace::applySpectralProcessing() {
     if (!hasResult() || isBusy())
         return;
     try {
         BondSpectralSettings settings;
-        settings.background = windows(m_background->text());
+        const auto linear = m_background->text();
         const auto norm = windows(m_normalization->text());
         if (norm.size() > 1)
             ImageUtil::fail(tr("面积归一化请使用一段连续能区。"));
         if (!norm.isEmpty())
             settings.normalization = norm.first();
-        if (settings.background.isEmpty() && !settings.normalization)
+        const bool split = m_backgroundMode->currentIndex() == 1;
+        if (!split)
+            settings.background = windows(linear);
+        if (!split && settings.background.isEmpty() && !settings.normalization)
             ImageUtil::fail(tr("请填写线性背底或面积归一化能区。"));
+        const auto path = m_wideSpectrum->text().trimmed();
+        if (split && path.isEmpty())
+            ImageUtil::fail(tr("请先选择含晶体 q 的逐晶体宽谱。"));
+        ComptonSettings parameters;
+        parameters.highQMin = m_highQ->value();
+        parameters.coreScale = m_coreScale->value();
+        parameters.valenceCutoffEv = m_valenceCutoff->value();
+        parameters.hfTable = m_hfTable->text().trimmed();
+        parameters.composition = m_composition->text().trimmed();
+        QStringList ranges;
+        for (auto edit : m_comptonWindows)
+            ranges.append(edit->text());
         const auto volume = m_volume;
-        const auto e = energy();
-        launch(tr("正在逐体素处理谱…"), [this, volume, e, settings] {
+        auto process = [this, volume, settings, split, path, parameters, ranges, linear]() mutable {
             Work out;
+            const auto &e = volume.axes[0];
+            QString method = settings.background.isEmpty() ? tr("面积归一化") : tr("线性扣除");
+            if (split) {
+                auto wide = SpectrumProcessing::load(path, {});
+                if (!wide.wideCrystals.isEmpty())
+                    wide.crystals = std::move(wide.wideCrystals);
+                const auto labels = contributingCrystals(volume);
+                QStringList high;
+                for (const auto &label : labels) {
+                    const double q = wide.geometry.value(label).qMean;
+                    if (!wide.crystals.contains(label) || !std::isfinite(q) || q <= 0)
+                        ImageUtil::fail(tr("参考谱缺少晶体 %1 的匹配谱或有效 q 值。").arg(label));
+                    if (q >= parameters.highQMin)
+                        high.append(label);
+                }
+                if (high.isEmpty()) {
+                    settings.background = windows(linear);
+                    if (settings.background.isEmpty())
+                        ImageUtil::fail(tr("请填写低 q 线性拟合区间。"));
+                    method = tr("低 q 线性扣除");
+                } else {
+                    if (labels.size() != 1)
+                        ImageUtil::fail(tr("此结果联合了多个晶体并含高 q 晶体。请在第 2 步仅纳入目标高 q 晶体，"
+                                           "关闭相对晶体增益拟合并重新重建，再应用康普顿扣除。"));
+                    parameters.normalization = windows(ranges[0]);
+                    parameters.coreTail = windows(ranges[1]);
+                    parameters.cleanReference = windows(ranges[2]);
+                    parameters.highResidual = windows(ranges[3]);
+                    const auto match = windows(ranges[4]);
+                    if (parameters.highResidual.isEmpty() || match.size() != 1)
+                        ImageUtil::fail(tr("请填写高 q 残余直线区间和一段连续的体素参考幅度匹配区间。"));
+                    const auto &label = high.first();
+                    auto ref = transferCompton(wide, label, e, parameters, m_stop);
+                    auto incidentWindow = [analyzer = ref.analyzerKev](QPair<double, double> range) {
+                        return qMakePair(analyzer + range.first / 1000, analyzer + range.second / 1000);
+                    };
+                    for (auto window : parameters.highResidual)
+                        settings.background.append(incidentWindow(window));
+                    settings.compton = BondSpectralReference{std::move(ref.correction), std::move(ref.reference),
+                                                             std::move(ref.valence), incidentWindow(match.first())};
+                    method = tr("高 q 康普顿扣除 · %1").arg(label);
+                }
+            }
             out.processed = BondImaging::process(volume, e, settings, m_stop);
             out.normalized = settings.normalization.has_value();
-            out.message = tr("逐体素处理完成，未收敛通道和无效归一化体素以灰色显示。");
+            out.subtracted = !settings.background.isEmpty();
+            out.processingMethod = out.subtracted && out.normalized ? tr("%1 + 面积归一化").arg(method) : method;
+            out.message = tr("%1已应用于四维结果。无有效处理值的位置以灰色显示。").arg(out.processingMethod);
             return out;
-        });
+        };
+        launch(split ? tr("正在校验晶体 q、准备参考并处理体素谱…") : tr("正在逐体素处理谱…"),
+               std::move(process));
     } catch (const std::exception &error) {
         status(QString::fromUtf8(error.what()), true);
     }

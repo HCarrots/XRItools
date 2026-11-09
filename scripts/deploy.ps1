@@ -48,6 +48,9 @@ foreach ($prefix in @((Split-Path $QtRoot -Parent), (Split-Path $Hdf5Root -Paren
 $eigenNotices = Join-Path $OutputDirectory 'licenses\eigen3'
 New-Item -ItemType Directory -Path $eigenNotices -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot\third_party\eigen3\COPYING.MPL2", "$projectRoot\third_party\eigen3\COPYING.README", "$projectRoot\third_party\eigen3\COPYING.BSD" -Destination $eigenNotices -Force
+$lucideNotices = Join-Path $OutputDirectory 'licenses\lucide'
+New-Item -ItemType Directory -Path $lucideNotices -Force | Out-Null
+Copy-Item -LiteralPath "$projectRoot\assets\lucide\LICENSE", "$projectRoot\assets\lucide\LICENSE.feather" -Destination $lucideNotices -Force
 $imagingDocs = Join-Path $OutputDirectory 'docs'
 New-Item -ItemType Directory -Path $imagingDocs -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot\docs\imaging-migration.md", "$projectRoot\docs\imaging-comparison.json" -Destination $imagingDocs -Force

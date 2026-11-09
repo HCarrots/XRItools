@@ -2,24 +2,38 @@
 #include <QtWidgets>
 
 namespace WorkflowUi {
-inline QWidget *disclosure(const QString &title, QWidget *body, bool expanded = false) {
-    auto group = new QWidget;
-    auto layout = new QVBoxLayout(group);
-    layout->setContentsMargins(0, 0, 0, 0);
+inline void compact(QLayout *layout) {
+    layout->setContentsMargins(6, 4, 6, 4);
+    layout->setSpacing(4);
+}
+
+inline QToolButton *disclosureButton(const QString &title, QWidget *body, bool expanded = false) {
     auto toggle = new QToolButton;
     toggle->setText(title);
+    toggle->setAutoRaise(true);
     toggle->setCheckable(true);
     toggle->setChecked(expanded);
     toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
-    toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    layout->addWidget(toggle);
-    layout->addWidget(body);
+    const QIcon collapsedIcon(QStringLiteral(":/assets/lucide/chevron-right.svg"));
+    const QIcon expandedIcon(QStringLiteral(":/assets/lucide/chevron-down.svg"));
+    toggle->setIconSize(QSize(16, 16));
+    toggle->setIcon(expanded ? expandedIcon : collapsedIcon);
     body->setVisible(expanded);
-    QObject::connect(toggle, &QToolButton::toggled, body, [toggle, body](bool on) {
+    QObject::connect(toggle, &QToolButton::toggled, body, [toggle, body, collapsedIcon, expandedIcon](bool on) {
         body->setVisible(on);
-        toggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        toggle->setIcon(on ? expandedIcon : collapsedIcon);
     });
+    return toggle;
+}
+
+inline QWidget *disclosure(const QString &title, QWidget *body, bool expanded = false) {
+    auto group = new QWidget;
+    group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto layout = new QVBoxLayout(group);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    layout->addWidget(body);
+    layout->insertWidget(0, disclosureButton(title, body, expanded), 0, Qt::AlignLeft);
     return group;
 }
 inline QString selectSource(QWidget *parent, const QStringList &files, const QString &current,

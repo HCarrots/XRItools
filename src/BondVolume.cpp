@@ -57,6 +57,39 @@ double valueAt(const double *data, qsizetype stride, Bracket b) {
     return b.first == b.last ? first : first + b.fraction * (data[b.last * stride] - first);
 }
 
+struct SpectralIntegral {
+    QVector<double> energy;
+    QVector<Bracket> points;
+
+    SpectralIntegral(const QVector<double> &axis, QPair<double, double> range,
+                     const QVector<bool> &usable) {
+        const auto [lo, hi] = range;
+        if (!(lo < hi))
+            fail(QStringLiteral("积分区间必须递增。"));
+        energy.append(lo);
+        for (double e : axis)
+            if (lo < e && e < hi)
+                energy.append(e);
+        energy.append(hi);
+        for (double e : energy) {
+            const auto b = bracket(axis, e);
+            if (!usable[b.first] || !usable[b.last])
+                fail(QStringLiteral("积分区间包含未收敛通道或超出参考轮廓覆盖。"));
+            points.append(b);
+        }
+    }
+
+    double area(const QVector<double> &row) const {
+        double sum = 0, prev = valueAt(row.constData(), 1, points.first());
+        for (qsizetype i = 1; i < points.size(); ++i) {
+            const double current = valueAt(row.constData(), 1, points[i]);
+            sum += .5 * (prev + current) * (energy[i] - energy[i - 1]);
+            prev = current;
+        }
+        return sum;
+    }
+};
+
 bool supported(const BondVolume &v, qsizetype voxel) {
     const auto yz = v.axes[2].size() * v.axes[3].size();
     return v.sensitivity[voxel / yz] > v.diagnostics.value("x_sensitivity_floor").toDouble();
@@ -183,28 +216,34 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
     };
     for (auto range : settings.background)
         checkWindow(range);
+    const auto *compton = settings.compton ? &*settings.compton : nullptr;
+    auto usable = v.converged;
+    std::optional<SpectralIntegral> match, normalize;
+    double referenceArea = 0;
+    if (compton) {
+        if (compton->reference.size() != energy.size() || compton->valence.size() != energy.size() ||
+            compton->correction.size() != energy.size())
+            fail(QStringLiteral("康普顿参考与重建能量轴不一致。"));
+        for (qsizetype e = 0; e < energy.size(); ++e) {
+            if (!(std::isfinite(compton->correction[e]) && compton->correction[e] > 0))
+                fail(QStringLiteral("康普顿截面修正无效。"));
+            usable[e] = usable[e] && std::isfinite(compton->valence[e]);
+        }
+        match.emplace(energy, compton->matchWindow, usable);
+        referenceArea = match->area(compton->reference);
+        if (!(std::isfinite(referenceArea) && referenceArea > 0))
+            fail(QStringLiteral("幅度匹配区间需要完整覆盖和正的宽谱积分。"));
+    }
     if (settings.normalization)
-        checkWindow(*settings.normalization);
+        normalize.emplace(energy, *settings.normalization, usable);
     QVector<int> fitPoints;
     for (int e = 0; e < energy.size(); ++e)
-        if (v.converged[e] &&
+        if (usable[e] &&
             std::any_of(settings.background.cbegin(), settings.background.cend(),
                         [&](auto w) { return energy[e] >= w.first - 1e-9 && energy[e] <= w.second + 1e-9; }))
             fitPoints.append(e);
     if (!settings.background.isEmpty() && fitPoints.size() < 2)
-        fail(QStringLiteral("背底能区至少需要两个已收敛能量点。"));
-    QVector<double> integrateX;
-    QVector<Bracket> integrateAt;
-    if (settings.normalization) {
-        const auto [lo, hi] = *settings.normalization;
-        integrateX.append(lo);
-        for (double e : energy)
-            if (lo < e && e < hi)
-                integrateX.append(e);
-        integrateX.append(hi);
-        for (double e : integrateX)
-            integrateAt.append(bracket(energy, e));
-    }
+        fail(QStringLiteral("背底能区至少需要两个已收敛且有参考覆盖的能量点。"));
     const auto n = v.voxelCount();
     QVector<double> out(v.intensity.size(), NAN), row(energy.size());
     const auto *input = v.intensity.constData();
@@ -215,7 +254,16 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
         if (!supported(v, i))
             continue;
         for (int e = 0; e < energy.size(); ++e)
-            row[e] = v.converged[e] ? input[e * n + i] : NAN;
+            row[e] = usable[e] ? input[e * n + i] : NAN;
+        if (compton) {
+            for (qsizetype e = 0; e < energy.size(); ++e)
+                row[e] *= compton->correction[e];
+            const double scale = match->area(row) / referenceArea;
+            if (!(std::isfinite(scale) && scale > 0))
+                continue;
+            for (qsizetype e = 0; e < energy.size(); ++e)
+                row[e] -= scale * compton->valence[e];
+        }
         if (!fitPoints.isEmpty()) {
             double meanX = 0, meanY = 0;
             int count = 0;
@@ -239,21 +287,19 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
             for (int e = 0; e < energy.size(); ++e)
                 row[e] -= meanY + (xy / xx) * (energy[e] - meanX);
         }
-        double area = 1;
-        if (!integrateAt.isEmpty()) {
-            area = 0;
-            double prev = valueAt(row.constData(), 1, integrateAt.first());
-            for (int j = 1; j < integrateAt.size(); ++j) {
-                const double current = valueAt(row.constData(), 1, integrateAt[j]);
-                area += .5 * (prev + current) * (integrateX[j] - integrateX[j - 1]);
-                prev = current;
-            }
-            if (!(std::isfinite(area) && area > 0))
-                continue;
-        }
+        // Return to the reconstruction's intensity scale before any optional area normalization.
+        if (compton)
+            for (qsizetype e = 0; e < energy.size(); ++e)
+                row[e] /= compton->correction[e];
+        const double area = normalize ? normalize->area(row) : 1.;
+        if (!(std::isfinite(area) && area > 0))
+            continue;
         for (int e = 0; e < energy.size(); ++e)
             result[e * n + i] = row[e] / area;
     }
+    cancel(stop);
+    if (std::none_of(out.cbegin(), out.cend(), [](double value) { return std::isfinite(value); }))
+        fail(QStringLiteral("所选参数未生成有效体素谱，请检查能区、参考覆盖和积分面积。"));
     return out;
 }
 

@@ -138,14 +138,14 @@ void MainWindow::buildUi() {
     auto showBrowser = viewMenu->addAction(tr("显示数据浏览器"));
     showBrowser->setObjectName("ShowDataBrowser");
     connect(showBrowser, &QAction::triggered, this,
-            [this] { showWorkspace(m_browser, tr("数据浏览器 · 导入后检查数据集与扫描类型")); });
+            [this] { showWorkspace(m_browser); });
     viewMenu->addSeparator();
     const QStringList modes{tr("图像 / 曲线"), tr("数据表"), tr("文本 / 元数据")};
     for (int i = 0; i < modes.size(); ++i) {
         auto action = viewMenu->addAction(modes[i]);
         action->setObjectName(QString("BrowserMode%1").arg(i));
         connect(action, &QAction::triggered, this, [this, i] {
-            showWorkspace(m_browser, tr("数据浏览器"));
+            showWorkspace(m_browser);
             m_tabs->setCurrentIndex(i);
         });
     }
@@ -173,7 +173,7 @@ void MainWindow::buildUi() {
     help->addAction(tr("关于 XRI"), this, [this] {
         QMessageBox::about(
             this, tr("关于 XRI"),
-            tr("<h3>XRI 0.1</h3>"
+            tr("<h3>XRI 0.2.0</h3>"
                "<p>非弹性非共振数据处理工具</p>"
                "<p>用于同步辐射 HDF5 / NeXus 数据浏览、分析晶体 ROI "
                "选取、谱学处理、三维成像与四维衬度分析。</p>"
@@ -224,8 +224,8 @@ void MainWindow::buildUi() {
 
     auto center = new QWidget;
     auto layout = new QVBoxLayout(center);
-    layout->setContentsMargins(10, 8, 10, 8);
-    layout->setSpacing(8);
+    layout->setContentsMargins(6, 4, 6, 4);
+    layout->setSpacing(4);
     auto fileRow = new QHBoxLayout;
     fileRow->addWidget(new QLabel(tr("当前文件")));
     m_files = new QComboBox;
@@ -242,14 +242,16 @@ void MainWindow::buildUi() {
     });
     m_path = new QLabel(tr("未选择数据集"));
     QFont pathFont = m_path->font();
-    pathFont.setPointSize(11);
     pathFont.setBold(true);
     m_path->setFont(pathFont);
     m_path->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(m_path);
+    m_path->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_summary = new QLabel(tr("支持标量、字符串、一维信号和多维探测器数据"));
     m_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(m_summary);
+    auto dataset = new QHBoxLayout;
+    dataset->addWidget(m_path, 1);
+    dataset->addWidget(m_summary);
+    layout->addLayout(dataset);
     auto plotToolsBody = new QWidget;
     auto plotTools = new QHBoxLayout(plotToolsBody);
     plotTools->setContentsMargins(0, 0, 0, 0);
@@ -293,7 +295,9 @@ void MainWindow::buildUi() {
     connect(m_tabs, &QTabWidget::currentChanged, plotToolsBody,
             [plotToolsBody](int tab) { plotToolsBody->setVisible(tab == 0); });
     layout->addWidget(m_tabs, 1);
-    auto frames = new QHBoxLayout;
+    m_frameControls = new QWidget;
+    auto frames = new QHBoxLayout(m_frameControls);
+    frames->setContentsMargins(0, 0, 0, 0);
     m_play = new QToolButton;
     m_play->setText(tr("播放"));
     m_play->setCheckable(true);
@@ -306,39 +310,28 @@ void MainWindow::buildUi() {
     m_frame->setObjectName("FrameIndex");
     m_frame->setMinimumWidth(100);
     frames->addWidget(m_frame);
-    layout->addLayout(frames);
+    layout->addWidget(m_frameControls);
+    m_frameControls->hide();
     m_stats = new QLabel;
     m_stats->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_stats->setWordWrap(true);
     layout->addWidget(m_stats);
     m_browser = center;
-    auto workspace = new QWidget;
-    auto workspaceLayout = new QVBoxLayout(workspace);
-    workspaceLayout->setContentsMargins(0, 0, 0, 0);
-    workspaceLayout->setSpacing(0);
-    auto heading = new QWidget;
-    auto headingLayout = new QHBoxLayout(heading);
     m_backToBrowser = new QToolButton;
     m_backToBrowser->setText(tr("返回数据浏览器"));
-    m_backToBrowser->setIcon(style()->standardIcon(QStyle::SP_ArrowBack));
+    m_backToBrowser->setAutoRaise(true);
+    m_backToBrowser->setIcon(QIcon(QStringLiteral(":/assets/lucide/chevron-left.svg")));
+    m_backToBrowser->setIconSize(QSize(16, 16));
     m_backToBrowser->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_backToBrowser->setObjectName("BackToBrowser");
+    menuBar()->setCornerWidget(m_backToBrowser);
     m_backToBrowser->hide();
-    headingLayout->addWidget(m_backToBrowser);
-    m_workspaceTitle = new QLabel(tr("数据浏览器 · 导入后检查数据集与扫描类型"));
-    QFont headingFont = m_workspaceTitle->font();
-    headingFont.setBold(true);
-    m_workspaceTitle->setFont(headingFont);
-    m_workspaceTitle->setWordWrap(true);
-    headingLayout->addWidget(m_workspaceTitle, 1);
-    workspaceLayout->addWidget(heading);
     m_workspaces = new QStackedWidget;
     m_workspaces->setObjectName("ProcessingWorkspaces");
     m_workspaces->addWidget(center);
-    workspaceLayout->addWidget(m_workspaces, 1);
-    setCentralWidget(workspace);
+    setCentralWidget(m_workspaces);
     connect(m_backToBrowser, &QToolButton::clicked, this,
-            [this] { showWorkspace(m_browser, tr("数据浏览器 · 导入后检查数据集与扫描类型")); });
+            [this] { showWorkspace(m_browser); });
     connect(palette, &QComboBox::currentIndexChanged, m_plot, &ScientificPlot::setPalette);
     connect(log, &QCheckBox::toggled, m_plot, &ScientificPlot::setLogarithmic);
     connect(aspect, &QCheckBox::toggled, m_plot, &ScientificPlot::setAspectLocked);
@@ -423,10 +416,19 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     explorer->setVisible(page == m_browser && m_explorerVisible);
     m_workspaces->setCurrentWidget(page);
     page->show();
-    m_workspaceTitle->setText(title);
+    if (page == m_browser)
+        updateBrowserTitle();
+    else
+        setWindowTitle(tr("%1 — XRI").arg(title));
     m_backToBrowser->setVisible(page != m_browser);
     m_roiAction->setEnabled(page != m_browser || !m_file.isEmpty());
     show();
+}
+
+void MainWindow::updateBrowserTitle() {
+    if (m_workspaces->currentWidget() == m_browser)
+        setWindowTitle(m_file.isEmpty() ? tr("XRI — 非共振非弹性散射成像数据处理工具")
+                                       : QFileInfo(m_file).fileName() + " [" + formatLabel() + tr("] — XRI"));
 }
 SpectroscopyDialog *MainWindow::openSpectroscopy(int step) {
     if (!m_spectroscopy) {
@@ -458,7 +460,7 @@ ImagingDialog *MainWindow::openImaging(int step) {
         connect(m_imaging, &ImagingDialog::openFileRequested, this, [this](const QString &path) {
             openFile(path);
             selectPath("/reinterp_insect_ck");
-            showWorkspace(m_browser, tr("数据浏览器 · 成像结果"));
+            showWorkspace(m_browser);
         });
     }
     m_imaging->setAvailableFiles(openedFiles());
@@ -521,7 +523,7 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
             else if (m_roiReturn == m_bond)
                 openBondImaging(0);
             else
-                showWorkspace(m_browser, tr("数据浏览器"));
+                showWorkspace(m_browser);
         });
     }
     if (roiScheme.endsWith(".json", Qt::CaseInsensitive) && QFileInfo::exists(roiScheme))
@@ -589,7 +591,7 @@ void MainWindow::openFile(const QString &path) {
 }
 void MainWindow::openFiles(const QStringList &paths) {
     if (!paths.isEmpty())
-        showWorkspace(m_browser, tr("数据浏览器"));
+        showWorkspace(m_browser);
     for (const auto &path : paths)
         openFile(path);
 }
@@ -712,9 +714,10 @@ void MainWindow::clearPreview() {
     m_text->clear();
     m_stats->clear();
     m_path->setText(tr("未选择数据集"));
+    m_path->setToolTip({});
     m_summary->setText(tr("通过“文件 → 导入 HDF5 文件”添加一个或多个文件"));
     configureAxes();
-    setWindowTitle(tr("XRI — 非共振非弹性散射成像数据处理工具"));
+    updateBrowserTitle();
     syncFiles();
 }
 void MainWindow::closeCurrentFile() {
@@ -818,7 +821,7 @@ void MainWindow::selectItem(QTreeWidgetItem *item) {
     m_stats->clear();
     m_text->clear();
     syncFiles();
-    setWindowTitle(QFileInfo(file).fileName() + " [" + formatLabel() + tr("] — XRI"));
+    updateBrowserTitle();
     try {
         m_node = HdfFile::inspect(m_file, item->data(0, PathRole).toString());
     } catch (const std::exception &e) {
@@ -826,6 +829,7 @@ void MainWindow::selectItem(QTreeWidgetItem *item) {
         return;
     }
     m_path->setText(m_node.path);
+    m_path->setToolTip(m_node.path);
     m_summary->setText(formatLabel() + "    |    " + m_node.type + "    " + m_node.shape);
     QString text = "File: " + m_file + "\n" + m_node.path + "\nScan format: " + formatLabel() +
                    "\nType: " + m_node.type + "\nShape: " + m_node.shape + "\n";
@@ -894,6 +898,7 @@ void MainWindow::buildSliceControls() {
     m_frame->setEnabled(enabled);
     m_slider->setEnabled(enabled);
     m_play->setEnabled(enabled);
+    m_frameControls->setVisible(enabled);
 }
 void MainWindow::scheduleRead() {
     if (m_file.isEmpty() || m_node.group)

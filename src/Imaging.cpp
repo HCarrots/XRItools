@@ -14,6 +14,7 @@
 #include <QTextStream>
 #include <algorithm>
 #include <memory>
+#include <utility>
 #include <numeric>
 using namespace ImageUtil;
 namespace {
@@ -643,7 +644,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
     auto selected = calibration(c, validation, {}, stop, log, weights);
     sample(c, validation, selected, {}, stop, log);
     ImagingResult spatial;
-    const auto fit = solveSpatial(c, validation, selected, spatial, stop, log, energy.size());
+    auto fit = solveSpatial(c, validation, selected, spatial, stop, log, energy.size());
     const int nx = int(spatial.axes[0].size()), ny = int(g.axes[0].size()), nz = int(g.axes[1].size());
     const int ne = int(energy.size()), nYZ = ny * nz;
     const qsizetype total = qsizetype(nx) * nYZ * ne;
@@ -664,8 +665,6 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
     const qsizetype nPixels = offsets.size();
     const auto output = c["output"].toObject();
     const bool saveBandDiagnostics = output["save_diagnostics"].toBool();
-    if (saveBandDiagnostics && nPixels * (qsizetype(nx) + 2 * qsizetype(nYZ)) > 32000000)
-        fail(QStringLiteral("积分谱诊断超过内存上限，请缩小 ROI 或关闭详细诊断。"));
     constexpr int batchSize = 16;
     const qsizetype repeated = g.occupancy.size() - std::count(g.occupancy.cbegin(), g.occupancy.cend(), 1);
     if (nPixels * (qsizetype(nx) + batchSize + repeated) > 32000000)
@@ -748,6 +747,9 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
         out.converged.append(info.converged);
         std::copy_n(rho.data(), rho.size(), out.intensity.data() + qsizetype(e) * rho.size());
     }
+    QStringList crystalLabels;
+    for (const auto &item : std::as_const(fit.accepted))
+        crystalLabels.append(item.roi.label);
     out.diagnostics = {{"schema", "XRI.bond.v1"},
                        {"config", c},
                        {"input_validation", validation.report},
@@ -756,6 +758,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
                        {"psf_models", spatial.models},
                        {"psf_rejected", spatial.rejected},
                        {"crystal_keys", json(fit.keys)},
+                       {"crystal_labels", json(crystalLabels)},
                        {"relative_gains", json(fit.gains)},
                        {"gain_fit_converged", fit.gainConverged},
                        {"gain_fit_iterations", fit.gainIteration},
@@ -764,9 +767,13 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
     if (saveBandDiagnostics) {
         for (int i = 0; i < fit.accepted.size(); ++i) {
             cancel(stop);
-            ImageMatrix op = fit.gains[i] * fit.operators[i];
-            ImageMatrix predicted = op * fit.rho;
-            ImageMatrix residual = predicted - fit.accepted[i].measured;
+            // Reuse the integrated sample buffers once the spatial fit and channel solves are done.
+            auto &op = fit.operators[i];
+            auto &predicted = fit.accepted[i].variance;
+            auto &residual = fit.accepted[i].measured;
+            op *= fit.gains[i];
+            predicted.noalias() = op * fit.rho;
+            residual = predicted - residual;
             out.bandDiagnostics.append(
                 {fit.keys[i], std::move(op), std::move(predicted), std::move(residual)});
         }
@@ -823,7 +830,7 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             directory + "/provenance.json",
             {{"versions",
               QJsonObject{
-                  {"xri", "0.1.0-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
+                  {"xri", "0.2.0-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
              {"inputs", sources},
              {"started_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
         log("1/6 Extracting calibration pixels and pooled monitor doses", 3);

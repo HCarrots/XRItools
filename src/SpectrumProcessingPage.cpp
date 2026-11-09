@@ -53,6 +53,7 @@ QString savePath(QWidget *parent, const QString &name) {
 
 SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent) {
     auto input = new QVBoxLayout(this);
+    WorkflowUi::compact(input);
     m_inputControls = new QWidget;
     auto controls = new QVBoxLayout(m_inputControls);
     controls->setContentsMargins(0, 0, 0, 0);
@@ -98,6 +99,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
 
     m_analysisPage = new QWidget;
     auto analysis = new QVBoxLayout(m_analysisPage);
+    WorkflowUi::compact(analysis);
     auto columns = new QHBoxLayout;
     m_fitControls = new QWidget;
     auto fitLayout = new QVBoxLayout(m_fitControls);
@@ -195,6 +197,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
 
     m_resultPage = new QWidget;
     auto results = new QVBoxLayout(m_resultPage);
+    WorkflowUi::compact(results);
     m_resultControls = new QWidget;
     auto resultRow = new QHBoxLayout(m_resultControls);
     resultRow->setContentsMargins(0, 0, 0, 0);

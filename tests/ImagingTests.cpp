@@ -118,6 +118,26 @@ int main(int argc, char **argv) {
             expect(std::isnan(corrected[16]) && std::abs(corrected[17] - 1) < 1e-12 &&
                        std::abs(corrected[9]) < 1e-12,
                    "per-voxel subtraction removes a linear baseline and rejects nonpositive areas");
+
+            const QVector<double> factor{1, 2, 4, 2, 1}, valence{3, 4, 6, 4, NAN};
+            for (qsizetype e = 0; e < v.axes[0].size(); ++e)
+                for (qsizetype i = 0; i < v.voxelCount(); ++i)
+                    v.intensity[e * v.voxelCount() + i] =
+                        (i + 1) * (valence[e] + 2 + e + (e == 2 ? 6 : 0)) / factor[e];
+            settings.background = {{0, 1}};
+            settings.normalization.reset();
+            settings.compton = BondSpectralReference{factor, {5, 7, 10, 9, NAN}, valence, {0, 1}};
+            corrected = BondImaging::process(v, v.axes[0], settings, stop);
+            expect(std::abs(corrected[16] - 1.5) < 1e-12 && std::abs(corrected[17] - 3.) < 1e-12 &&
+                       std::abs(corrected[24]) < 1e-12 && std::isnan(corrected[32]),
+                   "Compton transfer removes the matched valence and residual while retaining spatial amplitude");
+            settings.normalization = QPair<double, double>{1, 3};
+            corrected = BondImaging::process(v, v.axes[0], settings, stop);
+            expect(std::abs(corrected[16] - 1.) < 1e-12 && std::abs(corrected[17] - 1.) < 1e-12,
+                   "optional area normalization runs after the Compton background has been removed");
+            settings.normalization = QPair<double, double>{1, 4};
+            expect(throws([&] { BondImaging::process(v, v.axes[0], settings, stop); }),
+                   "area normalization rejects gaps in the Compton model coverage");
             const auto mesh = BondImaging::surface(v, {0, 0, 0, 0, 2, 2, 2, 2}, .5, stop);
             expect(!mesh.isEmpty() &&
                        std::all_of(mesh.cbegin(), mesh.cend(),

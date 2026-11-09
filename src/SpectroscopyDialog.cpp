@@ -137,11 +137,13 @@ void SpectroscopyDialog::message(const QString &text, bool error) {
 
 void SpectroscopyDialog::buildUi() {
     auto root = new QVBoxLayout(this);
+    WorkflowUi::compact(root);
     m_tabs = new QTabWidget;
     m_tabs->setObjectName("SpectroscopySteps");
     root->addWidget(m_tabs, 1);
     auto inputs = new QWidget;
     auto inputLayout = new QHBoxLayout(inputs);
+    WorkflowUi::compact(inputLayout);
     auto forms = new QWidget;
     auto formLayout = new QVBoxLayout(forms);
     auto filesGroup = new QGroupBox(tr("弹性参考与共用 ROI"));
@@ -172,10 +174,10 @@ void SpectroscopyDialog::buildUi() {
     auto roiButtons = new QWidget;
     auto rl = new QHBoxLayout(roiButtons);
     rl->setContentsMargins(0, 0, 0, 0);
+    rl->addWidget(m_roiPath, 1);
     rl->addWidget(load);
     rl->addWidget(edit);
-    fileForm->addRow(tr("ROI 方案"), m_roiPath);
-    fileForm->addRow(roiButtons);
+    fileForm->addRow(tr("ROI 方案"), roiButtons);
     m_roiStatus = new QLabel;
     m_roiStatus->setWordWrap(true);
     fileForm->addRow(m_roiStatus);
@@ -319,7 +321,7 @@ void SpectroscopyDialog::buildUi() {
 
     auto masks = new QWidget;
     auto ml = new QVBoxLayout(masks);
-    ml->addWidget(WorkflowUi::disclosure(tr("像素掩膜参数"), mask));
+    WorkflowUi::compact(ml);
     auto maskTools = new QHBoxLayout;
     maskTools->addWidget(new QLabel(tr("预览")));
     m_imageSource = new QComboBox;
@@ -328,10 +330,12 @@ void SpectroscopyDialog::buildUi() {
     auto log = new QCheckBox(tr("signed log1p 显示"));
     log->setChecked(true);
     maskTools->addWidget(log);
+    maskTools->addWidget(WorkflowUi::disclosureButton(tr("像素掩膜参数"), mask));
     auto saveRoi = new QPushButton(tr("保存调整后 ROI…"));
     maskTools->addStretch();
     maskTools->addWidget(saveRoi);
     ml->addLayout(maskTools);
+    ml->addWidget(mask);
     auto maskSplit = new QSplitter;
     auto correctionWidget = new QWidget;
     auto cl = new QVBoxLayout(correctionWidget);
@@ -401,10 +405,15 @@ void SpectroscopyDialog::buildUi() {
 
     auto elastic = new QWidget;
     auto el = new QVBoxLayout(elastic);
-    el->addWidget(WorkflowUi::disclosure(tr("峰形拟合与质量阈值"), fitting));
+    WorkflowUi::compact(el);
+    auto elasticTools = new QHBoxLayout;
     m_elasticView = new QComboBox;
     m_elasticView->addItems({tr("所选晶体：原 ROI / 掩膜 / 拟合"), tr("全部合格晶体：弹性零点对齐")});
-    el->addWidget(m_elasticView);
+    elasticTools->addWidget(m_elasticView);
+    elasticTools->addWidget(WorkflowUi::disclosureButton(tr("峰形拟合与质量阈值"), fitting));
+    elasticTools->addStretch();
+    el->addLayout(elasticTools);
+    el->addWidget(fitting);
     auto es = new QSplitter(Qt::Vertical);
     m_elasticPlot = new SpectrumPlot;
     m_elasticPlot->setObjectName("ElasticSpectrum");
@@ -422,8 +431,12 @@ void SpectroscopyDialog::buildUi() {
 
     auto xrs = new QWidget;
     auto xl = new QVBoxLayout(xrs);
+    WorkflowUi::compact(xl);
     auto choices = new QHBoxLayout;
     m_scanChoice = new QComboBox;
+    m_scanChoice->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_scanChoice->setMinimumContentsLength(28);
+    m_scanChoice->setMaximumWidth(400);
     m_crystalChoice = new QComboBox;
     for (const auto &roi : m_rois.items())
         m_crystalChoice->addItem(roi.label);
@@ -431,8 +444,10 @@ void SpectroscopyDialog::buildUi() {
     choices->addWidget(m_scanChoice, 1);
     choices->addWidget(new QLabel(tr("晶体")));
     choices->addWidget(m_crystalChoice);
+    choices->addStretch(1);
     xl->addLayout(choices);
-    auto xs = new QSplitter(Qt::Vertical);
+    auto xs = new QSplitter(Qt::Horizontal);
+    xs->setChildrenCollapsible(false);
     m_i0Plot = new SpectrumPlot;
     m_i0Plot->setObjectName("I0Spectrum");
     m_scanPlot = new SpectrumPlot;
@@ -500,7 +515,8 @@ void SpectroscopyDialog::buildUi() {
     auto resultBody = new QWidget;
     auto rb = new QVBoxLayout(resultBody);
     m_resultChoice = new QComboBox;
-    rb->addWidget(m_resultChoice);
+    m_resultChoice->setMinimumContentsLength(16);
+    rb->addWidget(m_resultChoice, 0, Qt::AlignLeft);
     auto rs = new QSplitter(Qt::Vertical);
     m_resultPlot = new SpectrumPlot;
     m_resultPlot->setObjectName("CombinedSpectrum");
@@ -553,10 +569,9 @@ void SpectroscopyDialog::buildUi() {
     m_status->setObjectName("SpectrumStatus");
     m_status->setWordWrap(true);
     m_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    root->addWidget(m_status);
     m_progress = new QProgressBar;
+    m_progress->setMaximumWidth(140);
     m_progress->hide();
-    root->addWidget(m_progress);
     auto actions = new QHBoxLayout;
     m_calibrateButton = new QPushButton(tr("计算弹性标定"));
     m_calibrateButton->setObjectName("CalibrateSpectrum");
@@ -572,7 +587,8 @@ void SpectroscopyDialog::buildUi() {
     m_nextButton = new QPushButton(tr("下一步"));
     m_nextButton->setObjectName("NextSpectrumStep");
     actions->addWidget(m_previousButton);
-    actions->addStretch();
+    actions->addWidget(m_status, 1);
+    actions->addWidget(m_progress);
     actions->addWidget(m_calibrateButton);
     actions->addWidget(m_extractButton);
     actions->addWidget(m_combineButton);

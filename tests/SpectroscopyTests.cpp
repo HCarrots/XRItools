@@ -79,6 +79,24 @@ int main(int argc, char **argv) {
                           << '\n';
             expect(high > 0 && low > 0 && result.referenceFit.rSquared > .8,
                    "real reduced scans produce high-q valence subtraction and low-q linear results");
+            const auto highCrystal = std::find_if(result.crystals.cbegin(), result.crystals.cend(),
+                                                  [](const ComptonCrystal &item) { return item.high; });
+            if (highCrystal != result.crystals.cend()) {
+                const auto geometry = wide.geometry.value(highCrystal.key());
+                QVector<double> incident;
+                for (double loss : wide.energyEv)
+                    incident.append(geometry.analyzerKev + loss / 1000.);
+                const auto model = transferCompton(wide, highCrystal.key(), incident, settings, cancel);
+                qsizetype compared = 0;
+                double maxError = 0;
+                for (qsizetype i = 0; i < wide.energyEv.size(); ++i)
+                    if (std::isfinite(model.valence[i]) && std::isfinite(highCrystal->valence[i])) {
+                        ++compared;
+                        maxError = std::max(maxError, std::abs(model.valence[i] - highCrystal->valence[i]));
+                    }
+                expect(compared > 100 && maxError < 1e-10 && model.analyzerKev == geometry.analyzerKev,
+                       "transferred valence matches spectroscopy on the original incident grid");
+            }
             return failures ? 1 : 0;
         }
         if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--real-elastic") {

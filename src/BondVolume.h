@@ -21,9 +21,15 @@ struct BondVolume {
     qsizetype voxel(int x, int y, int z) const;
 };
 
+struct BondSpectralReference {
+    QVector<double> correction, reference, valence;
+    QPair<double, double> matchWindow;
+};
+
 struct BondSpectralSettings {
     QVector<QPair<double, double>> background;
     std::optional<QPair<double, double>> normalization;
+    std::optional<BondSpectralReference> compton;
 };
 
 using BondTriangle = std::array<QVector3D, 3>;

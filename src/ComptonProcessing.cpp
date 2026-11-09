@@ -335,6 +335,82 @@ void subtractLinear(ComptonResult &out, const ProcessedSpectrum &spectrum, const
     }
     cancel(stop);
 }
+QMap<QString, Prepared> fitReference(const ProcessedSpectrum &wide, const ProcessedSpectrum &target,
+                                     const QStringList &high, const ComptonSettings &settings,
+                                     ComptonResult &out, const std::atomic_bool &stop) {
+    const auto &e = wide.energyEv;
+    checkWindows(settings.normalization, QStringLiteral("HF 归一化区间"));
+    if (settings.normalization.size() != 1)
+        fail(QStringLiteral("HF 归一化使用一个连续区间。"));
+    checkWindows(settings.coreTail, QStringLiteral("HF 芯谱尾部区间"));
+    checkWindows(settings.cleanReference, QStringLiteral("价电子轮廓拟合区间"));
+    if (!std::isfinite(settings.coreScale) || settings.coreScale < 0 ||
+        !std::isfinite(settings.valenceCutoffEv) || settings.valenceCutoffEv <= 0)
+        fail(QStringLiteral("HF 芯谱比例或价电子截止能量无效。"));
+    const auto shells = readShells(settings);
+    QMap<QString, Prepared> prepared;
+    QVector<Reference> refs;
+    for (const auto &label : high) {
+        cancel(stop);
+        try {
+            auto data = prepare(e, wide.crystals.value(label), target.crystals.value(label),
+                                wide.geometry.value(label), shells, settings, stop);
+            try {
+                refs.append(referenceFor(e, data, settings, stop));
+                out.references.append(label);
+            } catch (const std::exception &ex) {
+                out.referenceFailures[label] = QString::fromUtf8(ex.what());
+            }
+            prepared.insert(label, std::move(data));
+        } catch (const std::exception &ex) {
+            out.failures[label] = QString::fromUtf8(ex.what());
+        }
+    }
+    if (refs.isEmpty())
+        fail(QStringLiteral("没有可用于提取价电子轮廓的高 q 宽谱。"));
+    QVector<double> clean;
+    const auto required = (2 * refs.size() + 2) / 3;
+    // As in xrs_ana, take the median across crystals with at least 2/3 reference coverage.
+    for (int i = -1600; i < 1000; ++i) {
+        if (i % 128 == 0)
+            cancel(stop);
+        const double p = i * .005;
+        QVector<double> measured, selected;
+        for (const auto &ref : refs) {
+            double raw = interpolate(ref.pz, ref.j, p);
+            double fit = interpolate(ref.pz, ref.clean, p);
+            if (std::isfinite(raw))
+                measured.append(raw);
+            if (std::isfinite(fit))
+                selected.append(fit);
+        }
+        out.pz.append(p);
+        out.measuredJ.append(median(measured, required));
+        clean.append(median(selected, required));
+    }
+    out.referenceFit =
+        SpectrumProcessing::fit(out.pz, clean, {true, {{out.pz.first(), out.pz.last()}}}, stop);
+    const auto &peak = out.referenceFit;
+    out.parameters["pearson_pz"] = QJsonObject{{"center_au", peak.centerEv},
+                                               {"fwhm_au", peak.fwhmEv},
+                                               {"exponent", peak.exponent},
+                                               {"height", peak.peakHeight},
+                                               {"r_squared", peak.rSquared}};
+    out.parameters["reference_crystals"] = QJsonArray::fromStringList(out.references);
+    for (qsizetype i = 0; i < out.pz.size(); ++i) {
+        double u = 2 * (out.pz[i] - peak.centerEv) / peak.fwhmEv;
+        out.fittedJ.append(
+            std::isfinite(out.measuredJ[i])
+                ? peak.peakHeight *
+                      std::pow(1 + std::expm1(std::log(2.) / peak.exponent) * u * u, -peak.exponent)
+                : NAN);
+    }
+    return prepared;
+}
+
+double valenceAt(const ComptonResult &reference, double pz, double q) {
+    return interpolate(reference.pz, reference.fittedJ, pz) / q;
+}
 } // namespace
 
 ComptonResult analyzeLinear(const ProcessedSpectrum &spectrum, const SpectrumWindows &windows,
@@ -382,73 +458,8 @@ ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpect
     if (high.isEmpty())
         return out;
     try {
-        checkWindows(settings.normalization, QStringLiteral("HF 归一化区间"));
-        if (settings.normalization.size() != 1)
-            fail(QStringLiteral("HF 归一化使用一个连续区间。"));
-        checkWindows(settings.coreTail, QStringLiteral("HF 芯谱尾部区间"));
-        checkWindows(settings.cleanReference, QStringLiteral("价电子轮廓拟合区间"));
         checkWindows(settings.highResidual, QStringLiteral("高 q 残余直线区间"));
-        if (!std::isfinite(settings.coreScale) || settings.coreScale < 0 ||
-            !std::isfinite(settings.valenceCutoffEv) || settings.valenceCutoffEv <= 0)
-            fail(QStringLiteral("HF 芯谱比例或价电子截止能量无效。"));
-        const auto shells = readShells(settings);
-        QMap<QString, Prepared> prepared;
-        QVector<Reference> refs;
-        for (const auto &label : high) {
-            cancel(stop);
-            try {
-                auto data = prepare(e, wide.crystals.value(label), stitched.crystals.value(label),
-                                    wide.geometry.value(label), shells, settings, stop);
-                try {
-                    refs.append(referenceFor(e, data, settings, stop));
-                    out.references.append(label);
-                } catch (const std::exception &ex) {
-                    out.referenceFailures[label] = QString::fromUtf8(ex.what());
-                }
-                prepared.insert(label, std::move(data));
-            } catch (const std::exception &ex) {
-                out.failures[label] = QString::fromUtf8(ex.what());
-            }
-        }
-        if (refs.isEmpty())
-            fail(QStringLiteral("没有可用于提取价电子轮廓的高 q 宽谱。"));
-        QVector<double> clean;
-        const auto required = (2 * refs.size() + 2) / 3;
-        // As in xrs_ana, take the median across crystals with at least 2/3 reference coverage.
-        for (int i = -1600; i < 1000; ++i) {
-            if (i % 128 == 0)
-                cancel(stop);
-            const double p = i * .005;
-            QVector<double> measured, selected;
-            for (const auto &ref : refs) {
-                double raw = interpolate(ref.pz, ref.j, p);
-                double fit = interpolate(ref.pz, ref.clean, p);
-                if (std::isfinite(raw))
-                    measured.append(raw);
-                if (std::isfinite(fit))
-                    selected.append(fit);
-            }
-            out.pz.append(p);
-            out.measuredJ.append(median(measured, required));
-            clean.append(median(selected, required));
-        }
-        out.referenceFit =
-            SpectrumProcessing::fit(out.pz, clean, {true, {{out.pz.first(), out.pz.last()}}}, stop);
-        const auto &peak = out.referenceFit;
-        out.parameters["pearson_pz"] = QJsonObject{{"center_au", peak.centerEv},
-                                                   {"fwhm_au", peak.fwhmEv},
-                                                   {"exponent", peak.exponent},
-                                                   {"height", peak.peakHeight},
-                                                   {"r_squared", peak.rSquared}};
-        out.parameters["reference_crystals"] = QJsonArray::fromStringList(out.references);
-        for (qsizetype i = 0; i < out.pz.size(); ++i) {
-            double u = 2 * (out.pz[i] - peak.centerEv) / peak.fwhmEv;
-            out.fittedJ.append(
-                std::isfinite(out.measuredJ[i])
-                    ? peak.peakHeight *
-                          std::pow(1 + std::expm1(std::log(2.) / peak.exponent) * u * u, -peak.exponent)
-                    : NAN);
-        }
+        const auto prepared = fitReference(wide, stitched, high, settings, out, stop);
         for (auto it = prepared.cbegin(); it != prepared.cend(); ++it) {
             cancel(stop);
             try {
@@ -459,7 +470,7 @@ ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpect
                 item.hfCore = it->core;
                 auto residual = item.input;
                 for (qsizetype i = 0; i < e.size(); ++i) {
-                    double valence = interpolate(out.pz, out.fittedJ, it->pz[i]) / it->q[i];
+                    double valence = valenceAt(out, it->pz[i], it->q[i]);
                     item.valence.append(valence);
                     residual[i] -= valence;
                 }
@@ -478,5 +489,40 @@ ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpect
                 out.failures[label] = QString::fromUtf8(ex.what());
     }
     cancel(stop);
+    return out;
+}
+
+ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &label,
+                                const QVector<double> &incidentKev, const ComptonSettings &settings,
+                                const std::atomic_bool &stop) {
+    const auto geometry = wide.geometry.value(label);
+    const Scattering scattering(geometry);
+    QStringList high;
+    for (auto it = wide.crystals.cbegin(); it != wide.crystals.cend(); ++it) {
+        const double q = wide.geometry.value(it.key()).qMean;
+        if (std::isfinite(q) && q > 0 && q >= settings.highQMin)
+            high.append(it.key());
+    }
+    ComptonResult reference;
+    const auto prepared = fitReference(wide, wide, high, settings, reference, stop);
+    if (!prepared.contains(label))
+        fail(QStringLiteral("晶体 %1 的宽谱不可用。%2").arg(label, reference.failures.value(label)));
+
+    ComptonTransfer out;
+    out.analyzerKev = geometry.analyzerKev;
+    const auto &source = prepared.constFind(label)->normalizedWide;
+    for (double incident : incidentKev) {
+        cancel(stop);
+        if (!(std::isfinite(incident) && incident > 0))
+            fail(QStringLiteral("重建通道的入射能量无效。"));
+        const double loss = 1000 * (incident - geometry.analyzerKev);
+        const double factor = scattering.correction(incident);
+        if (!(std::isfinite(factor) && factor > 0))
+            fail(QStringLiteral("重建通道的康普顿截面修正无效。"));
+        out.correction.append(factor);
+        out.reference.append(interpolate(wide.energyEv, source, loss));
+        out.valence.append(valenceAt(reference, scattering.pz(incident),
+                                     scattering.qKev(incident) / (electronKev * alpha)));
+    }
     return out;
 }

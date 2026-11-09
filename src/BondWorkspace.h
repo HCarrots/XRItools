@@ -7,6 +7,7 @@
 class BondFigures;
 class QCheckBox;
 class QComboBox;
+class QDialog;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -49,8 +50,8 @@ class BondWorkspace : public QWidget {
         std::optional<QVector<double>> processed;
         std::optional<std::array<QVector<BondTriangle>, 2>> surfaces;
         std::array<QColor, 2> surfaceColors;
-        QString message, error, meshCaption;
-        bool normalized = false;
+        QString message, error, meshCaption, processingMethod;
+        bool normalized = false, subtracted = false;
     };
     void launch(const QString &, std::function<Work()>);
     void status(const QString &, bool error = false);
@@ -67,6 +68,7 @@ class BondWorkspace : public QWidget {
     void refreshVoxel(bool refreshSection = true, bool refreshSlice = true);
     void refreshMap();
     void refreshMontage();
+    void createComptonOptions();
     void applySpectralProcessing();
     void buildSurfaces();
     void changeEnergyUnits();
@@ -82,15 +84,20 @@ class BondWorkspace : public QWidget {
     BondVolume m_volume;
     QVector<double> m_processed, m_field;
     double m_referenceKev = 0., m_lo = 0., m_hi = 1.;
-    bool m_transfer = false, m_normalized = false;
+    bool m_transfer = false, m_normalized = false, m_subtracted = false;
     QString m_fieldLabel;
     QTabWidget *m_tabs = nullptr, *m_figures = nullptr;
     QLineEdit *m_sample = nullptr, *m_roi = nullptr, *m_output = nullptr, *m_anchor = nullptr,
               *m_background = nullptr, *m_normalization = nullptr;
+    QDialog *m_comptonOptions = nullptr;
+    QLineEdit *m_wideSpectrum = nullptr, *m_hfTable = nullptr, *m_composition = nullptr;
+    std::array<QLineEdit *, 5> m_comptonWindows{};
+    QDoubleSpinBox *m_highQ = nullptr, *m_coreScale = nullptr, *m_valenceCutoff = nullptr;
     QCheckBox *m_fitGains = nullptr, *m_loss = nullptr, *m_secondSurface = nullptr;
     QDoubleSpinBox *m_analyzer = nullptr, *m_ea = nullptr, *m_eb = nullptr, *m_level = nullptr,
                    *m_level2 = nullptr, *m_tolerance = nullptr;
-    QComboBox *m_mode = nullptr, *m_dataSource = nullptr, *m_spectralStyle = nullptr;
+    QComboBox *m_mode = nullptr, *m_dataSource = nullptr, *m_spectralStyle = nullptr,
+              *m_backgroundMode = nullptr;
     QSpinBox *m_channel = nullptr, *m_x = nullptr, *m_y = nullptr, *m_z = nullptr, *m_firstZ = nullptr,
              *m_countZ = nullptr, *m_strideZ = nullptr, *m_iterations = nullptr;
     QLabel *m_status = nullptr, *m_mapInfo = nullptr, *m_voxelInfo = nullptr, *m_quality = nullptr;

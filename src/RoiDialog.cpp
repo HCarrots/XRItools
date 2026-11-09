@@ -1,5 +1,6 @@
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
+#include "WorkflowUi.h"
 #include <QCryptographicHash>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -56,11 +57,17 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     resize(1580, 940);
     setMinimumSize(1200, 760);
     auto main = new QVBoxLayout(this);
-    auto heading = new QLabel(
-        tr("选择晶体 → 在对应探测器上拖动框选；无法框选时标记失效。坐标采用 [x1, "
-           "x2)、[y1, y2)，索引从 0 开始。列表支持 Ctrl 多选、Shift 连选、Ctrl+A 全选后批量标记失效。"));
-    heading->setWordWrap(true);
-    main->addWidget(heading);
+    WorkflowUi::compact(main);
+    auto help = [this](const QString &text) {
+        auto button = new QToolButton;
+        button->setText(tr("操作提示"));
+        button->setAutoRaise(true);
+        button->setToolTip(text);
+        connect(button, &QToolButton::clicked, this, [button] {
+            QToolTip::showText(button->mapToGlobal(QPoint(0, button->height())), button->toolTip(), button);
+        });
+        return button;
+    };
     auto controls = new QHBoxLayout;
     m_mode = new QComboBox;
     m_mode->setObjectName("RoiImageMode");
@@ -82,6 +89,8 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     m_showProfiles->setObjectName("ShowRoiProfiles");
     controls->addWidget(m_showProfiles);
     controls->addStretch();
+    controls->addWidget(help(tr("先选择晶体，再在对应探测器上拖动框选。坐标采用 [x1, x2)、[y1, y2)，索引从 0 开始。"
+                                "使用 Ctrl 多选、Shift 连选或 Ctrl+A 全选后，可批量标记失效。")));
     main->addLayout(controls);
     auto body = new QHBoxLayout;
     auto images = new QHBoxLayout;
@@ -89,6 +98,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
         auto group = new QGroupBox(i == 0 ? tr("LAMBDA · VB / HL / VU / HB · 60 个晶体")
                                           : tr("MINIPIX · VD · 15 个晶体"));
         auto box = new QVBoxLayout(group);
+        WorkflowUi::compact(box);
         m_plots[i] = new ScientificPlot;
         m_plots[i]->setObjectName(i == 0 ? "RoiLambdaPlot" : "RoiMinipixPlot");
         m_plots[i]->setLogarithmic(true);
@@ -138,11 +148,9 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     profileLog->setObjectName("RoiProfileLog");
     profileControls->addWidget(profileLog);
     profileControls->addStretch();
+    profileControls->addWidget(help(tr("拖动蓝色竖线调整 X、横线调整 Y，拖动交点或按住 Ctrl 拖动可同时定位。"
+                                       "固定 Y 查看行剖面，固定 X 查看列剖面。")));
     profileLayout->addLayout(profileControls);
-    auto profileHint = new QLabel(tr("拖动蓝色竖线调整 X、横线调整 Y，交点同时调整两者；Ctrl + "
-                                     "拖动可在任意位置实时定位。固定 Y 查看行剖面，固定 X 查看列剖面。"));
-    profileHint->setWordWrap(true);
-    profileLayout->addWidget(profileHint);
     auto curves = new QHBoxLayout;
     for (int i = 0; i < 2; ++i) {
         m_profiles[i] = new ScientificPlot;
@@ -190,7 +198,11 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     m_apply = apply;
     apply->setObjectName("ApplyRoiCoordinates");
     apply->setDefault(true);
-    panel->addWidget(apply);
+    auto applyRow = new QHBoxLayout;
+    applyRow->addWidget(apply);
+    auto next = new QPushButton(tr("下一个未设置晶体"));
+    applyRow->addWidget(next);
+    panel->addLayout(applyRow);
     auto rowButtons = new QHBoxLayout;
     auto invalid = new QPushButton(tr("标记失效"));
     m_invalid = invalid;
@@ -201,13 +213,10 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     rowButtons->addWidget(invalid);
     rowButtons->addWidget(clear);
     panel->addLayout(rowButtons);
-    auto next = new QPushButton(tr("下一个未设置晶体"));
-    panel->addWidget(next);
     body->addLayout(panel);
     main->addLayout(body, 1);
     m_message = new QLabel;
     m_message->setWordWrap(true);
-    main->addWidget(m_message);
     auto bottom = new QHBoxLayout;
     auto load = new QPushButton(tr("加载 ROI 方案…"));
     auto save = new QPushButton(tr("保存 ROI 方案…"));
@@ -217,7 +226,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     close->setObjectName("ReturnFromRoi");
     bottom->addWidget(load);
     bottom->addWidget(save);
-    bottom->addStretch();
+    bottom->addWidget(m_message, 1);
     bottom->addWidget(m_finish);
     bottom->addWidget(close);
     main->addLayout(bottom);

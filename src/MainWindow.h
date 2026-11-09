@@ -68,7 +68,8 @@ class MainWindow : public QMainWindow {
 
   private:
     void buildUi();
-    void showWorkspace(QWidget *page, const QString &title);
+    void showWorkspace(QWidget *page, const QString &title = {});
+    void updateBrowserTitle();
     QTreeWidgetItem *fileRoot(const QString &file) const;
     QTreeWidgetItem *itemAtPath(QTreeWidgetItem *root, const QString &path);
     void rememberFile();
@@ -125,8 +126,7 @@ class MainWindow : public QMainWindow {
     ImagingDialog *m_imaging = nullptr;
     BondWorkspace *m_bond = nullptr;
     QStackedWidget *m_workspaces = nullptr;
-    QWidget *m_browser = nullptr, *m_roiReturn = nullptr;
-    QLabel *m_workspaceTitle = nullptr;
+    QWidget *m_browser = nullptr, *m_roiReturn = nullptr, *m_frameControls = nullptr;
     QToolButton *m_backToBrowser = nullptr;
     QHash<QString, RoiDialog *> m_roiEditors;
     bool m_explorerVisible = true;
