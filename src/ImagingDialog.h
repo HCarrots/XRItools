@@ -1,5 +1,6 @@
 #pragma once
 #include "Imaging.h"
+#include "Isosurface.h"
 #include <QDialog>
 #include <QFutureWatcher>
 class QTabWidget;
@@ -14,6 +15,7 @@ class QPushButton;
 class QProgressBar;
 class ScientificPlot;
 class SpectrumPlot;
+class BondFigures;
 class ImagingDialog : public QDialog {
     Q_OBJECT
   public:
@@ -47,15 +49,20 @@ class ImagingDialog : public QDialog {
     struct Work {
         ImagingValidation validation;
         ImagingResult result;
+        QVector<SurfaceTriangle> mesh;
         QString error;
     };
     void buildUi();
     void refreshActions();
+    void setBusy(bool busy);
     void invalidate();
     void status(const QString &, bool error = false);
     void refreshValidation();
     void refreshResult();
     void refreshImage();
+    void refreshModelSource();
+    void buildModel();
+    const ImageMatrix &volumeData(int method) const;
     void refreshTrajectory();
     void exclusions(bool exclude);
     QJsonObject m_base;
@@ -70,18 +77,23 @@ class ImagingDialog : public QDialog {
     ImagingValidation m_validation;
     ImagingResult m_result;
     bool m_busy = false, m_updating = false, m_haveResult = false, m_validateOnly = false;
+    bool m_buildingModel = false;
+    double m_modelMin = 0., m_modelMax = 0.;
     std::atomic_bool m_cancel{false};
     QTabWidget *m_tabs = nullptr;
     QWidget *m_inputs = nullptr, *m_parameters = nullptr;
     QTableWidget *m_rois = nullptr;
     QPlainTextEdit *m_log = nullptr, *m_summary = nullptr, *m_validationText = nullptr;
-    QLabel *m_status = nullptr, *m_info = nullptr, *m_sliceLabel = nullptr;
+    QLabel *m_status = nullptr, *m_info = nullptr, *m_sliceLabel = nullptr, *m_modelRange = nullptr;
     QProgressBar *m_progress = nullptr;
     QPushButton *m_validateButton = nullptr, *m_runButton = nullptr, *m_cancelButton = nullptr,
                 *m_importButton = nullptr, *m_exportButton = nullptr, *m_excludeButton = nullptr,
-                *m_includeButton = nullptr, *m_openButton = nullptr;
+                *m_includeButton = nullptr, *m_openButton = nullptr, *m_buildModelButton = nullptr;
     QComboBox *m_method = nullptr, *m_plane = nullptr, *m_display = nullptr, *m_psfChoice = nullptr;
     QSpinBox *m_slice = nullptr;
     ScientificPlot *m_image = nullptr;
+    QComboBox *m_modelSource = nullptr;
+    QLineEdit *m_modelLevel = nullptr;
+    BondFigures *m_model = nullptr;
     SpectrumPlot *m_sensitivity = nullptr, *m_trajectory = nullptr, *m_spectrum = nullptr;
 };

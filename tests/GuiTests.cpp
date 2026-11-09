@@ -14,6 +14,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QDataStream>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -52,7 +53,7 @@ class GuiTests : public QObject {
         auto work = window.findChild<BondWorkspace *>("BondWorkspace");
         QVERIFY(work && work->isVisible());
         auto tabs = work->findChild<QTabWidget *>("BondSteps");
-        QVERIFY(tabs && !tabs->isTabEnabled(2));
+        QVERIFY(tabs && !tabs->isTabEnabled(BondWorkspace::Spectra));
         const auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
         const auto external = qEnvironmentVariable("XRI_BOND_TEST_VOLUME");
         if (external.isEmpty()) {
@@ -85,11 +86,11 @@ class GuiTests : public QObject {
             }
             auto validate = work->findChild<QPushButton *>("CheckBondInputs");
             auto run = work->findChild<QPushButton *>("RunBondVolume");
-            QVERIFY(validate && run && !run->isEnabled());
+            QVERIFY(validate && run && !run->isVisible());
             validate->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QCOMPARE(tabs->currentIndex(), 1);
-            QVERIFY(run->isEnabled());
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
+            QVERIFY(run->isVisible() && run->isEnabled());
             run->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QVERIFY(work->hasResult() && QFile::exists(output->text()));
@@ -102,7 +103,7 @@ class GuiTests : public QObject {
         }
         QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
         QVERIFY(work->hasResult());
-        QCOMPARE(tabs->currentIndex(), 2);
+        QCOMPARE(tabs->currentIndex(), BondWorkspace::Volume);
         auto spectrum = work->findChild<SpectrumPlot *>("BondVoxelSpectrum");
         auto slice = work->findChild<ScientificPlot *>("BondVoxelSlice");
         auto figure = work->findChild<QWidget *>("BondEnergyPosition");
@@ -211,7 +212,7 @@ class GuiTests : public QObject {
             QTest::mouseDClick(figure, Qt::LeftButton, Qt::NoModifier, origin);
             QVERIFY(figure->grab().toImage() == initial);
         }
-        work->selectStep(3);
+        work->selectStage(BondWorkspace::Results);
         auto mode = work->findChild<QComboBox *>("BondContrastMode");
         auto map = work->findChild<QLabel *>("BondMapInfo");
         auto montage = work->findChild<QWidget *>("BondMontage");
@@ -240,6 +241,136 @@ class GuiTests : public QObject {
         QVERIFY(status->text().contains(QStringLiteral("三角形")));
         if (!dir.isEmpty())
             QVERIFY(window.grab().save(QDir(dir).filePath("contrast-isosurface.png")));
+        if (external.isEmpty()) {
+            work->selectStage(BondWorkspace::Spectra);
+            auto prepare = work->findChild<QPushButton *>("PrepareBondProjection");
+            auto run = work->findChild<QPushButton *>("RunBondContrast");
+            auto contrastEa = work->findChild<QDoubleSpinBox *>("BondContrastEa");
+            auto contrastEb = work->findChild<QDoubleSpinBox *>("BondContrastEb");
+            auto output = work->findChild<QLineEdit *>("BondOutput");
+            auto projection = work->findChild<ScientificPlot *>("BondProjectionPlot");
+            auto xStep = work->findChild<QLineEdit *>("BondXStep");
+            QVERIFY(prepare && run && contrastEa && contrastEb && output && projection && xStep);
+            QVERIFY(run->isVisible() && !run->isEnabled());
+            const auto path = temp.filePath("direct-contrast.h5");
+            contrastEa->setValue(2);
+            contrastEb->setValue(1);
+            prepare->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
+            QVERIFY(projection->isVisible() && projection->data().finiteCount == 4);
+            QVERIFY(projection->data().maximum < 0.);
+            if (!dir.isEmpty()) {
+                QVERIFY(window.grab().save(QDir(dir).filePath("detector-spectra-settings.png")));
+            }
+            work->selectStage(BondWorkspace::Spectra);
+            contrastEb->setValue(1.25);
+            QVERIFY(!run->isEnabled() && !projection->isVisible());
+            QVERIFY(!QFile::exists(path));
+            contrastEb->setValue(1);
+            prepare->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
+            QVERIFY(run->isVisible() && run->isEnabled() && projection->isVisible());
+            output->setText(path);
+            xStep->setText("0.125");
+            QVERIFY(run->isEnabled() && projection->data().finiteCount == 4);
+            run->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QVERIFY2(QFile::exists(path), qPrintable(status->text()));
+            const auto contrast = BondImaging::loadContrast(path);
+            QVERIFY(contrast);
+            QCOMPARE(HdfFile::inspect(path, "/entry/bond/contrast").dims, (QVector<quint64>{17, 2, 2}));
+            QCOMPARE(contrast->diagnostics.value("ea_kev").toDouble(), 2.);
+            QCOMPARE(contrast->diagnostics.value("eb_kev").toDouble(), 1.);
+            QVERIFY(contrast->values[32] < 0);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
+            QCOMPARE(mode->currentIndex(), 2);
+            QCOMPARE(figureTabs->currentIndex(), 1);
+            QVERIFY(map->text().contains(QStringLiteral("S(1) − S(2)")));
+            QVERIFY2(status->text().contains(QStringLiteral("三角形")), qPrintable(status->text()));
+            if (!dir.isEmpty())
+                QVERIFY(window.grab().save(QDir(dir).filePath("direct-contrast.png")));
+            work->selectStage(BondWorkspace::Volume);
+            plotTabs->setCurrentIndex(1);
+            style->setCurrentIndex(1);
+            QVERIFY(figure->isVisible() && style->isVisible());
+            work->openVolume(path);
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
+            QCOMPARE(mode->currentIndex(), 2);
+            QVERIFY(tabs->isTabEnabled(BondWorkspace::Volume));
+        }
+    }
+    void bondReferenceMaps() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        BondVolume volume;
+        constexpr double analyzer = 9.;
+        const QVector<double> e{280, 281, 282, 283, 284, 285, 286, 287};
+        const QVector<double> matrix{.1, .25, .6, 1, .6, .3, .2, .1};
+        const QVector<double> target{.1, .1, .15, .2, .45, 1, .55, .3};
+        volume.axes = {{}, {0, 1, 2, 3, 4, 5, 6, 7}, {0, 1, 2, 3, 4, 5}, {0, 1}};
+        volume.diagnostics["schema"] = "XRI.bond.v1";
+        volume.sensitivity.fill(1., 8);
+        volume.converged.fill(true, e.size());
+        for (qsizetype i = 0; i < e.size(); ++i) {
+            volume.axes[0].append(analyzer + e[i] / 1000.);
+            for (int x = 0; x < 8; ++x)
+                for (int y = 0; y < 6; ++y)
+                    for (int z = 0; z < 2; ++z) {
+                        const double coefficient = x == 2 && y > 0 ? -2. : x == 5 && y < 5 ? 2. : 0.;
+                        volume.intensity.append(5 + .5 * i + (2 + .1 * y) * matrix[i] + coefficient * target[i]);
+                    }
+        }
+        const auto path = temp.filePath("spectral-volume.h5");
+        const std::atomic_bool stop{false};
+        BondImaging::save(path, volume, stop);
+        const auto matrixPath = temp.filePath("matrix.h5"), targetPath = temp.filePath("target.h5");
+        ProcessedSpectrum ref;
+        ref.energyEv = e;
+        ref.intensityUnit = "a.u.";
+        ref.crystals = {{"matrix", matrix}};
+        SpectrumProcessing::save(matrixPath, ref);
+        ref.crystals = {{"target", target}};
+        SpectrumProcessing::save(targetPath, ref);
+
+        MainWindow window;
+        window.resize(1200, 840);
+        window.show();
+        auto work = window.openBondImaging();
+        work->openVolume(path);
+        QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+        QVERIFY(work->hasResult());
+        work->selectStage(BondWorkspace::Results);
+        auto run = work->findChild<QPushButton *>("FitBondReferenceMaps");
+        QVERIFY(run);
+        auto page = run->parentWidget();
+        auto figures = qobject_cast<QTabWidget *>(page->parentWidget()->parentWidget());
+        QVERIFY(figures);
+        figures->setCurrentWidget(page);
+        QVERIFY(run->isVisible());
+        work->findChild<QLineEdit *>("BondMatrixReference")->setText(matrixPath);
+        work->findChild<QLineEdit *>("BondTargetReference")->setText(targetPath);
+        work->findChild<QDoubleSpinBox *>("BondReferenceAnalyzer")->setValue(analyzer);
+        work->findChild<QDoubleSpinBox *>("BondReferenceThreshold")->setValue(.5);
+        run->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+        const auto residual = work->findChild<ScientificPlot *>("BondReferenceMap1");
+        const auto coefficient = work->findChild<ScientificPlot *>("BondReferenceMap2");
+        const auto spectra = work->findChild<SpectrumPlot *>("BondReferenceSpectra");
+        QVERIFY(residual && coefficient && spectra);
+        QCOMPARE(coefficient->data().finiteCount, 48u);
+        const auto &map = coefficient->data().values;
+        QVERIFY(std::abs(map[10] + 2.) < 1e-10 && std::abs(map[13] - 2.) < 1e-10);
+        QCOMPARE(map[0], 0.);
+        QVERIFY(residual->data().values[13] > .01 && residual->data().values[0] < 1e-20);
+        QCOMPARE(spectra->curves().size(), 4);
+        const auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
+        if (!dir.isEmpty()) {
+            QVERIFY(QDir().mkpath(dir));
+            QVERIFY(window.grab().save(QDir(dir).filePath("reference-fit-four-panel.png")));
+        }
     }
     void academicTicks() {
         for (auto range : {QPair<double, double>{0, 4095},
@@ -357,7 +488,9 @@ class GuiTests : public QObject {
             QVERIFY(image->importConfiguration(qEnvironmentVariable("XRI_IMAGING_CONFIG")));
         if (!qEnvironmentVariable("XRI_IMAGING_RESULT").isEmpty())
             QVERIFY(image->loadResult(qEnvironmentVariable("XRI_IMAGING_RESULT")));
-        for (int i = 0; i < 5; ++i) {
+        const auto imagingSteps = image->findChild<QTabWidget *>("ImagingSteps");
+        QVERIFY(imagingSteps);
+        for (int i = 0; i < imagingSteps->count(); ++i) {
             image->selectStep(i);
             capture(QString("imaging%1").arg(i));
         }
@@ -476,7 +609,7 @@ class GuiTests : public QObject {
     }
     void imagingWorkflow() {
         QTemporaryDir temp;
-        auto config = ImagingFixture::create(temp.path());
+        auto config = ImagingFixture::create(temp.path(), false, false, false, false, /*spatial=*/true);
         auto output = config["output"].toObject();
         output["plots"] = true;
         config["output"] = output;
@@ -487,6 +620,15 @@ class GuiTests : public QObject {
         auto dialog = window.findChild<ImagingDialog *>();
         QVERIFY(dialog);
         dialog->applyConfiguration(config);
+        auto steps = dialog->findChild<QTabWidget *>("ImagingSteps");
+        auto avizo = dialog->findChild<QCheckBox *>("output.save_avizo");
+        QVERIFY(steps && avizo && !avizo->isChecked());
+        QCOMPARE(steps->tabText(3), QStringLiteral("4 剖面分析"));
+        QCOMPARE(steps->tabText(4), QStringLiteral("5 三维模型"));
+        QCOMPARE(steps->tabText(5), QStringLiteral("6 诊断与日志"));
+        auto buildModel = dialog->findChild<QPushButton *>("BuildImagingModel");
+        QVERIFY(buildModel && !buildModel->isEnabled());
+        avizo->setChecked(true);
         auto order = dialog->findChild<QComboBox *>("scan_loops.sample_order");
         auto points = dialog->findChild<QSpinBox *>("scan_loops.sample_dcm_points");
         QVERIFY(order && points && order->count() == 7);
@@ -508,6 +650,38 @@ class GuiTests : public QObject {
         QTest::mouseClick(run, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 15000);
         QVERIFY2(dialog->hasResult(), qPrintable(dialog->statusText()));
+        {
+            const auto outputDir = temp.filePath("output");
+            ImagingH5 hdf(outputDir + "/reconstruction.h5");
+            const auto voxels = hdf.read("reinterp_insect_ck");
+            QVERIFY(voxels[40] != voxels[41] && voxels[41] != voxels[42]);
+            QFile mesh(outputDir + "/reconstruction.am");
+            QVERIFY(mesh.open(QIODevice::ReadOnly));
+            QByteArray header;
+            while (!mesh.atEnd()) {
+                const auto line = mesh.readLine();
+                if (line == "@1\n")
+                    break;
+                header += line;
+            }
+            QVERIFY(header.startsWith("# AmiraMesh BINARY-LITTLE-ENDIAN 2.1\n"));
+            QVERIFY(header.contains("define Lattice 21 2 2\n"));
+            QVERIFY(header.contains("BoundingBox -1 1 0 1 -1 0,"));
+            QVERIFY(header.contains("Coordinates \"mm\""));
+            const auto payload = mesh.readAll();
+            QCOMPARE(payload.size(), qsizetype(21 * 2 * 2 * 4));
+            QDataStream stream(payload);
+            stream.setByteOrder(QDataStream::LittleEndian);
+            stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+            for (int z = 0; z < 2; ++z)
+                for (int y = 0; y < 2; ++y)
+                    for (int x = 0; x < 21; ++x) {
+                        float voxel;
+                        stream >> voxel;
+                        QCOMPARE(double(voxel), voxels[(x * 2 + y) * 2 + z]);
+                    }
+            QCOMPARE(stream.status(), QDataStream::Ok);
+        }
         QImage diagnostic(temp.path() + "/output/diagnostics.png");
         QVERIFY(!diagnostic.isNull() && diagnostic.dotsPerMeterX() >= 11800);
         if (!qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS").isEmpty())
@@ -519,6 +693,30 @@ class GuiTests : public QObject {
         QVERIFY(slice);
         slice->setValue(slice->maximum());
         QVERIFY(!image->data().values.isEmpty());
+        dialog->selectStep(4);
+        auto model = dialog->findChild<QWidget *>("ImagingModel");
+        auto modelSource = dialog->findChild<QComboBox *>("ImagingModelSource");
+        auto threshold = dialog->findChild<QLineEdit *>("ImagingModelThreshold");
+        QVERIFY(model && modelSource && threshold && model->isVisible() && buildModel->isEnabled());
+        QCOMPARE(modelSource->count(), 3);
+        const auto validThreshold = threshold->text();
+        threshold->setText("-1");
+        buildModel->click();
+        QVERIFY(!dialog->isBusy() && dialog->statusText().contains(QStringLiteral("阈值须介于")));
+        threshold->setText(validThreshold);
+        buildModel->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY2(dialog->statusText().contains(QStringLiteral("等值面已生成")), qPrintable(dialog->statusText()));
+        const QPoint origin = model->rect().center(), end = origin + QPoint(95, 30);
+        const auto initial = model->grab().toImage();
+        QTest::mousePress(model, Qt::LeftButton, Qt::NoModifier, origin);
+        QMouseEvent drag(QEvent::MouseMove, end, model->mapToGlobal(end), Qt::NoButton, Qt::LeftButton,
+                         Qt::NoModifier);
+        QApplication::sendEvent(model, &drag);
+        QTest::mouseRelease(model, Qt::LeftButton, Qt::NoModifier, end);
+        QVERIFY(model->grab().toImage() != initial);
+        QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, origin);
+        QCOMPARE(model->grab().toImage(), initial);
         dialog->hide();
         window.openImaging(3);
         QCOMPARE(window.findChild<ImagingDialog *>(), dialog);
@@ -529,6 +727,13 @@ class GuiTests : public QObject {
         QVERIFY(!dialog->hasResult() && image->data().values.isEmpty());
         QVERIFY(dialog->loadResult(temp.path() + "/output"));
         QVERIFY(dialog->hasResult());
+        QVERIFY(avizo->isChecked());
+        dialog->selectStep(4);
+        modelSource->setCurrentIndex(modelSource->findData(1));
+        buildModel->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY2(dialog->statusText().contains(QStringLiteral("等值面已生成")), qPrintable(dialog->statusText()));
+        dialog->selectStep(3);
         auto open = dialog->findChild<QPushButton *>("OpenImagingHdf");
         QVERIFY(open);
         QTest::mouseClick(open, Qt::LeftButton);
@@ -552,7 +757,14 @@ class GuiTests : public QObject {
         auto directory = qEnvironmentVariable("XRI_IMAGING_SCREENSHOTS");
         if (!directory.isEmpty()) {
             QVERIFY(QDir().mkpath(directory));
-            for (int tab = 0; tab < 5; ++tab) {
+            auto steps = dialog.findChild<QTabWidget *>("ImagingSteps");
+            auto buildModel = dialog.findChild<QPushButton *>("BuildImagingModel");
+            QVERIFY(steps && buildModel);
+            dialog.selectStep(4);
+            buildModel->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 15000);
+            QVERIFY2(dialog.statusText().contains(QStringLiteral("等值面已生成")), qPrintable(dialog.statusText()));
+            for (int tab = 0; tab < steps->count(); ++tab) {
                 dialog.selectStep(tab);
                 QTest::qWait(50);
                 QVERIFY(dialog.grab().save(directory + QString("/step%1.png").arg(tab)));

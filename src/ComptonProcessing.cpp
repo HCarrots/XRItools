@@ -492,11 +492,9 @@ ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpect
     return out;
 }
 
-ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &label,
-                                const QVector<double> &incidentKev, const ComptonSettings &settings,
-                                const std::atomic_bool &stop) {
-    const auto geometry = wide.geometry.value(label);
-    const Scattering scattering(geometry);
+QMap<QString, ComptonTransfer> transferCompton(const ProcessedSpectrum &wide, const QStringList &labels,
+                                                const QVector<double> &incidentKev, const ComptonSettings &settings,
+                                                const std::atomic_bool &stop) {
     QStringList high;
     for (auto it = wide.crystals.cbegin(); it != wide.crystals.cend(); ++it) {
         const double q = wide.geometry.value(it.key()).qMean;
@@ -505,24 +503,36 @@ ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &la
     }
     ComptonResult reference;
     const auto prepared = fitReference(wide, wide, high, settings, reference, stop);
-    if (!prepared.contains(label))
-        fail(QStringLiteral("晶体 %1 的宽谱不可用。%2").arg(label, reference.failures.value(label)));
+    QMap<QString, ComptonTransfer> transfers;
+    for (const auto &label : labels) {
+        const auto geometry = wide.geometry.value(label);
+        const Scattering scattering(geometry);
+        if (!prepared.contains(label))
+            fail(QStringLiteral("晶体 %1 的宽谱不可用。%2").arg(label, reference.failures.value(label)));
 
-    ComptonTransfer out;
-    out.analyzerKev = geometry.analyzerKev;
-    const auto &source = prepared.constFind(label)->normalizedWide;
-    for (double incident : incidentKev) {
-        cancel(stop);
-        if (!(std::isfinite(incident) && incident > 0))
-            fail(QStringLiteral("重建通道的入射能量无效。"));
-        const double loss = 1000 * (incident - geometry.analyzerKev);
-        const double factor = scattering.correction(incident);
-        if (!(std::isfinite(factor) && factor > 0))
-            fail(QStringLiteral("重建通道的康普顿截面修正无效。"));
-        out.correction.append(factor);
-        out.reference.append(interpolate(wide.energyEv, source, loss));
-        out.valence.append(valenceAt(reference, scattering.pz(incident),
-                                     scattering.qKev(incident) / (electronKev * alpha)));
+        ComptonTransfer out;
+        out.analyzerKev = geometry.analyzerKev;
+        const auto &source = prepared.constFind(label)->normalizedWide;
+        for (double incident : incidentKev) {
+            cancel(stop);
+            if (!(std::isfinite(incident) && incident > 0))
+                fail(QStringLiteral("重建通道的入射能量无效。"));
+            const double loss = 1000 * (incident - geometry.analyzerKev);
+            const double factor = scattering.correction(incident);
+            if (!(std::isfinite(factor) && factor > 0))
+                fail(QStringLiteral("重建通道的康普顿截面修正无效。"));
+            out.correction.append(factor);
+            out.reference.append(interpolate(wide.energyEv, source, loss));
+            out.valence.append(valenceAt(reference, scattering.pz(incident),
+                                         scattering.qKev(incident) / (electronKev * alpha)));
+        }
+        transfers.insert(label, std::move(out));
     }
-    return out;
+    return transfers;
+}
+
+ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &label,
+                                const QVector<double> &incidentKev, const ComptonSettings &settings,
+                                const std::atomic_bool &stop) {
+    return transferCompton(wide, QStringList{label}, incidentKev, settings, stop).value(label);
 }

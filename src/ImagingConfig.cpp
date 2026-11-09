@@ -419,7 +419,7 @@ QJsonObject Imaging::defaults() {
                            {"max_iterations", 40000},
                            {"tolerance", 1e-6}}},
         {"runtime", QJsonObject{{"chunk_frames", 16}, {"output_dir", QJsonValue()}}},
-        {"output", QJsonObject{{"save_diagnostics", true}, {"plots", true}}}};
+        {"output", QJsonObject{{"save_diagnostics", true}, {"plots", true}, {"save_avizo", false}}}};
 }
 QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) {
     auto c = merge(defaults(), input);
@@ -517,7 +517,8 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
     for (const auto &pair : {qMakePair(QString("reconstruction"), QString("fit_gains")),
                              qMakePair(QString("tv"), QString("enabled")),
                              qMakePair(QString("output"), QString("save_diagnostics")),
-                             qMakePair(QString("output"), QString("plots"))})
+                             qMakePair(QString("output"), QString("plots")),
+                             qMakePair(QString("output"), QString("save_avizo"))})
         if (!c[pair.first].toObject()[pair.second].isBool())
             fail("Imaging flags must be booleans");
     auto roi = c["roi"].toObject();

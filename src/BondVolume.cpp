@@ -1,5 +1,6 @@
 #include "BondVolume.h"
 #include "ImagingIO.h"
+#include <Eigen/QR>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -11,16 +12,18 @@ using namespace ImageUtil;
 namespace {
 constexpr qsizetype maxSamples = 16000000;
 const QString fieldPath = QStringLiteral("/entry/bond/intensity");
+const QString contrastPath = QStringLiteral("/entry/bond/contrast");
+const QString diagnosticsPath = QStringLiteral("/entry/bond/diagnostics_json");
 const QStringList axisPaths{"/entry/bond/incident_energy_kev", "/entry/bond/x_mm", "/entry/bond/y_mm",
                             "/entry/bond/z_mm"};
 
-qsizetype checkedSize(const QVector<quint64> &shape) {
+qsizetype checkedSize(const QVector<quint64> &shape, int rank = 4) {
     qsizetype count = 1;
-    if (shape.size() != 4)
-        fail(QStringLiteral("结果必须为 [E,X,Y,Z] 四维数组。"));
+    if (shape.size() != rank)
+        fail(QStringLiteral("结果数组的维数与格式不一致。"));
     for (auto n : shape) {
         if (n < 2 || n > quint64(maxSamples / count))
-            fail(QStringLiteral("四维结果尺寸无效或超过 1600 万采样点。"));
+            fail(QStringLiteral("结果尺寸无效或超过 1600 万采样点。"));
         count *= qsizetype(n);
     }
     return count;
@@ -31,7 +34,7 @@ void checkAxis(const QVector<double> &axis) {
         fail(QStringLiteral("各轴至少需要两个坐标。"));
     for (qsizetype i = 0; i < axis.size(); ++i)
         if (!std::isfinite(axis[i]) || (i && axis[i] <= axis[i - 1]))
-            fail(QStringLiteral("四维坐标轴必须有限且严格递增。"));
+            fail(QStringLiteral("坐标轴必须有限且严格递增。"));
 }
 
 struct Bracket {
@@ -55,6 +58,12 @@ Bracket bracket(const QVector<double> &axis, double at) {
 double valueAt(const double *data, qsizetype stride, Bracket b) {
     const double first = data[b.first * stride];
     return b.first == b.last ? first : first + b.fraction * (data[b.last * stride] - first);
+}
+
+void addAt(QVector<double> &weights, Bracket b, double scale) {
+    weights[b.first] += (1. - b.fraction) * scale;
+    if (b.first != b.last)
+        weights[b.last] += b.fraction * scale;
 }
 
 struct SpectralIntegral {
@@ -88,6 +97,14 @@ struct SpectralIntegral {
         }
         return sum;
     }
+
+    void addWeights(QVector<double> &weights, double scale) const {
+        for (qsizetype i = 1; i < points.size(); ++i) {
+            const double halfStep = scale * .5 * (energy[i] - energy[i - 1]);
+            addAt(weights, points[i - 1], halfStep);
+            addAt(weights, points[i], halfStep);
+        }
+    }
 };
 
 bool supported(const BondVolume &v, qsizetype voxel) {
@@ -107,6 +124,136 @@ qsizetype BondVolume::voxel(int x, int y, int z) const {
 QString BondImaging::diagnosticPngPath(const QString &path) {
     const QFileInfo result(path);
     return result.dir().filePath(result.completeBaseName() + ".diagnostics.png");
+}
+
+void BondImaging::saveContrast(const QString &path, const BondContrast &contrast, const std::atomic_bool &stop) {
+    cancel(stop);
+    QVector<quint64> shape;
+    for (const auto &axis : contrast.axes) {
+        checkAxis(axis);
+        shape.append(quint64(axis.size()));
+    }
+    if (checkedSize(shape, 3) != contrast.values.size())
+        fail(QStringLiteral("衬度数据与空间坐标尺寸不一致。"));
+    const QFileInfo target(path);
+    QTemporaryDir temp(target.dir().filePath(".xri-bond-XXXXXX"));
+    if (!temp.isValid())
+        fail(QStringLiteral("无法在输出目录建立临时文件。"));
+    const auto staged = temp.filePath("contrast.h5");
+    {
+        ImagingH5 hdf(staged, true);
+        hdf.write(contrastPath, shape, contrast.values.constData());
+        const auto spatialPaths = axisPaths.sliced(1);
+        for (int i = 0; i < spatialPaths.size(); ++i)
+            hdf.write(spatialPaths[i], {shape[i]}, contrast.axes[i].constData(), false);
+        hdf.scales(contrastPath, spatialPaths);
+        hdf.attributes(contrastPath, {{"axis_order", "X,Y,Z"}, {"units", "relative density difference"},
+                                      {"schema", "XRI.bond.contrast.v1"}});
+        hdf.writeText(diagnosticsPath,
+                      QString::fromUtf8(QJsonDocument(contrast.diagnostics).toJson(QJsonDocument::Compact)));
+    }
+    cancel(stop);
+    if (!QFile::rename(staged, target.absoluteFilePath()))
+        fail(QStringLiteral("无法提交三维衬度文件，请确认文件名尚未使用。"));
+}
+
+std::optional<BondContrast> BondImaging::loadContrast(const QString &path) {
+    ImagingH5 hdf(path);
+    if (!hdf.contains(contrastPath))
+        return std::nullopt;
+    const auto shape = HdfFile::inspect(path, contrastPath).dims;
+    checkedSize(shape, 3);
+    BondContrast contrast;
+    for (int i = 0; i < shape.size(); ++i) {
+        if (HdfFile::inspect(path, axisPaths[i + 1]).dims != QVector<quint64>{shape[i]})
+            fail(QStringLiteral("衬度数据与空间坐标尺寸不一致。"));
+        auto axis = hdf.read(axisPaths[i + 1]);
+        checkAxis(axis);
+        contrast.axes.append(std::move(axis));
+    }
+    contrast.diagnostics = QJsonDocument::fromJson(hdf.text(diagnosticsPath).toUtf8()).object();
+    if (contrast.diagnostics.value("schema").toString() != "XRI.bond.contrast.v1")
+        fail(QStringLiteral("无法识别三维衬度结果版本。"));
+    const double ea = contrast.diagnostics.value("ea_kev").toDouble(NAN);
+    const double eb = contrast.diagnostics.value("eb_kev").toDouble(NAN);
+    if (!std::isfinite(ea) || !std::isfinite(eb) || std::abs(eb - ea) <= 1e-9)
+        fail(QStringLiteral("三维衬度结果缺少有效的 Ea、Eb。"));
+    contrast.values = hdf.read(contrastPath);
+    return contrast;
+}
+
+QVector<double> BondImaging::contrastWeights(const QVector<double> &energy, double ea, double eb,
+                                           const BondSpectralSettings &settings) {
+    checkAxis(energy);
+    if (std::abs(eb - ea) <= 1e-9 || settings.normalization)
+        fail(QStringLiteral("三维衬度需要两个不同能量，使用相对强度差值。"));
+    const auto a = bracket(energy, ea), b = bracket(energy, eb);
+    const auto *reference = settings.compton ? &*settings.compton : nullptr;
+    QVector<bool> covered(energy.size(), true);
+    if (reference) {
+        if (reference->correction.size() != energy.size() || reference->valence.size() != energy.size() ||
+            reference->reference.size() != energy.size())
+            fail(QStringLiteral("康普顿参考与实测能量轴不一致。"));
+        for (qsizetype i = 0; i < energy.size(); ++i) {
+            const auto correction = reference->correction[i];
+            if (!(std::isfinite(correction) && correction > 0))
+                fail(QStringLiteral("康普顿截面修正无效。"));
+            covered[i] = std::isfinite(reference->valence[i]);
+        }
+        if (!covered[a.first] || !covered[a.last] || !covered[b.first] || !covered[b.last])
+            fail(QStringLiteral("Ea 或 Eb 超出康普顿参考轮廓覆盖。"));
+    }
+    QVector<double> weights(energy.size(), 0.);
+    addAt(weights, a, -1.);
+    addAt(weights, b, 1.);
+    if (reference)
+        for (qsizetype i = 0; i < weights.size(); ++i)
+            weights[i] /= reference->correction[i];
+
+    // Apply the transpose of the spectral preprocessing to the two-energy difference.
+    if (!settings.background.isEmpty()) {
+        for (auto range : settings.background) {
+            if (!(range.first < range.second))
+                fail(QStringLiteral("线性拟合区间必须递增。"));
+            bracket(energy, range.first);
+            bracket(energy, range.second);
+        }
+        QVector<qsizetype> fitPoints;
+        double mean = 0.;
+        for (qsizetype i = 0; i < energy.size(); ++i)
+            if (covered[i] && std::any_of(settings.background.cbegin(), settings.background.cend(),
+                                          [&](auto range) { return energy[i] >= range.first - 1e-9 &&
+                                                                   energy[i] <= range.second + 1e-9; })) {
+                fitPoints.append(i);
+                mean += energy[i];
+            }
+        if (fitPoints.size() < 2)
+            fail(QStringLiteral("线性背底至少需要两个有参考覆盖的实测能量点。"));
+        mean /= fitPoints.size();
+        double xx = 0., offset = 0., slope = 0.;
+        for (auto i : fitPoints)
+            xx += (energy[i] - mean) * (energy[i] - mean);
+        for (qsizetype i = 0; i < energy.size(); ++i) {
+            offset += weights[i];
+            slope += weights[i] * (energy[i] - mean);
+        }
+        for (auto i : fitPoints)
+            weights[i] -= offset / fitPoints.size() + slope * (energy[i] - mean) / xx;
+    }
+    if (reference) {
+        const SpectralIntegral match(energy, reference->matchWindow, covered);
+        const double area = match.area(reference->reference);
+        if (!(std::isfinite(area) && area > 0))
+            fail(QStringLiteral("幅度匹配区间需要完整覆盖和正的宽谱积分。"));
+        double valence = 0.;
+        for (qsizetype i = 0; i < weights.size(); ++i)
+            if (covered[i])
+                valence += weights[i] * reference->valence[i];
+        match.addWeights(weights, -valence / area);
+        for (qsizetype i = 0; i < weights.size(); ++i)
+            weights[i] *= reference->correction[i];
+    }
+    return weights;
 }
 
 void BondImaging::save(const QString &path, const BondVolume &volume, const std::atomic_bool &stop) {
@@ -321,53 +468,120 @@ QVector<double> BondImaging::energySlice(const BondVolume &v, const QVector<doub
 
 QVector<BondTriangle> BondImaging::surface(const BondVolume &v, const QVector<double> &field, double level,
                                            const std::atomic_bool &stop) {
-    if (field.size() != v.voxelCount() || !std::isfinite(level))
+    if (v.axes.size() != 4)
         fail(QStringLiteral("等值面输入无效。"));
-    constexpr int tetrahedra[6][4]{{0, 1, 3, 7}, {0, 3, 2, 7}, {0, 2, 6, 7},
-                                   {0, 6, 4, 7}, {0, 4, 5, 7}, {0, 5, 1, 7}};
-    QVector<BondTriangle> mesh;
-    for (int x = 0; x + 1 < v.axes[1].size(); ++x) {
-        cancel(stop);
-        for (int y = 0; y + 1 < v.axes[2].size(); ++y)
-            for (int z = 0; z + 1 < v.axes[3].size(); ++z) {
-                std::array<double, 8> values;
-                std::array<QVector3D, 8> points;
-                for (int i = 0; i < 8; ++i) {
-                    const int ix = x + (i & 1), iy = y + ((i >> 1) & 1), iz = z + (i >> 2);
-                    values[i] = field[v.voxel(ix, iy, iz)];
-                    points[i] = QVector3D(float(v.axes[1][ix]), float(v.axes[2][iy]), float(v.axes[3][iz]));
-                }
-                const auto [min, max] = std::minmax_element(values.cbegin(), values.cend());
-                if (*min >= level || *max < level ||
-                    !std::all_of(values.cbegin(), values.cend(), [](double f) { return std::isfinite(f); }))
-                    continue;
-                auto edge = [&](int a, int b) {
-                    return points[a] +
-                           float((level - values[a]) / (values[b] - values[a])) * (points[b] - points[a]);
-                };
-                for (const auto &tetra : tetrahedra) {
-                    int above[4], below[4], a = 0, b = 0;
-                    for (int i : tetra)
-                        if (values[i] >= level)
-                            above[a++] = i;
-                        else
-                            below[b++] = i;
-                    if (a == 1)
-                        mesh.append(BondTriangle{edge(above[0], below[0]), edge(above[0], below[1]),
-                                                 edge(above[0], below[2])});
-                    else if (a == 3)
-                        mesh.append(BondTriangle{edge(below[0], above[0]), edge(below[0], above[1]),
-                                                 edge(below[0], above[2])});
-                    else if (a == 2) {
-                        const auto p = edge(above[0], below[0]), q = edge(above[0], below[1]),
-                                   r = edge(above[1], below[0]), s = edge(above[1], below[1]);
-                        mesh.append(BondTriangle{p, q, r});
-                        mesh.append(BondTriangle{q, s, r});
-                    }
-                }
-                if (mesh.size() > 500000)
-                    fail(QStringLiteral("等值面过于复杂，请调整阈值或使用较粗的 X 网格。"));
-            }
+    return Isosurface::extract(v.axes.sliced(1), field.constData(), field.size(), level, stop);
+}
+
+BondReferenceSlice BondImaging::fitReferenceSlice(
+    const BondVolume &v, int z, double analyzerKev, const BondReferenceSpectrum &matrix,
+    const BondReferenceSpectrum &target, std::optional<QPair<double, double>> window, double threshold,
+    const std::atomic_bool &stop) {
+    if (v.axes.size() != 4 || z < 0 || z >= v.axes[3].size() || !(analyzerKev > 0) ||
+        !std::isfinite(analyzerKev) || !std::isfinite(threshold) || threshold < 0)
+        fail(QStringLiteral("请检查 Z 切片、分析器能量和系数阈值。"));
+    for (const auto *ref : {&matrix, &target}) {
+        checkAxis(ref->energyEv);
+        if (ref->intensity.size() != ref->energyEv.size())
+            fail(QStringLiteral("参考谱的能量与强度长度不一致。"));
     }
-    return mesh;
+    BondReferenceSlice out;
+    out.z = z;
+    out.threshold = threshold;
+    QVector<qsizetype> channels;
+    const double lo = std::max(matrix.energyEv.first(), target.energyEv.first());
+    const double hi = std::min(matrix.energyEv.last(), target.energyEv.last());
+    if (window && (!(window->first < window->second) || window->first < lo || window->second > hi))
+        fail(QStringLiteral("拟合能区须位于两条参考谱共同覆盖的能量范围内。"));
+    const auto &incident = v.axes[0];
+    for (qsizetype i = 0; i < incident.size(); ++i) {
+        const double e = 1000 * (incident[i] - analyzerKev);
+        if (!v.converged[i] || e < lo - 1e-9 || e > hi + 1e-9 ||
+            (window && (e < window->first - 1e-9 || e > window->second + 1e-9)))
+            continue;
+        const double a = valueAt(matrix.intensity.constData(), 1, bracket(matrix.energyEv, e));
+        const double b = valueAt(target.intensity.constData(), 1, bracket(target.energyEv, e));
+        if (!std::isfinite(a) || !std::isfinite(b))
+            fail(QStringLiteral("拟合能区的参考谱含缺失强度。"));
+        channels.append(i);
+        out.energyEv.append(e);
+        out.matrixReference.append(a);
+        out.targetReference.append(b);
+    }
+    if (channels.size() < 5)
+        fail(QStringLiteral("两条参考谱与样品的共同拟合能区内至少需要五个已收敛通道。"));
+    for (auto *ref : {&out.matrixReference, &out.targetReference}) {
+        double scale = 0.;
+        for (double value : std::as_const(*ref))
+            scale = std::max(scale, std::abs(value));
+        if (!(scale > 0.))
+            fail(QStringLiteral("参考谱在拟合能区内没有有效强度。"));
+        for (double &value : *ref)
+            value /= scale;
+    }
+
+    const auto n = channels.size();
+    const double span = out.energyEv.last() - out.energyEv.first();
+    const double center = out.energyEv.first() + .5 * span;
+    Eigen::MatrixXd design(n, 4);
+    for (qsizetype i = 0; i < n; ++i)
+        design.row(i) << 1., (out.energyEv[i] - center) / span, out.matrixReference[i], out.targetReference[i];
+    const Eigen::MatrixXd matrixOnly = design.leftCols(3);
+    const auto matrixFit = matrixOnly.colPivHouseholderQr();
+    auto fullFit = design.colPivHouseholderQr();
+    fullFit.setThreshold(1e-8);
+    if (fullFit.rank() < 4)
+        fail(QStringLiteral("参考谱和线性背底在所选能区内无法独立区分。"));
+
+    const auto nx = v.axes[1].size(), ny = v.axes[2].size(), voxels = v.voxelCount();
+    out.total.fill(NAN, nx * ny);
+    out.residual.fill(NAN, nx * ny);
+    out.coefficient.fill(NAN, nx * ny);
+    out.positiveMean.fill(0., n);
+    out.negativeMean.fill(0., n);
+    Eigen::VectorXd row(n), corrected(n);
+    qsizetype fitted = 0;
+    for (qsizetype y = 0; y < ny; ++y) {
+        for (qsizetype x = 0; x < nx; ++x) {
+            const auto pixel = y * nx + x;
+            if (pixel % 128 == 0)
+                cancel(stop);
+            const auto voxel = v.voxel(int(x), int(y), z);
+            if (!supported(v, voxel))
+                continue;
+            for (qsizetype i = 0; i < n; ++i)
+                row[i] = v.intensity[channels[i] * voxels + voxel];
+            if (!row.allFinite())
+                continue;
+            const Eigen::Vector3d backgroundFit = matrixFit.solve(row);
+            const Eigen::Vector4d coefficients = fullFit.solve(row);
+            ++fitted;
+            out.total[pixel] = row.sum();
+            out.residual[pixel] = (row - matrixOnly * backgroundFit).squaredNorm();
+            out.coefficient[pixel] = coefficients[3];
+            if (std::abs(coefficients[3]) <= threshold)
+                continue;
+            corrected = row - design.leftCols(2) * coefficients.head<2>();
+            const double peak = corrected.cwiseAbs().maxCoeff();
+            if (!(peak > 0.))
+                continue;
+            auto &mean = coefficients[3] > 0. ? out.positiveMean : out.negativeMean;
+            auto &count = coefficients[3] > 0. ? out.positiveCount : out.negativeCount;
+            ++count;
+            for (qsizetype i = 0; i < n; ++i)
+                mean[i] += corrected[i] / peak;
+        }
+    }
+    if (!fitted)
+        fail(QStringLiteral("当前切片没有覆盖完整拟合能区的有效体素。"));
+    for (auto [curve, count] : {std::pair{&out.positiveMean, out.positiveCount},
+                               std::pair{&out.negativeMean, out.negativeCount}}) {
+        if (count == 0)
+            curve->clear();
+        else
+            for (double &value : *curve)
+                value /= count;
+    }
+    cancel(stop);
+    return out;
 }

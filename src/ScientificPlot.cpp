@@ -83,7 +83,9 @@ QColor ScientificPlot::color(double t) const {
                                   QColor("#fde725")};
     const QVector<QColor> inferno{QColor("#000004"), QColor("#57106e"), QColor("#bc3754"), QColor("#f98e09"),
                                   QColor("#fcffa4")};
-    const auto &colors = m_palette == 1 ? inferno : viridis;
+    const QVector<QColor> diverging{QColor("#183678"), QColor("#5791c3"), QColor("#ffffff"), QColor("#df7269"),
+                                   QColor("#9b1727")};
+    const auto &colors = m_palette == 3 ? diverging : m_palette == 1 ? inferno : viridis;
     double pos = t * 4;
     int i = std::min(3, int(pos));
     double a = pos - i;

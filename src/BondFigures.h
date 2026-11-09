@@ -1,5 +1,5 @@
 #pragma once
-#include "BondVolume.h"
+#include "Isosurface.h"
 #include <QColor>
 #include <QWidget>
 
@@ -15,8 +15,8 @@ class BondFigures : public QWidget {
     void setSpectralSection(SpectralStyle style, const QVector<double> &energy, const QVector<double> &x,
                             const QVector<QVector<double>> &rows, const QString &energyLabel,
                             const QString &intensityLabel, const QString &sectionLabel);
-    void setMesh(const QVector<QVector<double>> &axes, const QVector<BondTriangle> &first,
-                 const QVector<BondTriangle> &second, const QString &caption,
+    void setMesh(const QVector<QVector<double>> &axes, const QVector<SurfaceTriangle> &first,
+                 const QVector<SurfaceTriangle> &second, const QString &caption,
                  const std::array<QColor, 2> &colors = {});
     static QColor fieldColor(double fraction, bool signedContrast);
 
@@ -38,7 +38,7 @@ class BondFigures : public QWidget {
     QVector<QVector<double>> m_axes, m_rows;
     QVector<double> m_field;
     QVector<int> m_z;
-    QVector<BondTriangle> m_mesh[2];
+    QVector<SurfaceTriangle> m_mesh[2];
     std::array<QColor, 2> m_meshColors;
     double m_min = 0, m_max = 1, m_yaw = -.7, m_pitch = .46, m_zoom = 1.;
     bool m_signed = false;

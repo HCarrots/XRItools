@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName("XRI");
     QCoreApplication::setApplicationName("XRI");
-    QCoreApplication::setApplicationVersion("0.2.1");
+    QCoreApplication::setApplicationVersion("0.2.2");
     app.setWindowIcon(QIcon(QStringLiteral(":/assets/xri.png")));
     // Keep Qt Widgets' Windows platform style, native dialogs, menus and frame.
     if (auto style = QStyleFactory::create("windowsvista"))
@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
                     ok = roiEditor->imagesReady() && window.grab().save(directory + "/window.png") && ok;
                 else if (bond) {
                     ok = window.grab().save(directory + "/voxel.png") && ok;
-                    bond->selectStep(3);
+                    bond->selectStage(BondWorkspace::Results);
                     ok = window.grab().save(directory + "/sections.png") && ok;
                 } else if (imaging)
                     ok = window.grab().save(directory + "/window.png") && ok;

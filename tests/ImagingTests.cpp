@@ -81,6 +81,22 @@ int main(int argc, char **argv) {
             expect(agreement < 1e-8 && peak / 4 == 10 && b[peak] > 0 &&
                        std::abs(b[peak] / a[peak] - 3.) < 1e-6 && std::abs(mid[peak] - 2 * a[peak]) < 1e-6,
                    "reordered duplicate frames preserve a known spectral peak and energy interpolation");
+            const auto forwardProjection = BondImaging::prepareContrast(canonical, 1, 2, {}, stop);
+            const auto reverseProjection = BondImaging::prepareContrast(reordered, 2, 1, {}, stop);
+            const auto forward = BondImaging::reconstructContrast(forwardProjection, canonical, stop);
+            const auto reverse = BondImaging::reconstructContrast(reverseProjection, reordered, stop);
+            bool reverses = forward.values.size() == reverse.values.size();
+            for (qsizetype i = 0; reverses && i < forward.values.size(); ++i)
+                reverses = (std::isnan(forward.values[i]) && std::isnan(reverse.values[i])) ||
+                           std::abs(forward.values[i] + reverse.values[i]) < 1e-8;
+            expect(forward.axes == v.axes.sliced(1) && forward.axes == reverse.axes && reverses &&
+                       forward.values[peak] > 0 && reverse.values[peak] < 0,
+                   "projection differences preserve sign across energy reversal and reordered duplicate frames");
+            QFile changedRoi(canonical["input"].toObject()["roi_table"].toString());
+            const bool changed = changedRoi.open(QIODevice::Append) && changedRoi.write("\n") == 1;
+            changedRoi.close();
+            expect(changed && throws([&] { BondImaging::reconstructContrast(forwardProjection, canonical, stop); }),
+                   "spatial reconstruction rejects projections after an input file changes");
             expect(throws([&] { BondImaging::energySlice(v, v.intensity, v.axes[0], .9, true); }),
                    "4D energy interpolation rejects extrapolation");
             auto bad = v;
@@ -118,6 +134,18 @@ int main(int argc, char **argv) {
             expect(std::isnan(corrected[16]) && std::abs(corrected[17] - 1) < 1e-12 &&
                        std::abs(corrected[9]) < 1e-12,
                    "per-voxel subtraction removes a linear baseline and rejects nonpositive areas");
+            settings.normalization.reset();
+            const auto spectralDifference = [&](double ea, double eb, qsizetype voxel) {
+                const auto weights = BondImaging::contrastWeights(v.axes[0], ea, eb, settings);
+                double value = 0;
+                for (qsizetype e = 0; e < weights.size(); ++e)
+                    if (weights[e] != 0.)
+                        value += weights[e] * v.intensity[e * v.voxelCount() + voxel];
+                return value;
+            };
+            expect(std::abs(spectralDifference(.5, 2, 0) + 4.) < 1e-12 &&
+                       std::abs(spectralDifference(.5, 2, 1) - 4.) < 1e-12,
+                   "linear-background difference supports interpolated energies and both signs");
 
             const QVector<double> factor{1, 2, 4, 2, 1}, valence{3, 4, 6, 4, NAN};
             for (qsizetype e = 0; e < v.axes[0].size(); ++e)
@@ -125,12 +153,14 @@ int main(int argc, char **argv) {
                     v.intensity[e * v.voxelCount() + i] =
                         (i + 1) * (valence[e] + 2 + e + (e == 2 ? 6 : 0)) / factor[e];
             settings.background = {{0, 1}};
-            settings.normalization.reset();
             settings.compton = BondSpectralReference{factor, {5, 7, 10, 9, NAN}, valence, {0, 1}};
             corrected = BondImaging::process(v, v.axes[0], settings, stop);
             expect(std::abs(corrected[16] - 1.5) < 1e-12 && std::abs(corrected[17] - 3.) < 1e-12 &&
                        std::abs(corrected[24]) < 1e-12 && std::isnan(corrected[32]),
                    "Compton transfer removes the matched valence and residual while retaining spatial amplitude");
+            expect(std::abs(spectralDifference(.5, 2.5, 1) - 1.5) < 1e-12 &&
+                       throws([&] { spectralDifference(2, 3.5, 1); }),
+                   "Compton difference matches preprocessing and rejects energies outside reference coverage");
             settings.normalization = QPair<double, double>{1, 3};
             corrected = BondImaging::process(v, v.axes[0], settings, stop);
             expect(std::abs(corrected[16] - 1.) < 1e-12 && std::abs(corrected[17] - 1.) < 1e-12,
@@ -206,6 +236,8 @@ int main(int argc, char **argv) {
                    validation.rois[0].key == "1_test",
                "plan literal, label override and physical frame mapping");
         auto result = Imaging::run(config, stop);
+        expect(!QFile::exists(temp.filePath("output/reconstruction.am")),
+               "Avizo output is opt-in for existing imaging configurations");
         expect(result.primary.rows() == 21 && result.primary.cols() == 4 && result.axes[2].last() == 0,
                "full XYZ output keeps high-Z boundary");
         Eigen::Index peak;

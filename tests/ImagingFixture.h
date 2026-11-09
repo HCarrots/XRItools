@@ -5,7 +5,7 @@
 #include <cmath>
 namespace ImagingFixture {
 inline QJsonObject create(const QString &directory, bool missing = false, bool reorderedRepeat = false,
-                          bool energyOuter = false, bool spectral = false) {
+                          bool energyOuter = false, bool spectral = false, bool spatial = false) {
     if (!QDir().mkpath(directory))
         ImageUtil::fail("Cannot create imaging fixture directory");
     int height = 47, width = 19;
@@ -66,7 +66,7 @@ inline QJsonObject create(const QString &directory, bool missing = false, bool r
                 for (int col = 0; col < width; ++col)
                     image[(frame * height + r) * width + col] =
                         quint64(std::nearbyint(spot(0, r, col) * .1 / .05 * .2)) *
-                        (index % 2 ? (spectral ? 6 : 2) : 1);
+                        (index % 2 ? (spectral ? 6 : 2) : 1) * (spatial ? 1 + index / 2 : 1);
         }
         write(f, "entry/instrument/M_Stage_Y_setpoint", y);
         write(f, "entry/instrument/M_Stage_Z_setpoint", z);

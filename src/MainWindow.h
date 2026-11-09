@@ -58,7 +58,7 @@ class MainWindow : public QMainWindow {
     void setSliceIndex(int dimension, int index);
     SpectroscopyDialog *openSpectroscopy(int step = -1);
     ImagingDialog *openImaging(int step = -1);
-    BondWorkspace *openBondImaging(int step = -1);
+    BondWorkspace *openBondImaging();
     RoiDialog *openRoi(const QString &file = {}, const QString &scheme = {});
 
   protected:

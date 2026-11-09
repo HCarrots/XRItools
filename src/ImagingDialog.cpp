@@ -1,4 +1,5 @@
 #include "ImagingDialog.h"
+#include "BondFigures.h"
 #include "ImagingIO.h"
 #include "ImagingInputUi.h"
 #include "RoiDialog.h"
@@ -56,14 +57,27 @@ ImagingDialog::ImagingDialog(const QString &sample, QWidget *parent)
     applyConfiguration(initial);
     connect(&m_watcher, &QFutureWatcher<Work>::finished, this, [this] {
         auto work = m_watcher.result();
-        m_busy = false;
-        m_inputs->setEnabled(true);
-        m_parameters->setEnabled(true);
-        for (auto b : {m_validateButton, m_runButton, m_importButton, m_exportButton, m_includeButton,
-                       m_excludeButton})
-            b->setEnabled(true);
-        m_cancelButton->setEnabled(false);
+        setBusy(false);
         m_progress->hide();
+        if (m_buildingModel) {
+            m_buildingModel = false;
+            m_progress->setRange(0, 100);
+            if (!work.error.isEmpty() || m_cancel.load()) {
+                status(work.error.isEmpty() ? tr("已取消等值面提取。") : work.error, true);
+                return;
+            }
+            if (work.mesh.isEmpty()) {
+                m_model->setMesh({}, {}, {}, tr("当前阈值没有等值面，请调整阈值。"));
+                status(tr("当前阈值没有等值面，请调整阈值。"));
+                return;
+            }
+            m_model->setMesh(m_result.axes, work.mesh, {},
+                             tr("%1 · 阈值 %2 · 左键拖动旋转 · 滚轮缩放 · 双击复位")
+                                 .arg(m_modelSource->currentText(), m_modelLevel->text().trimmed()),
+                             {QColor("#4186ae"), QColor()});
+            status(tr("等值面已生成，共 %1 个三角形。").arg(work.mesh.size()));
+            return;
+        }
         if (!work.error.isEmpty()) {
             m_excludeButton->setEnabled(false);
             m_includeButton->setEnabled(false);
@@ -104,7 +118,7 @@ void ImagingDialog::status(const QString &message, bool error) {
     m_status->setStyleSheet(error ? "color:#a02020;" : "");
 }
 void ImagingDialog::selectStep(int step) {
-    m_tabs->setCurrentIndex(std::clamp(step, 0, 4));
+    m_tabs->setCurrentIndex(std::clamp(step, 0, m_tabs->count() - 1));
 }
 void ImagingDialog::buildUi() {
     auto root = new QVBoxLayout(this);
@@ -239,6 +253,7 @@ void ImagingDialog::buildUi() {
     fileField(of, "runtime.output_dir", tr("新输出目录"), true);
     addFlag(of, "output.save_diagnostics", tr("保存各晶体正演矩阵、预测和残差"));
     addFlag(of, "output.plots", tr("保存诊断 PNG"));
+    addFlag(of, "output.save_avizo", tr("同时保存 Avizo 体数据（.am）"));
     auto outputNote = new QLabel(tr("完整流程自动保存主结果、NNLS/TV、XYZ "
                                     "坐标、像素缓存、PSF、灵敏度、残差与参数。已存在的输出目录会拒绝写入。取"
                                     "消或失败时保留中间文件与日志。"));
@@ -382,7 +397,7 @@ void ImagingDialog::buildUi() {
     m_info = new QLabel(tr("完整重建完成后显示三维切片与投影。"));
     m_info->setWordWrap(true);
     vl->addWidget(m_info);
-    m_tabs->addTab(volume, tr("4 三维结果"));
+    m_tabs->addTab(volume, tr("4 剖面分析"));
     connect(log, &QCheckBox::toggled, m_image, &ScientificPlot::setLogarithmic);
     for (auto c : {m_method, m_plane, m_display})
         connect(c, &QComboBox::currentIndexChanged, this, [this] { refreshImage(); });
@@ -391,6 +406,37 @@ void ImagingDialog::buildUi() {
         if (m_haveResult)
             emit openFileRequested(m_result.directory + "/reconstruction.h5");
     });
+
+    auto modelPage = new QWidget;
+    auto modelLayout = new QVBoxLayout(modelPage);
+    WorkflowUi::compact(modelLayout);
+    auto modelTools = new QHBoxLayout;
+    m_modelSource = new QComboBox;
+    m_modelSource->setObjectName("ImagingModelSource");
+    m_modelLevel = new QLineEdit;
+    m_modelLevel->setObjectName("ImagingModelThreshold");
+    m_modelLevel->setMaximumWidth(150);
+    m_modelLevel->setToolTip(tr("输入相对密度，可使用科学计数法。"));
+    m_modelRange = new QLabel;
+    m_buildModelButton = WorkflowUi::button("layers", tr("生成等值面"));
+    m_buildModelButton->setObjectName("BuildImagingModel");
+    modelTools->addWidget(new QLabel(tr("体数据")));
+    modelTools->addWidget(m_modelSource);
+    modelTools->addWidget(new QLabel(tr("密度阈值")));
+    modelTools->addWidget(m_modelLevel);
+    modelTools->addWidget(m_buildModelButton);
+    modelTools->addWidget(m_modelRange);
+    modelTools->addStretch();
+    modelLayout->addLayout(modelTools);
+    m_model = new BondFigures;
+    m_model->setObjectName("ImagingModel");
+    m_model->setMesh({}, {}, {}, tr("完成重建或载入已有结果后，可以生成三维等值面。"));
+    modelLayout->addWidget(m_model, 1);
+    m_tabs->addTab(modelPage, tr("5 三维模型"));
+    connect(m_modelSource, &QComboBox::currentIndexChanged, this, &ImagingDialog::refreshModelSource);
+    connect(m_buildModelButton, &QPushButton::clicked, this, &ImagingDialog::buildModel);
+    connect(m_modelLevel, &QLineEdit::returnPressed, this, &ImagingDialog::buildModel);
+
     auto diagnostic = new QTabWidget;
     m_sensitivity = new SpectrumPlot;
     m_sensitivity->setObjectName("ImagingSensitivity");
@@ -414,7 +460,7 @@ void ImagingDialog::buildUi() {
     m_summary = new QPlainTextEdit;
     m_summary->setReadOnly(true);
     diagnostic->addTab(m_summary, tr("完整摘要"));
-    m_tabs->addTab(diagnostic, tr("5 诊断与日志"));
+    m_tabs->addTab(diagnostic, tr("6 诊断与日志"));
     connect(m_psfChoice, &QComboBox::currentIndexChanged, this, [this] { refreshTrajectory(); });
     m_status = new QLabel(tr("可载入已有方案，或选择薄膜、样品和 ROI 后校验输入。"));
     m_status->setObjectName("ImagingStatus");
@@ -532,6 +578,7 @@ void ImagingDialog::invalidate() {
     m_haveResult = false;
     m_result = ImagingResult();
     m_image->setData({});
+    refreshModelSource();
     m_info->hide();
     m_summary->clear();
     m_sensitivity->setCurves({}, {});
@@ -554,14 +601,8 @@ void ImagingDialog::start(bool validateOnly) {
         auto c = configuration();
         invalidate();
         m_validateOnly = validateOnly;
-        m_busy = true;
+        setBusy(true);
         m_cancel.store(false);
-        m_inputs->setEnabled(false);
-        m_parameters->setEnabled(false);
-        for (auto b : {m_validateButton, m_runButton, m_importButton, m_exportButton, m_includeButton,
-                       m_excludeButton})
-            b->setEnabled(false);
-        m_cancelButton->setEnabled(true);
         m_progress->setValue(0);
         m_progress->show();
         m_log->clear();
@@ -649,16 +690,17 @@ void ImagingDialog::exclusions(bool exclude) {
 void ImagingDialog::refreshResult() {
     m_openButton->setEnabled(true);
     m_summary->setPlainText(QString::fromUtf8(QJsonDocument(m_result.summary).toJson()));
-    {
-        QSignalBlocker b(m_method);
-        m_method->clear();
-        m_method->addItem(tr("主结果"), 0);
-        m_method->addItem("NNLS", 1);
+    for (auto *choice : {m_method, m_modelSource}) {
+        QSignalBlocker block(choice);
+        choice->clear();
+        choice->addItem(tr("主结果"), 0);
+        choice->addItem("NNLS", 1);
         if (m_result.tv.size())
-            m_method->addItem(m_result.summary["tv_converged"].toBool() ? tr("TV（已收敛）")
-                                                                        : tr("TV 最后迭代（未收敛）"),
-                              2);
+            choice->addItem(m_result.summary["tv_converged"].toBool() ? tr("TV（已收敛）")
+                                                                      : tr("TV 最后迭代（未收敛）"),
+                            2);
     }
+    refreshModelSource();
     auto axes = m_result.axes;
     {
         QSignalBlocker block(m_slice);
@@ -715,7 +757,7 @@ void ImagingDialog::refreshImage() {
     if (!m_haveResult)
         return;
     int method = m_method->currentData().toInt(), plane = m_plane->currentIndex();
-    const auto &rho = method == 1 ? m_result.nnls : method == 2 ? m_result.tv : m_result.primary;
+    const auto &rho = volumeData(method);
     if (!rho.size())
         return;
     const auto &axes = m_result.axes;
@@ -770,6 +812,58 @@ void ImagingDialog::refreshImage() {
                            QString("%1 (mm)").arg(QString("XYZ")[rowAxis]));
     Q_UNUSED(nx);
     Q_UNUSED(ny);
+}
+
+const ImageMatrix &ImagingDialog::volumeData(int method) const {
+    return method == 1 ? m_result.nnls : method == 2 ? m_result.tv : m_result.primary;
+}
+
+void ImagingDialog::refreshModelSource() {
+    m_modelMin = m_modelMax = 0.;
+    if (!m_haveResult) {
+        m_modelLevel->clear();
+        m_modelRange->clear();
+        m_model->setMesh({}, {}, {}, tr("完成重建或载入已有结果后，可以生成三维等值面。"));
+        return;
+    }
+    const auto &volume = volumeData(m_modelSource->currentData().toInt());
+    m_modelMin = volume.minCoeff();
+    m_modelMax = volume.maxCoeff();
+    const double threshold = m_modelMin + .25 * (m_modelMax - m_modelMin);
+    m_modelLevel->setText(QString::number(threshold, 'g', 17));
+    m_modelRange->setText(tr("密度范围 %1 至 %2").arg(real(m_modelMin), real(m_modelMax)));
+    m_model->setMesh({}, {}, {}, m_modelMin < m_modelMax
+                                     ? tr("输入密度阈值后，点击「生成等值面」。")
+                                     : tr("当前体数据的密度恒定，无法提取等值面。"));
+    refreshActions();
+}
+
+void ImagingDialog::buildModel() {
+    if (m_busy || !m_haveResult)
+        return;
+    bool valid;
+    const double level = m_modelLevel->text().trimmed().toDouble(&valid);
+    if (!valid || !(m_modelMin < level && level < m_modelMax)) {
+        status(tr("阈值须介于 %1 和 %2 之间。").arg(real(m_modelMin), real(m_modelMax)), true);
+        return;
+    }
+    const auto *volume = &volumeData(m_modelSource->currentData().toInt());
+    const auto axes = m_result.axes;
+    m_buildingModel = true;
+    setBusy(true);
+    m_cancel.store(false);
+    m_progress->setRange(0, 0);
+    m_progress->show();
+    status(tr("正在提取三维等值面…"));
+    m_watcher.setFuture(QtConcurrent::run([this, volume, axes, level] {
+        Work work;
+        try {
+            work.mesh = Isosurface::extract(axes, volume->data(), volume->size(), level, m_cancel);
+        } catch (const std::exception &e) {
+            work.error = QString::fromUtf8(e.what());
+        }
+        return work;
+    }));
 }
 void ImagingDialog::refreshTrajectory() {
     if (!m_haveResult || m_psfChoice->currentText().isEmpty())
@@ -878,13 +972,25 @@ void ImagingDialog::refreshActions() {
     m_configTools->setVisible(step == 0);
     m_previousButton->setVisible(step > 0);
     m_previousButton->setEnabled(!m_busy);
-    m_nextButton->setVisible(step < 4);
+    m_nextButton->setVisible(step + 1 < m_tabs->count());
     m_nextButton->setEnabled(!m_busy && (step != 2 || m_haveResult));
     m_validateButton->setVisible(step == 0 || step == 2);
     m_runButton->setVisible(step == 2);
     m_cancelButton->setVisible(m_busy);
+    m_modelSource->setEnabled(!m_busy && m_haveResult);
+    m_modelLevel->setEnabled(!m_busy && m_haveResult && m_modelMin < m_modelMax);
+    m_buildModelButton->setEnabled(m_modelLevel->isEnabled());
     m_nextButton->setDefault(step < 2);
     m_runButton->setDefault(step == 2);
+}
+
+void ImagingDialog::setBusy(bool busy) {
+    m_busy = busy;
+    m_inputs->setEnabled(!busy);
+    m_parameters->setEnabled(!busy);
+    for (auto button : {m_validateButton, m_runButton, m_importButton, m_exportButton})
+        button->setEnabled(!busy);
+    m_cancelButton->setEnabled(busy);
 }
 void ImagingDialog::useRoiDraft(const QString &file, const QString &path) {
     if (m_busy) {

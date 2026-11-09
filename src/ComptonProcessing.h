@@ -32,3 +32,6 @@ ComptonResult analyzeLinear(const ProcessedSpectrum &, const SpectrumWindows &, 
 ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &label,
                                 const QVector<double> &incidentKev, const ComptonSettings &,
                                 const std::atomic_bool &stop);
+QMap<QString, ComptonTransfer> transferCompton(const ProcessedSpectrum &wide, const QStringList &labels,
+                                               const QVector<double> &incidentKev, const ComptonSettings &,
+                                               const std::atomic_bool &stop);

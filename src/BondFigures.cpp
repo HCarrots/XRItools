@@ -75,8 +75,8 @@ void BondFigures::setSpectralSection(SpectralStyle style, const QVector<double> 
     update();
 }
 
-void BondFigures::setMesh(const QVector<QVector<double>> &axes, const QVector<BondTriangle> &first,
-                          const QVector<BondTriangle> &second, const QString &caption,
+void BondFigures::setMesh(const QVector<QVector<double>> &axes, const QVector<SurfaceTriangle> &first,
+                          const QVector<SurfaceTriangle> &second, const QString &caption,
                           const std::array<QColor, 2> &colors) {
     m_kind = Kind::Mesh;
     m_axes = axes;
@@ -105,7 +105,7 @@ void BondFigures::drawMontage(QPainter &p) {
         p.drawText(rect(), Qt::AlignCenter, tr("当前能量没有可显示的切片"));
         return;
     }
-    const auto &x = m_axes[1], &y = m_axes[2], &z = m_axes[3];
+    const auto &x = m_axes[0], &y = m_axes[1], &z = m_axes[2];
     const double dx = x[1] - x[0], dy = y[1] - y[0];
     const double x0 = x.first() - dx / 2, x1 = x.last() + dx / 2;
     const double y0 = y.first() - dy / 2, y1 = y.last() + dy / 2;
@@ -319,11 +319,11 @@ void BondFigures::drawSpectralSection(QPainter &p) {
 }
 
 void BondFigures::drawMesh(QPainter &p) {
-    if (m_axes.size() != 4) {
+    if (m_axes.size() != 3) {
         p.drawText(rect(), Qt::AlignCenter, m_caption);
         return;
     }
-    const auto &x = m_axes[1], &y = m_axes[2], &z = m_axes[3];
+    const auto &x = m_axes[0], &y = m_axes[1], &z = m_axes[2];
     const QVector3D lo(x.first(), y.first(), z.first()), hi(x.last(), y.last(), z.last()),
         center = (lo + hi) / 2;
     const double ca = std::cos(m_yaw), sa = std::sin(m_yaw);
@@ -332,13 +332,13 @@ void BondFigures::drawMesh(QPainter &p) {
     const double projectedW = std::abs(ca) * span.x() + std::abs(sa) * span.y();
     const double projectedH =
         std::abs(sp) * (std::abs(sa) * span.x() + std::abs(ca) * span.y()) + std::abs(cp) * span.z();
-    const double scale = std::min((width() - 160.) / projectedW, (height() - 110.) / projectedH);
+    const double scale = m_zoom * std::min((width() - 160.) / projectedW, (height() - 110.) / projectedH);
     auto project = [&](const QVector3D &point) {
         const auto v = point - center;
         double horizontal = v.x() * ca - v.y() * sa, forward = v.x() * sa + v.y() * ca;
         return QVector3D(float(width() * .5 + horizontal * scale),
                          float(height() * .49 - (v.z() * cp - forward * sp) * scale),
-                         float(v.z() * sp + forward * cp));
+                         float((v.z() * sp + forward * cp) * scale));
     };
     auto screen = [](const QVector3D &v) { return QPointF(v.x(), v.y()); };
     std::array<QVector3D, 8> box;
@@ -364,6 +364,7 @@ void BondFigures::drawMesh(QPainter &p) {
             faces.push_back(f);
         }
     std::sort(faces.begin(), faces.end(), [](const Face &a, const Face &b) { return a.depth < b.depth; });
+    p.setRenderHint(QPainter::Antialiasing, false);
     p.setPen(Qt::NoPen);
     for (const auto &face : faces) {
         const auto &q = face.projected;
@@ -373,6 +374,7 @@ void BondFigures::drawMesh(QPainter &p) {
         QPointF points[]{screen(q[0]), screen(q[1]), screen(q[2])};
         p.drawPolygon(points, 3);
     }
+    p.setRenderHint(QPainter::Antialiasing);
     p.setPen(Qt::black);
     const QVector<QVector<double>> axes{x, y, z};
     for (int i = 0; i < 3; ++i) {
@@ -419,7 +421,7 @@ void BondFigures::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void BondFigures::mouseDoubleClickEvent(QMouseEvent *event) {
-    if (m_kind != Kind::Spectral || event->button() != Qt::LeftButton) {
+    if (m_kind == Kind::Montage || event->button() != Qt::LeftButton) {
         QWidget::mouseDoubleClickEvent(event);
         return;
     }
@@ -433,7 +435,7 @@ void BondFigures::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 
 void BondFigures::wheelEvent(QWheelEvent *event) {
-    if (m_kind != Kind::Spectral || event->angleDelta().y() == 0) {
+    if (m_kind == Kind::Montage || event->angleDelta().y() == 0) {
         QWidget::wheelEvent(event);
         return;
     }

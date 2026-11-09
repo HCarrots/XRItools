@@ -1,6 +1,7 @@
 #include "BondVolume.h"
 #include "ImagingIO.h"
 #include "PlotStyle.h"
+#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -11,8 +12,11 @@
 #include <QImage>
 #include <QPainter>
 #include <QPainterPath>
+#include <QSaveFile>
 #include <QTextStream>
+#include <QtEndian>
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <utility>
 #include <numeric>
@@ -22,6 +26,20 @@ struct RoiData {
     ImagingRoi roi;
     ImageMatrix response, referenceVariance, measured, variance;
 };
+
+QJsonObject contrastSourceRevision(const QJsonObject &config) {
+    QJsonObject revision;
+    const auto input = config["input"].toObject();
+    for (const auto &key : {QStringLiteral("sample_nxs"), QStringLiteral("calibration_nxs"),
+                            QStringLiteral("roi_table")}) {
+        const QFileInfo source(input[key].toString());
+        if (!source.isFile())
+            fail(QStringLiteral("找不到输入文件：%1").arg(source.filePath()));
+        revision[key] = QJsonArray{source.size(), source.lastModified().toMSecsSinceEpoch()};
+    }
+    return revision;
+}
+
 void writeVector(ImagingH5 &file, const QString &path, const QVector<double> &v) {
     file.write(path, {quint64(v.size())}, v.constData(), false);
 }
@@ -443,6 +461,57 @@ void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVe
                    {{"definition", "sqrt(sum_a,p A_a[p,x]^2); includes fitted gains and dx/foil thickness"}});
     writeVector(out, "gram_eigenvalues", eigenvalues);
 }
+
+void exportAvizo(const QString &path, const ImagingResult &result, const std::atomic_bool &stop) {
+    const auto &axes = result.axes;
+    const qsizetype nx = axes[0].size(), ny = axes[1].size(), nz = axes[2].size();
+    QStringList bounds;
+    for (const auto &axis : axes) {
+        bounds.append(QString::number(axis.first(), 'g', 17));
+        bounds.append(QString::number(axis.last(), 'g', 17));
+    }
+    const auto header = QStringLiteral("# AmiraMesh BINARY-LITTLE-ENDIAN 2.1\n\n"
+                                       "define Lattice %1 %2 %3\n\n"
+                                       "Parameters {\n"
+                                       "    Units { Coordinates \"mm\" },\n"
+                                       "    BoundingBox %4,\n"
+                                       "    CoordType \"uniform\"\n"
+                                       "}\n\n"
+                                       "Lattice { float Data } @1\n\n"
+                                       "# Data section follows\n"
+                                       "@1\n")
+                            .arg(nx).arg(ny).arg(nz).arg(bounds.join(' ')).toLatin1();
+    cancel(stop);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(header) != header.size())
+        fail(QStringLiteral("无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
+
+    // AmiraMesh stores X contiguously. XRI stores Z contiguously within each X plane.
+    const qsizetype rowsPerBlock = 16384 / nx;
+    QVector<quint32> block(nx * rowsPerBlock);
+    for (qsizetype z = 0; z < nz; ++z) {
+        for (qsizetype firstY = 0; firstY < ny; firstY += rowsPerBlock) {
+            cancel(stop);
+            const qsizetype endY = std::min(ny, firstY + rowsPerBlock);
+            qsizetype index = 0;
+            for (qsizetype y = firstY; y < endY; ++y) {
+                for (qsizetype x = 0; x < nx; ++x) {
+                    const float value = float(result.primary(x, y * nz + z));
+                    quint32 bits;
+                    std::memcpy(&bits, &value, sizeof(bits));
+                    block[index++] = qToLittleEndian(bits);
+                }
+            }
+            const qint64 bytes = index * qint64(sizeof(quint32));
+            if (file.write(reinterpret_cast<const char *>(block.constData()), bytes) != bytes)
+                fail(QStringLiteral("无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
+        }
+    }
+    cancel(stop);
+    if (!file.commit())
+        fail(QStringLiteral("无法保存 Avizo 文件 %1。%2").arg(path, file.errorString()));
+}
+
 QImage diagnosticImage(const ImagingResult &result, bool bondBand = false) {
     auto color = [](double t) {
         const std::array<QColor, 5> stops{QColor("#440154"), QColor("#3b528b"), QColor("#21918c"),
@@ -624,6 +693,173 @@ ImagingValidation BondImaging::validate(const QJsonObject &c, const std::atomic_
     const auto &foil = out.calibration.axes[1], &sample = out.sample.axes[2];
     const bool matched = sample.first() >= foil.first() - 1e-10 && sample.last() <= foil.last() + 1e-10;
     out.report["psf_energy_band"] = matched ? "sample-matched" : "foil-native";
+    return out;
+}
+
+BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double ea, double eb,
+                                                const ContrastSpectra &prepareSpectra, const std::atomic_bool &stop,
+                                                Imaging::Progress progress) {
+    const auto c = Imaging::config(supplied, QDir::currentPath());
+    const auto log = [&](const QString &message, int percent) {
+        cancel(stop);
+        if (progress)
+            progress(message, percent);
+    };
+    log(QStringLiteral("校验扫描与 ROI"), 0);
+    const auto revision = contrastSourceRevision(c);
+    auto inputs = c;
+    auto reconstruction = inputs["reconstruction"].toObject();
+    reconstruction["fit_gains"] = false;
+    inputs["reconstruction"] = reconstruction;
+    auto validation = validate(inputs, stop);
+    const auto &g = validation.sample;
+    const auto &energy = g.axes[2];
+    const auto difference = contrastWeights(energy, ea, eb, {});
+    QStringList labels;
+    QVector<const ImagingRoi *> rois;
+    quint64 elements = 0;
+    const qsizetype ny = g.axes[0].size(), nz = g.axes[1].size(), ne = energy.size();
+    for (const auto &roi : std::as_const(validation.rois)) {
+        if (roi.excluded)
+            continue;
+        labels.append(roi.label);
+        rois.append(&roi);
+        elements += quint64(roi.pixels.size()) * ny * nz;
+    }
+    if (rois.isEmpty())
+        fail(QStringLiteral("请至少纳入一个有效晶体。"));
+    if (elements > 67108864)
+        fail(QStringLiteral("差值投影缓存超过 512 MiB，请缩小 ROI 或减少参与的晶体。"));
+    log(QStringLiteral("准备谱处理和双能量差值"), 5);
+    const auto spectra = prepareSpectra ? prepareSpectra(energy, labels)
+                                        : QVector<BondSpectralSettings>(labels.size());
+    if (spectra.size() != labels.size())
+        fail(QStringLiteral("谱处理参数与晶体数不匹配。"));
+    QVector<QVector<double>> coefficients;
+    BondProjection out;
+    QVector<ImageMatrix *> projections;
+    for (qsizetype i = 0; i < spectra.size(); ++i) {
+        const auto &settings = spectra[i];
+        auto weights = settings.background.isEmpty() && !settings.compton && !settings.normalization
+                           ? difference
+                           : contrastWeights(energy, ea, eb, settings);
+        if (std::any_of(weights.cbegin(), weights.cend(), [](double v) { return !std::isfinite(v); }))
+            fail(QStringLiteral("谱处理权重与实测能量不匹配。"));
+        coefficients.append(std::move(weights));
+        auto stored = out.differenceByCrystal.try_emplace(rois[i]->key, rois[i]->pixels.size(), ny * nz).first;
+        stored->second.setZero();
+        projections.append(&stored->second);
+    }
+    const auto acq = c["acquisition"].toObject();
+    ImagingH5 source(g.file);
+    source.frames("/entry/data/" + acq["detector"].toString(),
+                  c["runtime"].toObject()["chunk_frames"].toInt(), stop,
+                  [&](int frame, const quint64 *pixels, int, int) {
+                      const qsizetype yz = g.indices[0][frame] * nz + g.indices[1][frame];
+                      const int e = g.indices[2][frame];
+                      const double dose = g.dose[yz * ne + e];
+                      for (qsizetype i = 0; i < rois.size(); ++i) {
+                          const double factor = coefficients[i][e] / dose;
+                          if (factor == 0.)
+                              continue;
+                          const auto &points = rois[i]->pixels;
+                          auto &projection = *projections[i];
+                          for (qsizetype p = 0; p < points.size(); ++p) {
+                              const auto pixel = points[p];
+                              projection(p, yz) += factor * double(pixels[pixel.y() * g.imageSize.width() + pixel.x()]);
+                          }
+                      }
+                      if (frame % 128 == 0)
+                          log(QStringLiteral("计算探测器差值投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                              10 + 89 * frame / int(g.monitor.size()));
+                  });
+    out.config = c;
+    out.ea = ea;
+    out.eb = eb;
+    if (contrastSourceRevision(c) != revision)
+        fail(QStringLiteral("计算期间输入文件已变化，请重新校验后计算差值投影。"));
+    out.sourceRevision = revision;
+    out.validation = std::move(validation);
+    log(QStringLiteral("差值投影完成"), 100);
+    return out;
+}
+
+BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
+                                              const QJsonObject &spatialSettings, const std::atomic_bool &stop,
+                                              Imaging::Progress progress) {
+    auto settings = projection.config;
+    for (const auto &group : {QStringLiteral("grid"), QStringLiteral("reconstruction")})
+        settings[group] = spatialSettings.value(group);
+    const auto c = Imaging::config(settings, QDir::currentPath());
+    const auto rec = c["reconstruction"].toObject();
+    if (rec["fit_gains"].toBool() && projection.differenceByCrystal.count(rec["anchor_roi"].toString()) == 0)
+        fail(QStringLiteral("增益锚点必须是差值投影中纳入的晶体。"));
+    const auto log = [&](const QString &message, int percent) {
+        cancel(stop);
+        if (progress)
+            progress(message, percent);
+    };
+    log(QStringLiteral("准备薄膜空间标定"), 0);
+    if (contrastSourceRevision(c) != projection.sourceRevision)
+        fail(QStringLiteral("输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。"));
+    const auto &validation = projection.validation;
+    const auto &energy = validation.sample.axes[2], &foil = validation.calibration.axes[1];
+    const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
+    const auto band = matched ? Imaging::matchedWeights(foil, energy).first : Imaging::energyWeights(foil);
+    auto selected = calibration(c, validation, {}, stop, log, band);
+    sample(c, validation, selected, {}, stop, log);
+    ImagingResult spatial;
+    auto fit = solveSpatial(c, validation, selected, spatial, stop, log);
+    selected.clear();
+    fit.accepted.clear();
+    fit.response.clear();
+    fit.rho.resize(0, 0);
+
+    log(QStringLiteral("反演带符号的三维差值"), 80);
+    ImageMatrix rhs = std::move(fit.b);
+    rhs.setZero();
+    for (qsizetype i = 0; i < fit.keys.size(); ++i) {
+        cancel(stop);
+        const auto &difference = projection.differenceByCrystal.at(fit.keys[i]);
+        rhs.noalias() += fit.gains[i] * fit.operators[i].transpose() * difference;
+    }
+    const auto sensitivity = fit.h.diagonal().eval();
+    const double scale = fit.h.cwiseAbs().rowwise().sum().maxCoeff();
+    if (!(std::isfinite(scale) && scale > 0.))
+        fail(QStringLiteral("无法反演三维差值：空间响应无效。"));
+    constexpr double relativeRidge = 1e-6;
+    const double ridge = scale * relativeRidge;
+    fit.h.diagonal().array() += ridge;
+    Eigen::LLT<ImageMatrix> solver(fit.h);
+    if (solver.info() != Eigen::Success)
+        fail(QStringLiteral("无法分解三维差值的空间响应。"));
+    cancel(stop);
+    solver.solveInPlace(rhs);
+    if (!rhs.allFinite())
+        fail(QStringLiteral("三维差值反演产生了无效数值。"));
+    const double sensitivityFloor = sensitivity.maxCoeff() * 1e-14;
+    for (qsizetype x = 0; x < rhs.rows(); ++x)
+        if (sensitivity[x] <= sensitivityFloor)
+            rhs.row(x).setConstant(NAN);
+
+    BondContrast out;
+    out.axes = std::move(spatial.axes);
+    out.values = vector(rhs);
+    out.diagnostics = {{"schema", "XRI.bond.contrast.v1"},
+                       {"difference", "S(Eb)-S(Ea) before spatial reconstruction"},
+                       {"ea_kev", projection.ea},
+                       {"eb_kev", projection.eb},
+                       {"spectral_processing", projection.spectralProcessing},
+                       {"source_revision", projection.sourceRevision},
+                       {"solver", "signed ridge least squares"},
+                       {"relative_ridge", relativeRidge},
+                       {"ridge", ridge},
+                       {"crystal_keys", json(fit.keys)},
+                       {"relative_gains", json(fit.gains)},
+                       {"gain_fit_converged", fit.gainConverged},
+                       {"input_validation", validation.report},
+                       {"config", c}};
+    log(QStringLiteral("三维差值反演完成"), 100);
     return out;
 }
 
@@ -830,7 +1066,7 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             directory + "/provenance.json",
             {{"versions",
               QJsonObject{
-                  {"xri", "0.2.1-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
+                  {"xri", "0.2.2-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
              {"inputs", sources},
              {"started_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
         log("1/6 Extracting calibration pixels and pooled monitor doses", 3);
@@ -1037,6 +1273,10 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
         if (c["output"].toObject()["plots"].toBool() &&
             !diagnosticImage(result).save(directory + "/diagnostics.png"))
             fail("Cannot save imaging diagnostics PNG");
+        if (c["output"].toObject()["save_avizo"].toBool()) {
+            log(QStringLiteral("正在保存 Avizo 体数据 reconstruction.am"), 99);
+            exportAvizo(directory + "/reconstruction.am", result, stop);
+        }
         saveJson(directory + "/summary.json", result.summary);
         log("Completed: " + directory + "/reconstruction.h5", 100);
         return result;

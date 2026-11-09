@@ -175,7 +175,7 @@ void MainWindow::buildUi() {
     help->addAction(tr("关于 XRI"), this, [this] {
         QMessageBox::about(
             this, tr("关于 XRI"),
-            tr("<h3>XRI 0.2.1</h3>"
+            tr("<h3>XRI 0.2.2</h3>"
                "<p>非弹性非共振数据处理工具</p>"
                "<p>用于同步辐射 HDF5 / NeXus 数据浏览、分析晶体 ROI "
                "选取、谱学处理、三维成像与四维衬度分析。</p>"
@@ -477,7 +477,7 @@ ImagingDialog *MainWindow::openImaging(int step) {
     showWorkspace(m_imaging, tr("成像 · grid_scan → 输入检查 → 三维重建 → 结果与诊断"));
     return m_imaging;
 }
-BondWorkspace *MainWindow::openBondImaging(int step) {
+BondWorkspace *MainWindow::openBondImaging() {
     if (!m_bond) {
         m_bond = new BondWorkspace(m_file, this);
         m_workspaces->addWidget(m_bond);
@@ -486,9 +486,7 @@ BondWorkspace *MainWindow::openBondImaging(int step) {
         });
     }
     m_bond->setAvailableFiles(openedFiles());
-    if (step >= 0)
-        m_bond->selectStep(step);
-    showWorkspace(m_bond, tr("化学键衬度分析 · 四维重建 → 体素谱 → 衬度图"));
+    showWorkspace(m_bond, tr("化学键衬度分析 · 三维差值与四维体素谱"));
     return m_bond;
 }
 RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
@@ -529,7 +527,7 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
             else if (m_roiReturn == m_imaging)
                 openImaging(0);
             else if (m_roiReturn == m_bond)
-                openBondImaging(0);
+                openBondImaging()->selectStage(BondWorkspace::Inputs);
             else
                 showWorkspace(m_browser);
         });
