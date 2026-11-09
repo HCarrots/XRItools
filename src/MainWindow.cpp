@@ -175,7 +175,7 @@ void MainWindow::buildUi() {
     help->addAction(tr("关于 XRI"), this, [this] {
         QMessageBox::about(
             this, tr("关于 XRI"),
-            tr("<h3>XRI 0.2.0</h3>"
+            tr("<h3>XRI 0.2.1</h3>"
                "<p>非弹性非共振数据处理工具</p>"
                "<p>用于同步辐射 HDF5 / NeXus 数据浏览、分析晶体 ROI "
                "选取、谱学处理、三维成像与四维衬度分析。</p>"

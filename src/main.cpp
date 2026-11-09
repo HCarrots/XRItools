@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName("XRI");
     QCoreApplication::setApplicationName("XRI");
-    QCoreApplication::setApplicationVersion("0.2.0");
+    QCoreApplication::setApplicationVersion("0.2.1");
     app.setWindowIcon(QIcon(QStringLiteral(":/assets/xri.png")));
     // Keep Qt Widgets' Windows platform style, native dialogs, menus and frame.
     if (auto style = QStyleFactory::create("windowsvista"))

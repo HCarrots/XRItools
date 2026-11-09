@@ -830,7 +830,7 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             directory + "/provenance.json",
             {{"versions",
               QJsonObject{
-                  {"xri", "0.2.0-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
+                  {"xri", "0.2.1-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
              {"inputs", sources},
              {"started_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
         log("1/6 Extracting calibration pixels and pooled monitor doses", 3);
