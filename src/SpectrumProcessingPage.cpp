@@ -60,10 +60,10 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     auto commands = new QHBoxLayout;
     m_useCurrent = new QPushButton(tr("用当前原始谱作宽谱"));
     m_useCurrent->setObjectName("LoadCurrentSpectrumForProcessing");
-    auto wide = new QPushButton(tr("载入康普顿宽谱…"));
+    auto wide = WorkflowUi::button("folder-open", tr("载入康普顿宽谱…"));
     m_edges = new QPushButton(tr("选择近边谱并替换…"));
     m_geometry = new QPushButton(tr("补充晶体几何…"));
-    m_saveStitch = new QPushButton(tr("保存拼接 HDF5…"));
+    m_saveStitch = WorkflowUi::button("save", tr("保存拼接 HDF5…"));
     for (auto button : {m_useCurrent, wide, m_edges, m_geometry})
         commands->addWidget(button);
     commands->addStretch();
@@ -110,7 +110,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     m_analysisSource->setObjectName("BackgroundSpectrumSource");
     m_analysisSource->addItems({tr("第 5 步原始谱"), tr("外部逐晶体谱"), tr("第 6 步宽谱或拼接谱")});
     sourceFields->addRow(tr("输入谱"), m_analysisSource);
-    m_loadDirect = new QPushButton(tr("载入外部逐晶体谱…"));
+    m_loadDirect = WorkflowUi::button("folder-open", tr("载入外部逐晶体谱…"));
     m_loadDirect->setToolTip(tr("载入已处理的 HDF5 或逐晶体文本谱。自定义 HDF5 路径可在第 6 步设置。"));
     sourceFields->addRow(m_loadDirect);
     m_analysisInputInfo = textLabel();
@@ -157,7 +157,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     linearFields->addRow(tr("拟合区间 / eV"), m_windows[4]);
     linearFields->addRow(textLabel(
         tr("区间格式为 起点:终点，多段用逗号分隔。初始区间取自参考程序的 NCM 示例，请按实际扫描修改。")));
-    m_run = new QPushButton(tr("逐晶体扣背底"));
+    m_run = WorkflowUi::button("filter", tr("逐晶体扣背底"));
     m_run->setObjectName("RunMomentumBackground");
     fitLayout->addWidget(linearBox);
     fitLayout->addWidget(comptonBox);
@@ -190,7 +190,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     analysis->addLayout(columns, 1);
     auto runStatus = new QHBoxLayout;
     runStatus->addWidget(m_status[1] = textLabel(), 1);
-    m_cancelButton = new QPushButton(tr("取消分析"));
+    m_cancelButton = WorkflowUi::button("square", tr("取消分析"));
     m_cancelButton->hide();
     runStatus->addWidget(m_cancelButton);
     analysis->addLayout(runStatus);
@@ -206,7 +206,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     m_resultHi = numberBox(-1e8, 1e8, 600, 6);
     m_resultLo->setObjectName("CorrectedEnergyMinimum");
     m_resultHi->setObjectName("CorrectedEnergyMaximum");
-    m_saveResult = new QPushButton(tr("保存当前能区 HDF5…"));
+    m_saveResult = WorkflowUi::button("save", tr("保存当前能区 HDF5…"));
     resultRow->addWidget(new QLabel(tr("结果谱")));
     resultRow->addWidget(m_resultChoice, 1);
     resultRow->addWidget(new QLabel(tr("能量范围 / eV")));

@@ -4,6 +4,7 @@
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectroscopyDialog.h"
+#include "WorkflowUi.h"
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -102,8 +103,8 @@ MainWindow::~MainWindow() {
 void MainWindow::buildUi() {
     auto fileMenu = menuBar()->addMenu(tr("文件(&F)"));
     fileMenu->setObjectName("FileMenu");
-    auto open = fileMenu->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton),
-                                    tr("导入 HDF5 文件(&O)…"), QKeySequence::Open);
+    auto open = fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("导入 HDF5 文件(&O)…"),
+                                    QKeySequence::Open);
     open->setObjectName("ImportHdfFiles");
     connect(open, &QAction::triggered, this, [this] {
         auto files = QFileDialog::getOpenFileNames(
@@ -111,7 +112,7 @@ void MainWindow::buildUi() {
             "HDF5 / NeXus (*.nxs *.h5 *.hdf5 *.hdf *.nx5);;All files (*)");
         openFiles(files);
     });
-    m_exportAction = fileMenu->addAction(tr("导出当前文件副本…"));
+    m_exportAction = fileMenu->addAction(WorkflowUi::icon("download"), tr("导出当前文件副本…"));
     m_exportAction->setObjectName("ExportHdfFile");
     connect(m_exportAction, &QAction::triggered, this, [this] {
         auto path = QFileDialog::getSaveFileName(this, tr("导出完整 HDF5 / NeXus 文件副本"),
@@ -122,7 +123,7 @@ void MainWindow::buildUi() {
         if (!path.isEmpty())
             exportFile(path);
     });
-    m_cancelExportAction = fileMenu->addAction(tr("取消文件导出"));
+    m_cancelExportAction = fileMenu->addAction(WorkflowUi::icon("square"), tr("取消文件导出"));
     m_cancelExportAction->setObjectName("CancelHdfExport");
     connect(m_cancelExportAction, &QAction::triggered, this, [this] { m_exportCancel.store(true); });
     fileMenu->addSeparator();
@@ -150,24 +151,25 @@ void MainWindow::buildUi() {
         });
     }
     viewMenu->addSeparator();
-    auto reset = viewMenu->addAction(tr("复位图表"));
+    auto reset = viewMenu->addAction(WorkflowUi::icon("rotate-ccw"), tr("复位图表"));
     reset->setObjectName("ResetBrowserPlot");
     connect(reset, &QAction::triggered, this, [this] { m_plot->resetView(); });
     auto roiMenu = menuBar()->addMenu(tr("ROI(&R)"));
-    m_roiAction = roiMenu->addAction(tr("选取分析晶体 ROI…"));
+    m_roiAction = roiMenu->addAction(WorkflowUi::icon("scan"), tr("选取分析晶体 ROI…"));
     m_roiAction->setObjectName("SelectCrystalRois");
     m_roiAction->setEnabled(false);
     connect(m_roiAction, &QAction::triggered, this, [this] { openRoi(); });
     auto spectroscopyMenu = menuBar()->addMenu(tr("谱学(&S)"));
-    auto spectrum = spectroscopyMenu->addAction(tr("打开谱学处理工作区"));
+    auto spectrum = spectroscopyMenu->addAction(WorkflowUi::icon("chart-line"), tr("打开谱学处理工作区"));
     spectrum->setObjectName("SpectroscopyStep0");
     connect(spectrum, &QAction::triggered, this, [this] { openSpectroscopy(); });
     auto imagingMenu = menuBar()->addMenu(tr("成像(&I)"));
-    auto imaging = imagingMenu->addAction(tr("打开成像处理工作区"));
+    auto imaging = imagingMenu->addAction(WorkflowUi::icon("image"), tr("打开成像处理工作区"));
     imaging->setObjectName("ImagingStep0");
     connect(imaging, &QAction::triggered, this, [this] { openImaging(); });
     auto chemicalBondMenu = menuBar()->addMenu(tr("化学键衬度分析(&O)"));
-    chemicalBondMenu->addAction(tr("打开四维衬度工作区"), this, [this] { openBondImaging(); })
+    chemicalBondMenu->addAction(WorkflowUi::icon("layers"), tr("打开四维衬度工作区"), this,
+                                [this] { openBondImaging(); })
         ->setObjectName("OpenBondWorkspace");
     auto help = menuBar()->addMenu(tr("帮助(&H)"));
     help->addAction(tr("关于 XRI"), this, [this] {
@@ -300,6 +302,11 @@ void MainWindow::buildUi() {
     frames->setContentsMargins(0, 0, 0, 0);
     m_play = new QToolButton;
     m_play->setText(tr("播放"));
+    const auto playIcon = WorkflowUi::icon("play");
+    const auto pauseIcon = WorkflowUi::icon("pause");
+    m_play->setIcon(playIcon);
+    m_play->setIconSize(QSize(16, 16));
+    m_play->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_play->setCheckable(true);
     frames->addWidget(m_play);
     frames->addWidget(new QLabel(tr("帧 / 首个固定维度")));
@@ -320,7 +327,7 @@ void MainWindow::buildUi() {
     m_backToBrowser = new QToolButton;
     m_backToBrowser->setText(tr("返回数据浏览器"));
     m_backToBrowser->setAutoRaise(true);
-    m_backToBrowser->setIcon(QIcon(QStringLiteral(":/assets/lucide/chevron-left.svg")));
+    m_backToBrowser->setIcon(WorkflowUi::icon("chevron-left"));
     m_backToBrowser->setIconSize(QSize(16, 16));
     m_backToBrowser->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_backToBrowser->setObjectName("BackToBrowser");
@@ -370,8 +377,9 @@ void MainWindow::buildUi() {
             scheduleRead();
         }
     });
-    connect(m_play, &QToolButton::toggled, this, [this](bool play) {
+    connect(m_play, &QToolButton::toggled, this, [this, playIcon, pauseIcon](bool play) {
         m_play->setText(play ? tr("暂停") : tr("播放"));
+        m_play->setIcon(play ? pauseIcon : playIcon);
         if (play)
             m_playTimer.start();
         else

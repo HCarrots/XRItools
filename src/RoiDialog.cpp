@@ -80,7 +80,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     auto log = new QCheckBox("signed log1p");
     log->setChecked(true);
     controls->addWidget(log);
-    auto reset = new QPushButton(tr("复位视图"));
+    auto reset = WorkflowUi::button("rotate-ccw", tr("复位视图"));
     controls->addWidget(reset);
     m_advance = new QCheckBox(tr("设置后跳到下一个未设置晶体"));
     m_advance->setChecked(true);
@@ -141,7 +141,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     profileControls->addWidget(m_profileX);
     profileControls->addWidget(new QLabel(tr("Y（行）")));
     profileControls->addWidget(m_profileY);
-    m_profileCenter = new QPushButton(tr("定位到当前 ROI 中心"));
+    m_profileCenter = WorkflowUi::button("crosshair", tr("定位到当前 ROI 中心"));
     m_profileCenter->setObjectName("CenterRoiProfiles");
     profileControls->addWidget(m_profileCenter);
     auto profileLog = new QCheckBox(tr("剖面对数显示"));
@@ -194,7 +194,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
         coords->addWidget(m_coords[i], i / 2, i % 2 * 2 + 1);
     }
     panel->addLayout(coords);
-    auto apply = new QPushButton(tr("应用坐标 / 设为有效"));
+    auto apply = WorkflowUi::button("check", tr("应用坐标 / 设为有效"));
     m_apply = apply;
     apply->setObjectName("ApplyRoiCoordinates");
     apply->setDefault(true);
@@ -218,11 +218,11 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     m_message = new QLabel;
     m_message->setWordWrap(true);
     auto bottom = new QHBoxLayout;
-    auto load = new QPushButton(tr("加载 ROI 方案…"));
-    auto save = new QPushButton(tr("保存 ROI 方案…"));
-    m_finish = new QPushButton(tr("完成 ROI 选取"));
+    auto load = WorkflowUi::button("folder-open", tr("加载 ROI 方案…"));
+    auto save = WorkflowUi::button("save", tr("保存 ROI 方案…"));
+    m_finish = WorkflowUi::button("check", tr("完成 ROI 选取"));
     m_finish->setObjectName("FinishCrystalRois");
-    auto close = new QPushButton(tr("返回（保留草稿）"));
+    auto close = WorkflowUi::button("chevron-left", tr("返回（保留草稿）"));
     close->setObjectName("ReturnFromRoi");
     bottom->addWidget(load);
     bottom->addWidget(save);

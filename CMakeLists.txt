@@ -32,8 +32,14 @@ endif()
 qt_add_executable(XRI WIN32 src/main.cpp src/HdfFile.cpp src/HdfFile.h
     src/ScientificPlot.cpp src/ScientificPlot.h src/MainWindow.cpp src/MainWindow.h
     src/CrystalRoi.cpp src/CrystalRoi.h src/RoiDialog.cpp src/RoiDialog.h)
-set(XRI_CHEVRON_ICONS assets/lucide/chevron-right.svg assets/lucide/chevron-down.svg assets/lucide/chevron-left.svg)
-qt_add_resources(XRI "app_icons" PREFIX "/" FILES assets/xri.png ${XRI_CHEVRON_ICONS})
+set(XRI_LUCIDE_ICONS
+    assets/lucide/chart-line.svg assets/lucide/check.svg assets/lucide/chevron-down.svg
+    assets/lucide/chevron-left.svg assets/lucide/chevron-right.svg assets/lucide/crosshair.svg
+    assets/lucide/download.svg assets/lucide/filter.svg assets/lucide/folder-open.svg
+    assets/lucide/image.svg assets/lucide/layers.svg assets/lucide/pause.svg assets/lucide/play.svg
+    assets/lucide/plus.svg assets/lucide/rotate-ccw.svg assets/lucide/save.svg assets/lucide/scan.svg
+    assets/lucide/sliders-horizontal.svg assets/lucide/square.svg)
+qt_add_resources(XRI "app_icons" PREFIX "/" FILES assets/xri.png ${XRI_LUCIDE_ICONS})
 if(WIN32)
     target_sources(XRI PRIVATE assets/xri.rc)
     target_include_directories(XRI PRIVATE "$<$<COMPILE_LANGUAGE:RC>:${CMAKE_CURRENT_SOURCE_DIR}/assets>")
@@ -69,7 +75,7 @@ if(BUILD_TESTING)
     qt_add_executable(xri_gui_tests tests/GuiTests.cpp src/MainWindow.cpp src/MainWindow.h
         src/ScientificPlot.cpp src/ScientificPlot.h src/HdfFile.cpp src/HdfFile.h
         src/CrystalRoi.cpp src/CrystalRoi.h src/RoiDialog.cpp src/RoiDialog.h)
-    qt_add_resources(xri_gui_tests "chevron_icons" PREFIX "/" FILES ${XRI_CHEVRON_ICONS})
+    qt_add_resources(xri_gui_tests "lucide_icons" PREFIX "/" FILES ${XRI_LUCIDE_ICONS})
     set_target_properties(xri_gui_tests PROPERTIES WIN32_EXECUTABLE FALSE)
     target_sources(xri_gui_tests PRIVATE ${SPECTROSCOPY_SOURCES} ${BOND_WIDGET_SOURCES})
     target_sources(xri_gui_tests PRIVATE src/ImagingDialog.cpp src/ImagingDialog.h)

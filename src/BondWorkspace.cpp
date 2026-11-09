@@ -136,9 +136,9 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     auto fileLayout = new QVBoxLayout(filePage);
     WorkflowUi::compact(fileLayout);
     auto fileActions = new QHBoxLayout;
-    auto import = new QPushButton(tr("载入已有方案…"));
-    auto saveConfig = new QPushButton(tr("保存当前配置…"));
-    auto reopen = new QPushButton(tr("查看已有四维重建…"));
+    auto import = WorkflowUi::button("folder-open", tr("载入已有方案…"));
+    auto saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
+    auto reopen = WorkflowUi::button("folder-open", tr("查看已有四维重建…"));
     fileActions->addWidget(import);
     fileActions->addWidget(saveConfig);
     fileActions->addWidget(reopen);
@@ -219,7 +219,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     right->addWidget(output);
     right->addStretch();
     fileLayout->addLayout(columns, 1);
-    auto next = new QPushButton(tr("校验输入并继续"));
+    auto next = WorkflowUi::button("check", tr("校验输入并继续"));
     next->setObjectName("CheckBondInputs");
     fileLayout->addWidget(next, 0, Qt::AlignRight);
     m_tabs->addTab(filePage, tr("1 文件与 ROI"));
@@ -260,7 +260,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     solveActions->addWidget(WorkflowUi::disclosureButton(tr("求解设置"), solver));
     solveActions->addStretch();
     runLayout->addWidget(solver);
-    m_run = new QPushButton(tr("开始重建并保存"));
+    m_run = WorkflowUi::button("play", tr("开始重建并保存"));
     m_run->setObjectName("RunBondVolume");
     m_run->setEnabled(false);
     solveActions->addWidget(m_run);
@@ -317,7 +317,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_backgroundMode->setObjectName("BondBackgroundMode");
     m_backgroundMode->addItems({tr("逐体素线性扣除"), tr("按 q 分流（高 q 康普顿与低 q 线性）")});
     createComptonOptions();
-    auto reference = new QPushButton(tr("宽谱与康普顿参数…"));
+    auto reference = WorkflowUi::button("sliders-horizontal", tr("宽谱与康普顿参数…"));
     reference->setObjectName("BondComptonParameters");
     reference->hide();
     connect(reference, &QPushButton::clicked, this, [this] { m_comptonOptions->exec(); });
@@ -332,7 +332,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_normalization = new QLineEdit;
     m_normalization->setObjectName("BondAreaNormalization");
     m_normalization->setPlaceholderText(tr("起点:终点"));
-    auto apply = new QPushButton(tr("应用谱处理"));
+    auto apply = WorkflowUi::button("filter", tr("应用谱处理"));
     apply->setObjectName("ApplyBondSpectralProcessing");
     auto linearLabel = new QLabel(tr("线性拟合 / keV"));
     fitRow->addWidget(linearLabel);
@@ -381,7 +381,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_spectralFigure->setObjectName("BondEnergyPosition");
     m_plots->addTab(m_spectralFigure, tr("沿 X 三维谱图"));
     voxelLayout->addWidget(m_plots, 1);
-    auto toFigures = new QPushButton(tr("查看衬度结果"));
+    auto toFigures = WorkflowUi::button("layers", tr("查看衬度结果"));
     m_plots->setCornerWidget(toFigures);
     m_tabs->addTab(voxelPage, tr("3 选点与谱处理"));
 
@@ -439,7 +439,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_level = number(12, -1e12, 1e12, 0);
     m_level2 = number(12, -1e12, 1e12, 0);
     m_secondSurface = new QCheckBox(tr("第二等值面"));
-    auto mesh = new QPushButton(tr("生成等值面"));
+    auto mesh = WorkflowUi::button("layers", tr("生成等值面"));
     mesh->setObjectName("BuildBondSurface");
     surfaceRow->addWidget(new QLabel(tr("阈值")));
     surfaceRow->addWidget(m_level);
@@ -464,7 +464,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_progress = new QProgressBar;
     m_progress->setMaximumWidth(160);
     m_progress->hide();
-    m_cancel = new QPushButton(tr("取消"));
+    m_cancel = WorkflowUi::button("square", tr("取消"));
     m_cancel->hide();
     footer->addWidget(m_status, 1);
     footer->addWidget(m_progress);

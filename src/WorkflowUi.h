@@ -2,6 +2,16 @@
 #include <QtWidgets>
 
 namespace WorkflowUi {
+inline QIcon icon(const QString &name) {
+    return QIcon(QStringLiteral(":/assets/lucide/") + name + QStringLiteral(".svg"));
+}
+
+inline QPushButton *button(const QString &iconName, const QString &label) {
+    auto action = new QPushButton(icon(iconName), label);
+    action->setIconSize(QSize(16, 16));
+    return action;
+}
+
 inline void compact(QLayout *layout) {
     layout->setContentsMargins(6, 4, 6, 4);
     layout->setSpacing(4);
@@ -14,8 +24,8 @@ inline QToolButton *disclosureButton(const QString &title, QWidget *body, bool e
     toggle->setCheckable(true);
     toggle->setChecked(expanded);
     toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    const QIcon collapsedIcon(QStringLiteral(":/assets/lucide/chevron-right.svg"));
-    const QIcon expandedIcon(QStringLiteral(":/assets/lucide/chevron-down.svg"));
+    const auto collapsedIcon = icon("chevron-right");
+    const auto expandedIcon = icon("chevron-down");
     toggle->setIconSize(QSize(16, 16));
     toggle->setIcon(expanded ? expandedIcon : collapsedIcon);
     body->setVisible(expanded);
