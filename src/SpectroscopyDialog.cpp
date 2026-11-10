@@ -120,6 +120,10 @@ SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *pare
     }
     refreshState();
 }
+bool SpectroscopyDialog::isBusy() const {
+    return m_busy || (m_processing && m_processing->isBusy());
+}
+
 SpectroscopyDialog::~SpectroscopyDialog() {
     m_cancel.store(true);
     m_watcher.waitForFinished();

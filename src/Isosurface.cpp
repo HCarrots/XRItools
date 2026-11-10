@@ -1,4 +1,5 @@
 #include "Isosurface.h"
+#include <QCoreApplication>
 #include "ImagingIO.h"
 #include <algorithm>
 #include <cmath>
@@ -9,14 +10,14 @@ QVector<SurfaceTriangle> Isosurface::extract(const QVector<QVector<double>> &axe
                                              qsizetype count, double level, const std::atomic_bool &stop) {
     cancel(stop);
     if (axes.size() != 3 || !field || !std::isfinite(level))
-        fail(QStringLiteral("等值面输入无效。"));
+        fail(QCoreApplication::translate("Isosurface", "等值面输入无效。"));
     const qsizetype nx = axes[0].size(), ny = axes[1].size(), nz = axes[2].size();
     if (nx < 2 || ny < 2 || nz < 2 || nx > count / ny / nz || nx * ny * nz != count)
-        fail(QStringLiteral("等值面需要与体数据一致的三维坐标轴。"));
+        fail(QCoreApplication::translate("Isosurface", "等值面需要与体数据一致的三维坐标轴。"));
     for (const auto &axis : axes)
         for (qsizetype i = 0; i < axis.size(); ++i)
             if (!std::isfinite(axis[i]) || (i > 0 && axis[i] <= axis[i - 1]))
-                fail(QStringLiteral("等值面的空间坐标须有限且严格递增。"));
+                fail(QCoreApplication::translate("Isosurface", "等值面的空间坐标须有限且严格递增。"));
     constexpr int tetrahedra[6][4]{{0, 1, 3, 7}, {0, 3, 2, 7}, {0, 2, 6, 7},
                                    {0, 6, 4, 7}, {0, 4, 5, 7}, {0, 5, 1, 7}};
     QVector<SurfaceTriangle> mesh;
@@ -64,7 +65,7 @@ QVector<SurfaceTriangle> Isosurface::extract(const QVector<QVector<double>> &axe
                     }
                 }
                 if (mesh.size() > 500000)
-                    fail(QStringLiteral("等值面过于复杂，请调整阈值或使用较粗的 X 网格。"));
+                    fail(QCoreApplication::translate("Isosurface", "等值面过于复杂，请调整阈值或使用较粗的 X 网格。"));
             }
     }
     return mesh;

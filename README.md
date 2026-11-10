@@ -1,12 +1,14 @@
 # XRI
 
-C++17 / Qt 6 Widgets / HDF5 编写的 Windows 同步辐射数据浏览、谱学处理与三维成像软件。
+C++17 / Qt 6 Widgets / HDF5 编写的 Windows 和 Linux 同步辐射数据浏览、谱学处理与三维成像软件。
 
 本项目源代码采用 [MIT 开源协议](LICENSE)发布，Copyright (c) 2026 Hu Shiqi。第三方组件遵循各自许可证，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 运行
 
-打包后双击 `dist/XRI/XRI.exe`，使用“文件 → 导入 HDF5 文件”多选，或拖入多个 `.nxs` / `.h5` 文件。
+Windows 便携包完整解压后运行 `XRI/XRI.exe`。Linux 安装包安装后从应用菜单打开 XRI，或在终端运行 `XRI`。使用“文件 → 导入 HDF5 文件”多选，或拖入多个 `.nxs` / `.h5` 文件。
+
+在“语言 / Language”菜单选择“简体中文”或“English”。XRI 会保存设置并自动重启，然后重新打开已导入的数据文件。若有任务在运行，请等任务结束后再切换。
 在项目目录执行以下命令，会自动打开提供的测试文件：
 
 ```powershell
@@ -29,7 +31,7 @@ C++17 / Qt 6 Widgets / HDF5 编写的 Windows 同步辐射数据浏览、谱学�
 4. **成像**：文件与 ROI → 重建参数 → 输入与标定检查 → 剖面分析 → 三维模型 → 诊断与日志。校验后在检查页运行重建；配置与已有结果入口集中在文件准备页。
 5. **化学键衬度分析**：数据与 ROI → 谱学处理与空间信息重建 → 三维体素。「四维体素与瀑布图」有单独入口。
 
-各处理页选择数据时，可直接使用浏览器已导入的文件。左侧文件结构面板只在浏览时显示，返回后恢复原状态。原生 Windows 控件与原有处理算法保留。
+各处理页选择数据时，可直接使用浏览器已导入的文件。左侧文件结构面板只在浏览时显示，返回后恢复原状态。
 
 全部交互图表与成像诊断 PNG 共用学术刻度：1/2/2.5/5 主刻度、次刻度、四边内向刻度、统一数字精度；曲线使用浅色虚线主网格，图例置于绘图区外。二维图像默认无网格；图上右键可切换网格与次刻度、复位范围。对数显示使用原始量值标注刻度，零和负值均保留。显示样式不改变积分、拟合或重建结果。
 
@@ -44,7 +46,7 @@ C++17 / Qt 6 Widgets / HDF5 编写的 Windows 同步辐射数据浏览、谱学�
 
 匹配不区分大小写，仅使用文件名，不受目录名影响。不符合规则的文件显示为“通用 HDF5 / NeXus”，仍可浏览。两种格式共用 HDF5 按需读取，维度与帧数以文件内容为准；打开新文件从第 0 帧开始。
 
-- 原生 Windows Qt Widgets 菜单、文件对话框和可停靠面板；中文界面。“文件”集中管理导入、导出副本和关闭，“数据浏览器”集中管理预览方式、图表复位与文件结构面板。
+- 中英双语 Qt Widgets 菜单、文件对话框和可停靠面板。“文件”集中管理导入、导出副本和关闭，“数据浏览器”集中管理预览方式、图表复位与文件结构面板。
 - 按层展开 HDF5 分组，显示数据类型、维度和属性；筛选当前已加载节点。
 - 标量、字符串、布尔、一维信号、二维图像和多维数组切片。
 - 自由选择 X/Y 维度；底部滑块与帧输入框控制首个固定维度，支持播放。其他固定维度默认使用索引 0。
@@ -81,6 +83,30 @@ C++17 / Qt 6 Widgets / HDF5 编写的 Windows 同步辐射数据浏览、谱学�
 勾选窗口顶部“显示 X/Y 剖面图”，可选择探测器并输入 X（列）、Y（行）：横向剖面为 `image[Y, :]`，纵向剖面为 `image[:, X]`。直接拖动蓝色竖线调整 X、横线调整 Y、交点调整两者，坐标和曲线在拖动过程中实时更新；也可按住 Ctrl 在任一探测器图像中单击或拖动定位。Esc 停止拖动，拖出图像时位置限制在有效像素范围。远离定位线的普通拖动仍用于框选 ROI。也可单选一个已有 ROI 后点击“定位到当前 ROI 中心”。坐标范围随探测器尺寸变化，单帧切换后剖面同步更新。剖面默认显示原始计数，可独立切换对数显示；这仅改变显示比例，不改变数值，也不进行区域积分或修改晶体 ROI。
 
 本步骤只保存矩形坐标与人工有效性标记，不执行 I0 归一化、自动寻峰、阈值掩膜、ROI 积分、拟合或成像重建。原始 `.nxs` 始终只读。先前删除的通用数据检查器、水平积分及图表/CSV 导出功能保持移除。
+
+### 自动识别光斑 ROI
+
+打开「ROI → 自动识别光斑 ROI」，选择 NeXus 文件、探测器、单帧或全部帧求和，再指定 Python 环境与训练权重。界面显示编号后的掩膜叠加图。导出的 JSON 保存每个光斑的掩膜、扣除局部背景后加权的质心、原始积分、净积分和等二阶矩椭圆参数。坐标按零起始的 X 列、Y 行表示，掩膜以行优先的 `[start,length]` 像素段保存。光斑按质心排序编号，晶体归属需结合标定核对。
+
+用「手动匹配晶体并保存 ROI」打开本次或之前保存的识别结果。先在左侧选晶体，再在右侧点对应光斑的着色掩膜。可清除、标记失效或设置后跳到下一个未设置的晶体。既可以从空白方案开始，也可以载入已有方案继续编辑。处理第二个探测器时，载入第一次保存的方案即可把两台探测器的匹配合并。允许保存待设置的晶体，开始分析前按模块提示补齐或标记失效。
+
+确认后保存为共用 `.roi.json`，可直接在谱学、成像和化学键衬度分析载入。模块按掩膜从所选扫描逐帧取像素，再执行各自的归一化、标定和处理。谱学的寻峰重定位和强度阈值仅应用于矩形 ROI，重叠像素选项仍照常应用。旧矩形方案仍可载入。
+
+为该功能创建独立 Python 环境，并在该环境内安装推理依赖。以下命令安装 CPU 版本。
+
+```sh
+python -m pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install numpy scipy h5py
+```
+
+训练脚本在线生成圆形与椭圆光斑、泊松噪声、背景梯度和热像素。可用真实标注的 NPZ 微调，每个 NPZ 包含 `image[H,W]` 和 `masks[N,H,W]`。也可用 `--real-scan` 与 `--roi-boxes` 在既有晶体框内提取弱标注。
+
+```sh
+python scripts/roi_maskrcnn.py train --synthetic 2400 --output roi-synthetic.pt
+python scripts/roi_maskrcnn.py train --synthetic 0 --resume roi-synthetic.pt --fine-tune 400 --real-masks annotated.npz --output roi-maskrcnn.pt
+```
+
+官方发布包已附带 `roi-maskrcnn.pt`，在识别窗口选择装有推理依赖的 Python 可执行文件即可。自行训练的权重也可在同一窗口选择。Linux CMake 打包时可通过 `-DXRI_ROI_MODEL=/path/to/roi-maskrcnn.pt` 附带权重。
 
 ## 第二步：谱学处理
 
@@ -174,7 +200,11 @@ HDF5 通过 hyperslab 按需读取，**不会整体加载约 4.36 GiB 的测试�
 
 ## 编译
 
-需要 MSVC x64 C++ 开发工具、CMake ≥ 3.24、Ninja、Qt ≥ 6.5（Widgets / Concurrent 开发包；回归测试还需要 Qt Test）和 HDF5 C / HL 开发库。成像的 Eigen 3.4.0 头文件已包含在 `third_party/eigen3`（MPL2 模式）。本机脚本默认使用已有的 `miniconda3/envs/xrsabre/Library`；匹配的 Qt 开发包是 `qtbase-devel=6.11.0`。运行时不依赖 Python。
+两平台共用 CMake，依赖 C++17 编译器、CMake ≥ 3.24、Qt ≥ 6.4（Widgets / Concurrent，运行回归测试还需要 Qt Test）和 HDF5 C / HL 开发库。成像使用仓库内的 Eigen 3.4.0 头文件（MPL2 模式）。Python 仅用于自动识别光斑。
+
+### Windows
+
+Windows 脚本使用 MSVC x64 和 Ninja，默认从 `miniconda3/envs/xrsabre/Library` 查找 Qt 和 HDF5。已有环境使用 `qtbase-devel=6.11.0`。构建需要 Qt 6 的 Linguist 工具 `lrelease`，用于将 `translations/xri_en.ts` 编译并嵌入程序。
 
 ```powershell
 .\scripts\build.ps1 -Test
@@ -185,6 +215,27 @@ HDF5 通过 hyperslab 按需读取，**不会整体加载约 4.36 GiB 的测试�
 脚本只对当前进程设置编译和运行路径。也可以通过标准 CMake 指定 `CMAKE_PREFIX_PATH` 与 `HDF5_ROOT`。
 完整打包前请关闭旧版 XRI 窗口，避免 Windows 锁定正在使用的 Qt 运行库。
 Qt 部署使用官方 [windeployqt](https://doc.qt.io/qt-6/windows-deployment.html)，并额外解析 HDF5 与插件的 DLL 依赖。
+
+### Linux（Ubuntu）
+
+在 Ubuntu 上用系统 Qt 和 HDF5 构建。Windows 与 Linux 应分别使用各自的构建目录。
+
+```sh
+sudo apt install build-essential cmake ninja-build file qt6-base-dev qt6-l10n-tools qt6-translations-l10n libqt6svg6 libhdf5-dev fonts-noto-cjk
+cmake -S . -B build/linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/linux --parallel 2
+ctest --test-dir build/linux --output-on-failure
+./build/linux/XRI
+```
+
+要在当前 Ubuntu 版本生成并安装桌面软件包，运行以下命令。软件包的库依赖以打包时所用的 Ubuntu 版本为准。
+
+```sh
+cpack --config build/linux/CPackConfig.cmake -B dist/linux
+sudo apt install ./dist/linux/xri-tools_*_amd64.deb
+```
+
+读取较新版 HDF5 写入的文件时，Ubuntu 24.04 自带的 HDF5 1.10 可能无法解码部分数据集。可用 `-DHDF5_ROOT=/path/to/hdf5` 指定较新版 HDF5。若打包时静态链接 HDF5，请同时用 `-DXRI_BUNDLED_HDF5_LICENSE=/path/to/COPYING` 将其许可证加入安装包。
 
 ## 验证
 

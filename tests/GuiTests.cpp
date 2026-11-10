@@ -3,6 +3,7 @@
 #include "ImagingFixture.h"
 #include "MainWindow.h"
 #include "PlotStyle.h"
+#include "RoiDetectionDialog.h"
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectroscopyDialog.h"
@@ -18,22 +19,30 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QGraphicsView>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
+#include <QTranslator>
 #include <QTreeWidget>
 #include <QWheelEvent>
 #include <QtTest>
@@ -42,6 +51,231 @@
 class GuiTests : public QObject {
     Q_OBJECT
   private slots:
+    void bilingualUi() {
+        const QString key = "ui/language";
+        QSettings settings;
+        const auto previous = settings.value(key);
+        settings.remove(key);
+        {
+            QTemporaryDir temp;
+            const auto file = QFileInfo(SpectrumFixture::create(temp.path(), true)).canonicalFilePath();
+            QStringList restartArguments;
+            int launches = 0;
+            bool allowRestart = false;
+            MainWindow chinese(nullptr, [&](const QStringList &arguments) {
+                ++launches;
+                restartArguments = arguments;
+                return allowRestart;
+            });
+            chinese.show();
+            auto *menu = chinese.findChild<QMenu *>("LanguageMenu");
+            auto *english = chinese.findChild<QAction *>("Language_en");
+            auto *simplified = chinese.findChild<QAction *>("Language_zh_CN");
+            QVERIFY(menu && english && simplified);
+            QCOMPARE(menu->title(), QStringLiteral("语言(&L)"));
+            chinese.openFile(file);
+            chinese.selectPath("/entry/data/D_LAMBDA");
+            chinese.setSliceIndex(0, 1);
+            QVERIFY(chinese.isReading());
+            english->trigger();
+            QCOMPARE(launches, 0);
+            QVERIFY(simplified->isChecked());
+            QTRY_VERIFY(!chinese.isReading());
+            QTimer::singleShot(0, [] {
+                if (auto *message = qobject_cast<QDialog *>(QApplication::activeModalWidget()))
+                    message->accept();
+            });
+            english->trigger();
+            QCOMPARE(launches, 1);
+            QVERIFY(simplified->isChecked() && chinese.isVisible());
+            QVERIFY(!QSettings().contains(key));
+            allowRestart = true;
+            english->trigger();
+            QCOMPARE(launches, 2);
+            QVERIFY(!chinese.isVisible());
+            QCOMPARE(QSettings().value(key).toString(), QStringLiteral("en"));
+            QCOMPARE(restartArguments, (QStringList{"--dataset", "/entry/data/D_LAMBDA", "--frame", "1", "--", file}));
+        }
+        QTranslator translator;
+        QVERIFY(translator.load(":/i18n/xri_en.qm"));
+        QVERIFY(QCoreApplication::installTranslator(&translator));
+        {
+            int launches = 0;
+            MainWindow english(nullptr, [&](const QStringList &) {
+                ++launches;
+                return true;
+            });
+            QCOMPARE(english.findChild<QMenu *>("FileMenu")->title(), QStringLiteral("&File"));
+            QCOMPARE(english.findChild<QMenu *>("LanguageMenu")->title(), QStringLiteral("&Language"));
+            QVERIFY(english.findChild<QAction *>("Language_en")->isChecked());
+            auto *spectroscopy = english.openSpectroscopy()->findChild<QTabWidget *>("SpectroscopySteps");
+            auto *imaging = english.openImaging()->findChild<QTabWidget *>("ImagingSteps");
+            auto *bond = english.openBondImaging()->findChild<QTabWidget *>("BondSteps");
+            QVERIFY(spectroscopy && imaging && bond);
+            QCOMPARE(spectroscopy->tabText(3), QStringLiteral("4 XRS and I0"));
+            QCOMPARE(imaging->tabText(2), QStringLiteral("3 Input and Calibration Checks"));
+            QCOMPARE(bond->tabText(1), QStringLiteral("2 Spectral Processing and Spatial Reconstruction"));
+            RoiDetectionDialog masks({});
+            QCOMPARE(masks.windowTitle(), QStringLiteral("Automatic Spot ROI Detection"));
+            CrystalRois rois;
+            QString error;
+            QVERIFY(!rois.restore("{}", {}, &error));
+            QCOMPARE(error, QStringLiteral("This is not a supported XRI ROI scheme."));
+            auto *chinese = english.findChild<QAction *>("Language_zh_CN");
+            chinese->trigger();
+            QCOMPARE(launches, 1);
+            QCOMPARE(QSettings().value(key).toString(), QStringLiteral("zh_CN"));
+        }
+        QCoreApplication::removeTranslator(&translator);
+        MainWindow chineseAgain;
+        QCOMPARE(chineseAgain.findChild<QMenu *>("FileMenu")->title(), QStringLiteral("文件(&F)"));
+        if (previous.isValid())
+            settings.setValue(key, previous);
+        else
+            settings.remove(key);
+    }
+    void automaticSpotRoi() {
+        const auto source = qEnvironmentVariable("XRI_ROI_ML_TEST_FILE");
+        const auto python = qEnvironmentVariable("XRI_ROI_ML_PYTHON");
+        const auto weights = qEnvironmentVariable("XRI_ROI_ML_WEIGHTS");
+        if (source.isEmpty() || python.isEmpty() || weights.isEmpty())
+            QSKIP("Optional Mask R-CNN inference requires a scan, Python environment and weights");
+        MainWindow window;
+        window.show();
+        window.openFile(source);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        auto action = window.findChild<QAction *>("DetectSpotRois");
+        QVERIFY(action);
+        action->trigger();
+        auto run = window.findChild<QPushButton *>("RunSpotRoiDetection");
+        auto exportButton = window.findChild<QPushButton *>("ExportSpotRoiDetection");
+        auto pythonEdit = window.findChild<QLineEdit *>("SpotRoiPython");
+        auto weightsEdit = window.findChild<QLineEdit *>("SpotRoiWeights");
+        auto results = window.findChild<QTableWidget *>("SpotRoiResults");
+        auto status = window.findChild<QLabel *>("SpotRoiStatus");
+        QVERIFY(run && exportButton && pythonEdit && weightsEdit && results && status);
+        QVERIFY(run->isEnabled() && !exportButton->isEnabled());
+        pythonEdit->setText(python);
+        weightsEdit->setText(weights);
+        run->click();
+        QTRY_VERIFY_WITH_TIMEOUT(run->isEnabled(), 60000);
+        QVERIFY2(exportButton->isEnabled(), qPrintable(status->text()));
+        QVERIFY(results->rowCount() > 0);
+        QVERIFY(results->item(0, 4)->text().toInt() >= 8);
+        QVERIFY(results->item(0, 5)->text().toDouble() > 0.);
+        const auto screenshot = qEnvironmentVariable("XRI_ROI_ML_SCREENSHOT");
+        if (!screenshot.isEmpty())
+            QVERIFY(run->window()->grab().save(screenshot));
+    }
+    void matchSavedSpotRois() {
+        QTemporaryDir temp;
+        const auto source = SpectrumFixture::create(temp.path(), true);
+        auto spot = [](int id, int x, int y, const QJsonArray &runs) {
+            return QJsonObject{{"id", id}, {"centroid_xy", QJsonArray{x, y}}, {"mask_runs", runs}};
+        };
+        const auto report = QJsonDocument(QJsonObject{
+            {"schema", "xri.roi.maskrcnn.result.v1"}, {"source", source},
+            {"detector", "D_LAMBDA"}, {"shape_yx", QJsonArray{8, 8}},
+            {"spots", QJsonArray{spot(1, 1, 1, QJsonArray{QJsonArray{9, 1}, QJsonArray{18, 1}}),
+                                 spot(2, 5, 5, QJsonArray{QJsonValue(QJsonArray{45, 1})}),
+                                 spot(3, 6, 5, QJsonArray{QJsonValue(QJsonArray{46, 1})})}}}).toJson();
+        QFile detection(temp.filePath("detected.json"));
+        QVERIFY(detection.open(QIODevice::WriteOnly));
+        QCOMPARE(detection.write(report), report.size());
+        detection.close();
+        const auto output = temp.filePath("shared.roi.json");
+        const QStringList paths{detection.fileName(), temp.filePath("test.roi.json"), output};
+        RoiDetectionDialog dialog(source);
+        dialog.show();
+        auto action = dialog.findChild<QAction *>("MatchSavedSpotRois");
+        QVERIFY(action && action->isEnabled());
+        int pickedFiles = 0;
+        bool reviewed = false;
+        bool startedEmpty = false;
+        bool pickedManually = false;
+        bool requestedBaseline = false;
+        QPointer<QFileDialog> activePicker;
+        QTimer driveDialogs;
+        connect(&driveDialogs, &QTimer::timeout, &dialog, [&] {
+            auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (auto *picker = qobject_cast<QFileDialog *>(modal)) {
+                if (activePicker != picker) {
+                    if (pickedFiles >= paths.size()) {
+                        picker->reject();
+                        return;
+                    }
+                    activePicker = picker;
+                    const QFileInfo file(paths[pickedFiles++]);
+                    picker->setDirectory(file.absolutePath());
+                    picker->selectFile(file.fileName());
+                    if (auto *name = picker->findChild<QLineEdit *>("fileNameEdit"))
+                        name->setText(file.fileName());
+                    return;
+                }
+                QMetaObject::invokeMethod(picker, "accept");
+            } else if (modal && !reviewed) {
+                auto *table = modal->findChild<QTableWidget *>("SpotRoiCrystalMatches");
+                auto *save = modal->findChild<QPushButton *>("SaveMatchedSpotRois");
+                auto *load = modal->findChild<QPushButton *>("LoadSpotRoiBaseline");
+                auto *view = modal->findChild<QGraphicsView *>("SpotRoiMaskView");
+                if (!table || !save || !load || !view) {
+                    modal->reject();
+                    return;
+                }
+                if (!requestedBaseline) {
+                    startedEmpty = table->item(0, 2)->text().isEmpty() && !save->isEnabled();
+                    requestedBaseline = true;
+                    QTimer::singleShot(0, load, &QPushButton::click);
+                    return;
+                }
+                reviewed = true;
+                if (!startedEmpty || pickedFiles != 2 || save->isEnabled() ||
+                    !table->item(0, 2)->text().isEmpty() || !table->item(1, 2)->text().isEmpty()) {
+                    modal->reject();
+                    return;
+                }
+                table->selectRow(0);
+                QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(6.5, 5.5));
+                table->selectRow(1);
+                QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(1.5, 1.5));
+                pickedManually = table->item(0, 2)->text() == "3" && table->item(1, 2)->text() == "1";
+                if (!pickedManually || !save->isEnabled()) {
+                    modal->reject();
+                    return;
+                }
+                QTimer::singleShot(0, save, &QPushButton::click);
+            } else if (modal && !modal->findChild<QTableWidget *>("SpotRoiCrystalMatches")) {
+                modal->reject();
+            }
+        });
+        QTimer deadline;
+        connect(&deadline, &QTimer::timeout, &dialog, [] {
+            if (auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget()))
+                modal->reject();
+        });
+        const bool native = !QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        deadline.start(5000);
+        driveDialogs.start(20);
+        action->trigger();
+        driveDialogs.stop();
+        deadline.stop();
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, !native);
+        const auto *status = dialog.findChild<QLabel *>("SpotRoiStatus");
+        QVERIFY2(reviewed && pickedManually,
+                 qPrintable(QString("pickedFiles=%1, reviewed=%2, status=%3")
+                                .arg(pickedFiles).arg(reviewed).arg(status ? status->text() : QString())));
+        QCOMPARE(pickedFiles, paths.size());
+        QFile saved(output);
+        QVERIFY(saved.open(QIODevice::ReadOnly));
+        CrystalRois scheme;
+        QString error;
+        QVERIFY2(scheme.restore(saved.readAll(), {{8, 8}, {6, 6}}, &error), qPrintable(error));
+        QCOMPARE(scheme.items()[0].mask, (QVector<QPoint>{{6, 5}}));
+        QCOMPARE(scheme.items()[1].mask, (QVector<QPoint>{{1, 1}, {2, 2}}));
+        QCOMPARE(scheme.items()[60].rect, QRect(1, 1, 2, 2));
+        QVERIFY(scheme.items()[60].mask.isEmpty());
+    }
     void bondWorkflow() {
         QTemporaryDir temp;
         MainWindow window;
@@ -510,7 +744,8 @@ class GuiTests : public QObject {
         }
         QCOMPARE(labels, QStringList({QString::fromUtf8("文件"), QString::fromUtf8("数据浏览器"), "ROI",
                                       QString::fromUtf8("谱学"), QString::fromUtf8("成像"),
-                                      QString::fromUtf8("化学键衬度分析"), QString::fromUtf8("帮助")}));
+                                      QString::fromUtf8("化学键衬度分析"), QString::fromUtf8("语言"),
+                                      QString::fromUtf8("帮助")}));
         auto browser = window.findChild<QMenu *>("DataBrowserMenu");
         auto fileMenu = window.findChild<QMenu *>("FileMenu");
         QVERIFY(browser && fileMenu);
@@ -1079,7 +1314,10 @@ class GuiTests : public QObject {
             QCOMPARE(dialog.rois().items()[row].state, RoiState::Invalid);
         QCOMPARE(dialog.rois().items()[0].rect, existingRect);
         QCOMPARE(dialog.rois().items()[2].state, RoiState::Pending);
-        table->setCurrentCell(6, 0, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        table->scrollToItem(table->item(6, 0));
+        QTest::mouseClick(table->viewport(), Qt::LeftButton, Qt::NoModifier,
+                          table->visualRect(table->model()->index(6, 0)).center());
+        table->scrollToItem(table->item(9, 0));
         QTest::mouseClick(table->viewport(), Qt::LeftButton, Qt::ShiftModifier,
                           table->visualRect(table->model()->index(9, 0)).center());
         QCOMPARE(table->selectionModel()->selectedRows().size(), 4);
@@ -1174,14 +1412,17 @@ class GuiTests : public QObject {
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+#ifdef Q_OS_WIN
     if (!qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS").isEmpty() ||
         !qEnvironmentVariable("XRI_IMAGING_SCREENSHOTS").isEmpty() ||
         !qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS").isEmpty() ||
+        !qEnvironmentVariable("XRI_ROI_ML_SCREENSHOT").isEmpty() ||
         !qEnvironmentVariable("XRI_BOND_SCREENSHOTS").isEmpty()) {
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/arial.ttf");
         QFontDatabase::addApplicationFont("C:/Windows/Fonts/msyh.ttc");
         app.setFont(QFont("Microsoft YaHei", 9));
     }
+#endif
     QCoreApplication::setOrganizationName("XRI-Tests");
     QCoreApplication::setApplicationName("XRI-Tests");
     GuiTests tests;

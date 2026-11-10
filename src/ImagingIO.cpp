@@ -1,4 +1,5 @@
 #include "ImagingIO.h"
+#include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -14,7 +15,7 @@ namespace ImageUtil {
 }
 void cancel(const std::atomic_bool &value) {
     if (value.load())
-        fail(QStringLiteral("已取消成像计算；已生成的中间文件和日志保留。"));
+        fail(QCoreApplication::translate("ImagingIO", "已取消成像计算；已生成的中间文件和日志保留。"));
 }
 QJsonArray json(const QVector<double> &v) {
     QJsonArray a;
@@ -41,7 +42,7 @@ void saveJson(const QString &path, const QJsonObject &object) {
     QSaveFile f(path);
     auto bytes = QJsonDocument(object).toJson();
     if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size() || !f.commit())
-        fail(QStringLiteral("写入失败：%1").arg(path));
+        fail(QCoreApplication::translate("ImagingIO", "写入失败：%1").arg(path));
 }
 double percentile(QVector<double> v, double q) {
     if (v.isEmpty())
@@ -86,7 +87,9 @@ ImagingH5::ImagingH5(const QString &file, bool create) {
     m_file = create ? H5Fcreate(file.toUtf8().constData(), H5F_ACC_EXCL, H5P_DEFAULT, H5P_DEFAULT)
                     : H5Fopen(file.toUtf8().constData(), H5F_ACC_RDONLY, H5P_DEFAULT);
     if (m_file < 0)
-        ImageUtil::fail(QStringLiteral("无法%1 HDF5：%2").arg(create ? "新建" : "只读打开", file));
+        ImageUtil::fail((create ? QCoreApplication::translate("ImagingIO", "无法新建 HDF5 文件：%1")
+                                : QCoreApplication::translate("ImagingIO", "无法以只读模式打开 HDF5 文件：%1"))
+                            .arg(file));
 }
 ImagingH5::~ImagingH5() {
     QMutexLocker lock(&HdfFile::ioMutex());
@@ -141,7 +144,7 @@ QStringList ImagingH5::strings(const QString &path, int maxCount) const {
         type(H5Dget_type(ds), H5Tclose), space(H5Dget_space(ds), H5Sclose);
     auto shape = dimensions(space);
     if (shape.size() != 1 || !shape[0] || shape[0] > hsize_t(maxCount) || H5Tget_class(type) != H5T_STRING)
-        ImageUtil::fail(QStringLiteral("需要一维 HDF5 字符串标签数组：%1").arg(path));
+        ImageUtil::fail(QCoreApplication::translate("ImagingIO", "需要一维 HDF5 字符串标签数组：%1").arg(path));
     const int count = int(shape[0]);
     QStringList result;
     if (H5Tis_variable_str(type) > 0) {
@@ -150,12 +153,13 @@ QStringList ImagingH5::strings(const QString &path, int maxCount) const {
         if (status >= 0)
             for (auto value : values)
                 result.append(QString::fromUtf8(value ? value : "").trimmed());
-        H5Treclaim(type, space, H5P_DEFAULT, values.data());
+        auto reclaimStatus = H5Dvlen_reclaim(type, space, H5P_DEFAULT, values.data());
         check(status);
+        check(reclaimStatus);
     } else {
         auto width = H5Tget_size(type);
         if (!width || width > 4096)
-            ImageUtil::fail(QStringLiteral("HDF5 晶体标签过长。"));
+            ImageUtil::fail(QCoreApplication::translate("ImagingIO", "HDF5 晶体标签过长。"));
         QByteArray bytes(qsizetype(width) * count, 0);
         check(H5Dread(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()));
         for (int i = 0; i < count; ++i) {

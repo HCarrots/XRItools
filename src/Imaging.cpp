@@ -1,4 +1,5 @@
 #include "BondVolume.h"
+#include <QCoreApplication>
 #include "ImagingIO.h"
 #include "PlotStyle.h"
 #include <Eigen/Cholesky>
@@ -34,7 +35,7 @@ QJsonObject contrastSourceRevision(const QJsonObject &config) {
                             QStringLiteral("roi_table")}) {
         const QFileInfo source(input[key].toString());
         if (!source.isFile())
-            fail(QStringLiteral("找不到输入文件：%1").arg(source.filePath()));
+            fail(QCoreApplication::translate("Imaging", "找不到输入文件：%1").arg(source.filePath()));
         revision[key] = QJsonArray{source.size(), source.lastModified().toMSecsSinceEpoch()};
     }
     return revision;
@@ -119,7 +120,7 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
                           }
                       }
                       if (progress && f % 32 == 0)
-                          progress(QStringLiteral("薄膜像素提取 %1 / %2").arg(f + 1).arg(g.monitor.size()),
+                          progress(QCoreApplication::translate("Imaging", "薄膜像素提取 %1 / %2").arg(f + 1).arg(g.monitor.size()),
                                    5 + f * 20 / int(g.monitor.size()));
                   });
     std::unique_ptr<ImagingH5> out;
@@ -229,7 +230,7 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                           }
                       }
                       if (progress && frame % 64 == 0)
-                          progress(QStringLiteral("样品积分 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                          progress(QCoreApplication::translate("Imaging", "样品积分 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
                                    25 + frame * 20 / int(g.monitor.size()));
                   });
     if (directory.isEmpty())
@@ -342,7 +343,7 @@ SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &vali
     int nx = int(cells), ny = int(validation.sample.axes[0].size()),
         nz = int(validation.sample.axes[1].size());
     if (qsizetype(nx) * ny * nz > 16000000 / energyChannels)
-        fail(energyChannels > 1 ? QStringLiteral("四维体素超过 1600 万。请增大 X 步长或减少扫描范围。")
+        fail(energyChannels > 1 ? QCoreApplication::translate("Imaging", "四维体素超过 1600 万。请增大 X 步长或减少扫描范围。")
                                 : QStringLiteral("Reconstructed volume exceeds memory limit"));
     QVector<double> x;
     for (int i = 0; i < nx; ++i)
@@ -484,7 +485,7 @@ void exportAvizo(const QString &path, const ImagingResult &result, const std::at
     cancel(stop);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(header) != header.size())
-        fail(QStringLiteral("无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
+        fail(QCoreApplication::translate("Imaging", "无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
 
     // AmiraMesh stores X contiguously. XRI stores Z contiguously within each X plane.
     const qsizetype rowsPerBlock = 16384 / nx;
@@ -504,12 +505,12 @@ void exportAvizo(const QString &path, const ImagingResult &result, const std::at
             }
             const qint64 bytes = index * qint64(sizeof(quint32));
             if (file.write(reinterpret_cast<const char *>(block.constData()), bytes) != bytes)
-                fail(QStringLiteral("无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
+                fail(QCoreApplication::translate("Imaging", "无法写入 Avizo 文件 %1。%2").arg(path, file.errorString()));
         }
     }
     cancel(stop);
     if (!file.commit())
-        fail(QStringLiteral("无法保存 Avizo 文件 %1。%2").arg(path, file.errorString()));
+        fail(QCoreApplication::translate("Imaging", "无法保存 Avizo 文件 %1。%2").arg(path, file.errorString()));
 }
 
 QImage diagnosticImage(const ImagingResult &result, bool bondBand = false) {
@@ -705,7 +706,7 @@ BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double 
         if (progress)
             progress(message, percent);
     };
-    log(QStringLiteral("校验扫描与 ROI"), 0);
+    log(QCoreApplication::translate("Imaging", "校验扫描与 ROI"), 0);
     const auto revision = contrastSourceRevision(c);
     auto inputs = c;
     auto reconstruction = inputs["reconstruction"].toObject();
@@ -727,14 +728,14 @@ BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double 
         elements += quint64(roi.pixels.size()) * ny * nz;
     }
     if (rois.isEmpty())
-        fail(QStringLiteral("请至少纳入一个有效晶体。"));
+        fail(QCoreApplication::translate("Imaging", "请至少纳入一个有效晶体。"));
     if (elements > 67108864)
-        fail(QStringLiteral("差值投影缓存超过 512 MiB，请缩小 ROI 或减少参与的晶体。"));
-    log(QStringLiteral("准备谱处理和双能量差值"), 5);
+        fail(QCoreApplication::translate("Imaging", "差值投影缓存超过 512 MiB，请缩小 ROI 或减少参与的晶体。"));
+    log(QCoreApplication::translate("Imaging", "准备谱处理和双能量差值"), 5);
     const auto spectra = prepareSpectra ? prepareSpectra(energy, labels)
                                         : QVector<BondSpectralSettings>(labels.size());
     if (spectra.size() != labels.size())
-        fail(QStringLiteral("谱处理参数与晶体数不匹配。"));
+        fail(QCoreApplication::translate("Imaging", "谱处理参数与晶体数不匹配。"));
     QVector<QVector<double>> coefficients;
     BondProjection out;
     QVector<ImageMatrix *> projections;
@@ -744,7 +745,7 @@ BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double 
                            ? difference
                            : contrastWeights(energy, ea, eb, settings);
         if (std::any_of(weights.cbegin(), weights.cend(), [](double v) { return !std::isfinite(v); }))
-            fail(QStringLiteral("谱处理权重与实测能量不匹配。"));
+            fail(QCoreApplication::translate("Imaging", "谱处理权重与实测能量不匹配。"));
         coefficients.append(std::move(weights));
         auto stored = out.differenceByCrystal.try_emplace(rois[i]->key, rois[i]->pixels.size(), ny * nz).first;
         stored->second.setZero();
@@ -770,17 +771,17 @@ BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double 
                           }
                       }
                       if (frame % 128 == 0)
-                          log(QStringLiteral("计算探测器差值投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                          log(QCoreApplication::translate("Imaging", "计算探测器差值投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
                               10 + 89 * frame / int(g.monitor.size()));
                   });
     out.config = c;
     out.ea = ea;
     out.eb = eb;
     if (contrastSourceRevision(c) != revision)
-        fail(QStringLiteral("计算期间输入文件已变化，请重新校验后计算差值投影。"));
+        fail(QCoreApplication::translate("Imaging", "计算期间输入文件已变化，请重新校验后计算差值投影。"));
     out.sourceRevision = revision;
     out.validation = std::move(validation);
-    log(QStringLiteral("差值投影完成"), 100);
+    log(QCoreApplication::translate("Imaging", "差值投影完成"), 100);
     return out;
 }
 
@@ -793,15 +794,15 @@ BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
     const auto c = Imaging::config(settings, QDir::currentPath());
     const auto rec = c["reconstruction"].toObject();
     if (rec["fit_gains"].toBool() && projection.differenceByCrystal.count(rec["anchor_roi"].toString()) == 0)
-        fail(QStringLiteral("增益锚点必须是差值投影中纳入的晶体。"));
+        fail(QCoreApplication::translate("Imaging", "增益锚点必须是差值投影中纳入的晶体。"));
     const auto log = [&](const QString &message, int percent) {
         cancel(stop);
         if (progress)
             progress(message, percent);
     };
-    log(QStringLiteral("准备薄膜空间标定"), 0);
+    log(QCoreApplication::translate("Imaging", "准备薄膜空间标定"), 0);
     if (contrastSourceRevision(c) != projection.sourceRevision)
-        fail(QStringLiteral("输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。"));
+        fail(QCoreApplication::translate("Imaging", "输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。"));
     const auto &validation = projection.validation;
     const auto &energy = validation.sample.axes[2], &foil = validation.calibration.axes[1];
     const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
@@ -815,7 +816,7 @@ BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
     fit.response.clear();
     fit.rho.resize(0, 0);
 
-    log(QStringLiteral("反演带符号的三维差值"), 80);
+    log(QCoreApplication::translate("Imaging", "反演带符号的三维差值"), 80);
     ImageMatrix rhs = std::move(fit.b);
     rhs.setZero();
     for (qsizetype i = 0; i < fit.keys.size(); ++i) {
@@ -826,17 +827,17 @@ BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
     const auto sensitivity = fit.h.diagonal().eval();
     const double scale = fit.h.cwiseAbs().rowwise().sum().maxCoeff();
     if (!(std::isfinite(scale) && scale > 0.))
-        fail(QStringLiteral("无法反演三维差值：空间响应无效。"));
+        fail(QCoreApplication::translate("Imaging", "无法反演三维差值：空间响应无效。"));
     constexpr double relativeRidge = 1e-6;
     const double ridge = scale * relativeRidge;
     fit.h.diagonal().array() += ridge;
     Eigen::LLT<ImageMatrix> solver(fit.h);
     if (solver.info() != Eigen::Success)
-        fail(QStringLiteral("无法分解三维差值的空间响应。"));
+        fail(QCoreApplication::translate("Imaging", "无法分解三维差值的空间响应。"));
     cancel(stop);
     solver.solveInPlace(rhs);
     if (!rhs.allFinite())
-        fail(QStringLiteral("三维差值反演产生了无效数值。"));
+        fail(QCoreApplication::translate("Imaging", "三维差值反演产生了无效数值。"));
     const double sensitivityFloor = sensitivity.maxCoeff() * 1e-14;
     for (qsizetype x = 0; x < rhs.rows(); ++x)
         if (sensitivity[x] <= sensitivityFloor)
@@ -859,7 +860,7 @@ BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
                        {"gain_fit_converged", fit.gainConverged},
                        {"input_validation", validation.report},
                        {"config", c}};
-    log(QStringLiteral("三维差值反演完成"), 100);
+    log(QCoreApplication::translate("Imaging", "三维差值反演完成"), 100);
     return out;
 }
 
@@ -871,7 +872,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
         if (progress)
             progress(message, percent);
     };
-    log(QStringLiteral("校验样品、薄膜、扫描坐标和 ROI"), 0);
+    log(QCoreApplication::translate("Imaging", "校验样品、薄膜、扫描坐标和 ROI"), 0);
     const auto validation = validate(c, stop);
     const auto &g = validation.sample;
     const auto &energy = g.axes[2], &foil = validation.calibration.axes[1];
@@ -904,7 +905,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
     constexpr int batchSize = 16;
     const qsizetype repeated = g.occupancy.size() - std::count(g.occupancy.cbegin(), g.occupancy.cend(), 1);
     if (nPixels * (qsizetype(nx) + batchSize + repeated) > 32000000)
-        fail(QStringLiteral("四维反投影缓冲区过大，请缩小 ROI 或减少重复帧。"));
+        fail(QCoreApplication::translate("Imaging", "四维反投影缓冲区过大，请缩小 ROI 或减少重复帧。"));
     ImageMatrix forward(nPixels, nx);
     qsizetype row = 0;
     for (int i = 0; i < fit.accepted.size(); ++i) {
@@ -956,7 +957,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
                 if (cells.size() == batchSize)
                     flush();
                 if (frame % 128 == 0)
-                    log(QStringLiteral("按能量累积反投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                    log(QCoreApplication::translate("Imaging", "按能量累积反投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
                         66 + 12 * frame / int(g.monitor.size()));
             });
     }
@@ -965,7 +966,7 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
     const auto rec = c["reconstruction"].toObject();
     const double bandNorm = fit.b.norm();
     for (int e = 0; e < ne; ++e) {
-        log(QStringLiteral("独立求解能量通道 %1 / %2").arg(e + 1).arg(ne), 78 + 21 * e / ne);
+        log(QCoreApplication::translate("Imaging", "独立求解能量通道 %1 / %2").arg(e + 1).arg(ne), 78 + 21 * e / ne);
         ImagingSolverInfo info;
         ImageMatrix initial =
             bandNorm > 0 ? ImageMatrix(fit.rho * (backs[e].norm() / bandNorm)) : ImageMatrix{};
@@ -1020,14 +1021,14 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
         spatial.sensitivity = out.sensitivity;
         out.diagnosticImage = diagnosticImage(spatial, true);
     }
-    log(QStringLiteral("四维求解完成"), 100);
+    log(QCoreApplication::translate("Imaging", "四维求解完成"), 100);
     return out;
 }
 
 ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &stop, Progress progress) {
     auto c = config(supplied, QDir::currentPath());
     if (progress)
-        progress(QStringLiteral("校验扫描计划、坐标、I0 与 ROI"), 0);
+        progress(QCoreApplication::translate("Imaging", "校验扫描计划、坐标、I0 与 ROI"), 0);
     auto validation = validate(c, stop);
     auto directory = c["runtime"].toObject()["output_dir"].toString();
     if (QFileInfo::exists(directory))
@@ -1274,7 +1275,7 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             !diagnosticImage(result).save(directory + "/diagnostics.png"))
             fail("Cannot save imaging diagnostics PNG");
         if (c["output"].toObject()["save_avizo"].toBool()) {
-            log(QStringLiteral("正在保存 Avizo 体数据 reconstruction.am"), 99);
+            log(QCoreApplication::translate("Imaging", "正在保存 Avizo 体数据 reconstruction.am"), 99);
             exportAvizo(directory + "/reconstruction.am", result, stop);
         }
         saveJson(directory + "/summary.json", result.summary);

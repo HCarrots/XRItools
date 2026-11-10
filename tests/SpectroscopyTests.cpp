@@ -166,6 +166,30 @@ int main(int argc, char **argv) {
                "threshold mask strictly selects pixels above 15 percent");
         expect(close(c.scan.filtered[0][40], 128.75, 1e-6) && close(c.scan.raw[0][40], 139.05, 1e-6),
                "elastic normalization and raw/masked integrals agree with independent values");
+        {
+            auto masked = rois;
+            const QVector<QSize> sizes{{8, 8}, {6, 6}};
+            const QVector<QPoint> mask{{1, 1}, {1, 2}, {2, 2}};
+            CrystalRois reopened;
+            QString error;
+            expect(masked.assignMask(0, mask, sizes[0]) &&
+                       reopened.restore(masked.serialize(elastic, sizes), sizes, &error) &&
+                       reopened.items()[0].mask == mask && reopened.items()[1].mask.isEmpty(),
+                   "shared scheme round-trips mask and rectangular ROIs together");
+            expect(CrystalRois::decodeMask(QJsonArray{QJsonArray{0, 2}, QJsonArray{1, 2}}, sizes[0]).isEmpty() &&
+                       CrystalRois::decodeMask(QJsonArray{QJsonValue(QJsonArray{63, 2})}, sizes[0]).isEmpty(),
+                   "shared mask decoder rejects repeated and out-of-range pixels");
+            auto options = s;
+            options.autoRoi = true;
+            options.roiSize = 2;
+            auto fitted = Spectroscopy::calibrate(options, reopened, cancel);
+            auto maskedScans = Spectroscopy::extract(options, fitted, {xrs}, cancel);
+            expect(fitted.fits[0].accepted && fitted.adjusted.items()[0].mask == mask &&
+                       fitted.pixels[0] == QVector<int>{9, 17, 18} && fitted.filteredPixels[0] == fitted.pixels[0] &&
+                       close(fitted.scan.filtered[0][40], 113.3, 1e-6) &&
+                       close(maskedScans[0].filtered[0][40], 13.75, 1e-6),
+                   "elastic and XRS scans integrate the exact saved mask despite rectangular ROI options");
+        }
         auto scans = Spectroscopy::extract(s, c, {xrs, reverse}, cancel);
         expect(scans.size() == 2 && scans[0].glitches == QVector<int>{30} &&
                    scans[1].glitches == QVector<int>{50},

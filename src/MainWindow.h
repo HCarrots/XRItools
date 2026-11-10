@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QTimer>
 #include <QVector>
+#include <functional>
 
 class ScientificPlot;
 class QTreeWidget;
@@ -30,7 +31,8 @@ class QStackedWidget;
 class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    using Relaunch = std::function<bool(const QStringList &)>;
+    explicit MainWindow(QWidget *parent = nullptr, Relaunch relaunch = {});
     ~MainWindow() override;
     void openFile(const QString &path);
     void openFiles(const QStringList &paths);
@@ -68,6 +70,7 @@ class MainWindow : public QMainWindow {
 
   private:
     void buildUi();
+    bool restartForLanguage(const QString &language);
     void showWorkspace(QWidget *page, const QString &title = {});
     void updateBrowserTitle();
     QTreeWidgetItem *fileRoot(const QString &file) const;
@@ -130,4 +133,5 @@ class MainWindow : public QMainWindow {
     QToolButton *m_backToBrowser = nullptr;
     QHash<QString, RoiDialog *> m_roiEditors;
     bool m_explorerVisible = true;
+    Relaunch m_relaunch;
 };

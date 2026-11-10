@@ -24,9 +24,7 @@ class SpectroscopyDialog : public QDialog {
     explicit SpectroscopyDialog(const QString &initialFile = {}, QWidget *parent = nullptr);
     ~SpectroscopyDialog() override;
     void selectStep(int step);
-    bool isBusy() const {
-        return m_busy;
-    }
+    bool isBusy() const;
     bool hasCalibration() const {
         return m_haveCalibration;
     }

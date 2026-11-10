@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=XRI
+Comment=Browse synchrotron data and perform spectroscopy and 3D imaging
+Comment[zh_CN]=浏览同步辐射数据并进行谱学处理和三维成像
+Exec=XRI %F
+Icon=io.github.HCarrots.XRItools
+Terminal=false
+Categories=Science;DataVisualization;

@@ -106,7 +106,7 @@ void build(QWidget *context, QVBoxLayout *ll, QVBoxLayout *rr, QMap<QString, QWi
     auto selectRoi = new QPushButton(QObject::tr("选取共用 ROI…"));
     roiButtons->addWidget(selectRoi);
     auto roiNote =
-        new QLabel(QObject::tr("保留框内固定像素，不做自动寻峰或阈值掩膜。旧 TSV 的平移/扩展按表应用。共用 "
+        new QLabel(QObject::tr("按共用方案的逐像素掩膜或矩形取固定像素。旧 TSV 的平移/扩展按表应用。共用 "
                                "ROI 中的失效晶体保持排除；仅使用所选探测器。"));
     roiNote->setWordWrap(true);
     ff->addRow(roiNote);

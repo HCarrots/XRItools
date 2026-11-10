@@ -1,4 +1,5 @@
 #include "CrystalRoi.h"
+#include <QCoreApplication>
 #include "ImagingIO.h"
 #include <QDir>
 #include <QFile>
@@ -152,30 +153,30 @@ ImagingGrid grid(const QString &file, const QString &role, const QStringList &mo
         fail("Expected P.grid_scan metadata");
     auto args = plan[1].toArray();
     if (args.size() < 1 || (args.size() - 1) % 4)
-        fail(QStringLiteral("扫描计划中的电机参数不完整：%1").arg(file));
+        fail(QCoreApplication::translate("ImagingConfig", "扫描计划中的电机参数不完整：%1").arg(file));
     QStringList actual;
     for (int i = 1; i < args.size(); i += 4) {
         auto name = args[i].toString();
         name.replace('.', '_');
         actual.append(name);
     }
-    auto roleLabel = role == "calibration" ? QStringLiteral("薄膜标定") : QStringLiteral("样品成像");
+    auto roleLabel = role == "calibration" ? QCoreApplication::translate("ImagingConfig", "薄膜标定") : QCoreApplication::translate("ImagingConfig", "样品成像");
     auto sortedActual = actual;
     auto sortedMotors = motors;
     sortedActual.sort();
     sortedMotors.sort();
     if (sortedActual != sortedMotors) {
         auto hint = actual.contains("M_DCM_B5Energy")
-                        ? QStringLiteral("请选择扫描轴与用途匹配的文件。")
-                        : QStringLiteral("该扫描计划没有能量轴，不能用于当前需要能量积分的处理流程。");
-        fail(QStringLiteral("%1文件的扫描轴不匹配：\n%2\n实际：%3\n所需轴：%4\n%5")
+                        ? QCoreApplication::translate("ImagingConfig", "请选择扫描轴与用途匹配的文件。")
+                        : QCoreApplication::translate("ImagingConfig", "该扫描计划没有能量轴，不能用于当前需要能量积分的处理流程。");
+        fail(QCoreApplication::translate("ImagingConfig", "%1文件的扫描轴不匹配：\n%2\n实际：%3\n所需轴：%4\n%5")
                  .arg(roleLabel, file, actual.join(", "), motors.join(", "), hint));
     }
     for (const auto &motor : actual)
         result.loopOrder.append(loopAxis(motor));
     const auto requestedOrder = loops[role + "_order"].toString();
     if (!requestedOrder.isEmpty() && requestedOrder != result.loopOrder.join(',')) {
-        fail(QStringLiteral("%1文件的循环顺序与设置不符。\n%2\n文件（外到内）：%3\n设置（外到内）：%4")
+        fail(QCoreApplication::translate("ImagingConfig", "%1文件的循环顺序与设置不符。\n%2\n文件（外到内）：%3\n设置（外到内）：%4")
                  .arg(roleLabel, file, result.loopOrder.join(" → "), requestedOrder.split(',').join(" → ")));
     }
     qsizetype cells = 1;
@@ -189,7 +190,7 @@ ImagingGrid grid(const QString &file, const QString &role, const QStringList &mo
                n = requestedCount.isNull() ? args[start + 3].toDouble(NAN) : requestedCount.toDouble();
         if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo) || n < 2 || n > 100000 ||
             std::floor(n) != n)
-            fail(QStringLiteral("%1的 %2 轴需要递增的扫描范围及至少两个点。").arg(roleLabel, axisName));
+            fail(QCoreApplication::translate("ImagingConfig", "%1的 %2 轴需要递增的扫描范围及至少两个点。").arg(roleLabel, axisName));
         if (cells > 10000000 / int(n))
             fail("Imaging grid too large");
         cells *= qsizetype(n);
@@ -213,7 +214,7 @@ ImagingGrid grid(const QString &file, const QString &role, const QStringList &mo
             if (j > 0 && std::abs(c - axis[j - 1]) <= std::abs(c - axis[j]))
                 --j;
             if (std::abs(c - axis[j]) > tolerance)
-                fail(QStringLiteral("%1的 %2 轴逐帧坐标与 %3 个扫描点不匹配。请核对扫描范围和该层帧数。")
+                fail(QCoreApplication::translate("ImagingConfig", "%1的 %2 轴逐帧坐标与 %3 个扫描点不匹配。请核对扫描范围和该层帧数。")
                          .arg(roleLabel, axisName)
                          .arg(int(n)));
             index.append(j);
@@ -237,8 +238,9 @@ ImagingGrid grid(const QString &file, const QString &role, const QStringList &mo
         result.dose[index] += i0 * exposure;
     }
     if (result.occupancy.contains(0))
-        fail(QStringLiteral("%1 扫描不完整：%2 个计划网格单元缺测；不以零填充。")
-                 .arg(motors.size() == 2 ? "薄膜" : "样品")
+        fail(QCoreApplication::translate("ImagingConfig", "%1 扫描不完整：%2 个计划网格单元缺测；不以零填充。")
+                 .arg(motors.size() == 2 ? QCoreApplication::translate("ImagingConfig", "薄膜")
+                                         : QCoreApplication::translate("ImagingConfig", "样品"))
                  .arg(result.occupancy.count(0)));
     auto node = HdfFile::inspect(file, "/entry/data/" + acq["detector"].toString());
     if (node.dims.size() != 3 || node.dims[0] != quint64(frames) || !node.type.startsWith("uint"))
@@ -291,7 +293,7 @@ QVector<ImagingRoi> roiTable(const QString &file, const QString &detector, const
                            detector,
                            r.rect,
                            r.state == RoiState::Invalid || excluded.contains(id),
-                           {}});
+                           r.mask});
         }
     } else {
         auto lines = QString::fromUtf8(bytes).split('\n');
@@ -357,14 +359,16 @@ QVector<ImagingRoi> roiTable(const QString &file, const QString &detector, const
             fail("ROI outside detector: " + r.key);
         if (!r.excluded && r.rect.isEmpty())
             fail("Empty valid ROI: " + r.key);
-        for (int y = r.rect.top(); !r.rect.isEmpty() && y <= r.rect.bottom(); ++y)
-            for (int x = r.rect.left(); x <= r.rect.right(); ++x) {
-                r.pixels.append({x, y});
-                if (!r.excluded && ++coverage[y * size.width() + x] > 1)
+        if (r.pixels.isEmpty())
+            for (int y = r.rect.top(); !r.rect.isEmpty() && y <= r.rect.bottom(); ++y)
+                for (int x = r.rect.left(); x <= r.rect.right(); ++x)
+                    r.pixels.append({x, y});
+        if (!r.excluded) {
+            for (const auto &p : r.pixels)
+                if (++coverage[p.y() * size.width() + p.x()] > 1)
                     fail("Valid imaging ROIs overlap; shared pixels must not be treated independently");
-            }
-        if (!r.excluded)
             ++active;
+        }
     }
     if (!active)
         fail("No usable imaging ROI remains");
@@ -439,7 +443,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
         c[section] = group;
     }
     auto positive = [&](const QString &section, const QString &key, bool integral = false) {
-        auto v = c[section].toObject()[key];
+        const auto v = c.value(section).toObject().value(key);
         double n = v.toDouble(NAN);
         if (!v.isDouble() || !std::isfinite(n) || n <= 0 ||
             (integral && (std::floor(n) != n || n > std::numeric_limits<int>::max() - 1)))
@@ -449,7 +453,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
          {"calibration_exposure_s", "sample_exposure_s", "foil_thickness_mm", "detector_pixel_pitch_mm"})
         positive("acquisition", key);
     for (const auto &key : {"monitor", "detector"}) {
-        auto value = c["acquisition"].toObject()[key];
+        const auto value = c.value("acquisition").toObject().value(key);
         if (!value.isString() || value.toString().isEmpty() || value.toString().contains('/'))
             fail("Invalid detector/monitor name");
     }
@@ -464,7 +468,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
                 continue;
             double n = count.toDouble(NAN);
             if (!(n >= 2 && n <= 100000) || std::floor(n) != n)
-                fail(QStringLiteral("%1的 %2 层帧数须为 2 至 100000 的整数。").arg(label, axis));
+                fail(QCoreApplication::translate("ImagingConfig", "%1的 %2 层帧数须为 2 至 100000 的整数。").arg(label, axis));
         }
         auto order = loops[role + "_order"];
         if (order.isString() && order.toString().isEmpty())
@@ -473,10 +477,10 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
         axes.sort();
         expected.sort();
         if (!order.isString() || axes != expected)
-            fail(QStringLiteral("%1循环顺序须包含所需的每个轴，且每个轴只出现一次。").arg(label));
+            fail(QCoreApplication::translate("ImagingConfig", "%1循环顺序须包含所需的每个轴，且每个轴只出现一次。").arg(label));
     };
-    checkLoops("calibration", calibrationMotors, QStringLiteral("薄膜标定"));
-    checkLoops("sample", sampleMotors, QStringLiteral("样品成像"));
+    checkLoops("calibration", calibrationMotors, QCoreApplication::translate("ImagingConfig", "薄膜标定"));
+    checkLoops("sample", sampleMotors, QCoreApplication::translate("ImagingConfig", "样品成像"));
     if (!c["grid"].toObject()["x_step_mm"].isNull())
         positive("grid", "x_step_mm");
     for (const auto &key :
@@ -508,7 +512,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
     positive("tv", "max_iterations", true);
     positive("tv", "tolerance");
     for (const auto &key : {"lambda", "relative_fraction"}) {
-        auto v = c["tv"].toObject()[key];
+        const auto v = c.value("tv").toObject().value(key);
         if (QString(key) == "lambda" && v.isNull())
             continue;
         if (!v.isDouble() || v.toDouble() < 0 || !std::isfinite(v.toDouble()))

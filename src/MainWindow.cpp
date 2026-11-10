@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "BondWorkspace.h"
 #include "ImagingDialog.h"
+#include "RoiDetectionDialog.h"
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectroscopyDialog.h"
@@ -8,6 +9,7 @@
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -62,7 +64,8 @@ class SliceTableModel : public QAbstractTableModel {
     }
 };
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget *parent, Relaunch relaunch)
+    : QMainWindow(parent), m_relaunch(std::move(relaunch)) {
     setObjectName("XRI.MainWindow");
     setWindowTitle(tr("XRI — 非共振非弹性散射成像数据处理工具"));
     resize(1440, 940);
@@ -159,6 +162,13 @@ void MainWindow::buildUi() {
     m_roiAction->setObjectName("SelectCrystalRois");
     m_roiAction->setEnabled(false);
     connect(m_roiAction, &QAction::triggered, this, [this] { openRoi(); });
+    auto automaticRoi = roiMenu->addAction(WorkflowUi::icon("scan"), tr("自动识别光斑 ROI…"));
+    automaticRoi->setObjectName("DetectSpotRois");
+    connect(automaticRoi, &QAction::triggered, this, [this] {
+        auto dialog = new RoiDetectionDialog(m_file, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->open();
+    });
     auto spectroscopyMenu = menuBar()->addMenu(tr("谱学(&S)"));
     auto spectrum = spectroscopyMenu->addAction(WorkflowUi::icon("chart-line"), tr("打开谱学处理工作区"));
     spectrum->setObjectName("SpectroscopyStep0");
@@ -171,11 +181,32 @@ void MainWindow::buildUi() {
     chemicalBondMenu->addAction(WorkflowUi::icon("layers"), tr("打开四维衬度工作区"), this,
                                 [this] { openBondImaging(); })
         ->setObjectName("OpenBondWorkspace");
+    auto language = menuBar()->addMenu(tr("语言(&L)"));
+    language->setObjectName("LanguageMenu");
+    auto choices = new QActionGroup(language);
+    const auto savedLanguage = QSettings().value("ui/language").toString();
+    auto addLanguage = [&](const QString &name, const QString &code) {
+        auto action = language->addAction(name);
+        action->setObjectName("Language_" + code);
+        action->setCheckable(true);
+        action->setChecked(code == (savedLanguage == "en" ? "en" : "zh_CN"));
+        action->setData(code);
+        choices->addAction(action);
+    };
+    addLanguage(tr("简体中文"), "zh_CN");
+    addLanguage(QStringLiteral("English"), "en");
+    connect(choices, &QActionGroup::triggered, this, [this, choices](QAction *action) {
+        const auto before = QSettings().value("ui/language").toString() == "en" ? "en" : "zh_CN";
+        if (action->data().toString() != before && !restartForLanguage(action->data().toString())) {
+            for (auto *option : choices->actions())
+                option->setChecked(option->data().toString() == before);
+        }
+    });
     auto help = menuBar()->addMenu(tr("帮助(&H)"));
     help->addAction(tr("关于 XRI"), this, [this] {
         QMessageBox::about(
             this, tr("关于 XRI"),
-            tr("<h3>XRI 0.2.2</h3>"
+            tr("<h3>XRI %1</h3>"
                "<p>非弹性非共振数据处理工具</p>"
                "<p>用于同步辐射 HDF5 / NeXus 数据浏览、分析晶体 ROI "
                "选取、谱学处理、三维成像与四维衬度分析。</p>"
@@ -184,7 +215,8 @@ void MainWindow::buildUi() {
                "Copyright &copy; 2026 Hu Shiqi</p>"
                "<p>本项目源代码采用 <a href=\"https://opensource.org/license/mit\">MIT 开源协议</a>发布。<br>"
                "第三方组件遵循各自许可证，详见随附的 THIRD_PARTY.md。</p>"
-               "<p>源代码：<a href=\"https://github.com/HCarrots/XRItools\">HCarrots/XRItools</a></p>"));
+               "<p>源代码：<a href=\"https://github.com/HCarrots/XRItools\">HCarrots/XRItools</a></p>")
+                .arg(QCoreApplication::applicationVersion()));
     });
     auto explorer = new QDockWidget(tr("文件列表与结构"), this);
     explorer->setObjectName("ExplorerDock");
@@ -1018,4 +1050,57 @@ void MainWindow::closeEvent(QCloseEvent *e) {
     settings.setValue("geometry", saveGeometry());
     settings.setValue("windowState", saveState());
     QMainWindow::closeEvent(e);
+}
+
+bool MainWindow::restartForLanguage(const QString &language) {
+    const bool loadingRois = std::any_of(m_roiEditors.cbegin(), m_roiEditors.cend(),
+                                        [](const RoiDialog *editor) { return editor->isLoading(); });
+    if (isReading() || isExporting() || loadingRois || (m_spectroscopy && m_spectroscopy->isBusy()) ||
+        (m_imaging && m_imaging->isBusy()) || (m_bond && m_bond->isBusy())) {
+        statusBar()->showMessage(tr("请等待当前任务结束后再切换语言。"), 8000);
+        return false;
+    }
+
+    auto files = openedFiles();
+    if (files.removeOne(m_file))
+        files.append(m_file);
+    QStringList arguments;
+    if (!files.isEmpty()) {
+        if (!m_node.path.isEmpty() && !m_node.group)
+            arguments << "--dataset" << m_node.path;
+        if (m_frameDimension == 0 && !m_indices.isEmpty())
+            arguments << "--frame" << QString::number(m_indices[0]);
+        arguments << "--" << files;
+    }
+
+    QSettings settings;
+    const auto previous = settings.value("ui/language");
+    auto restoreLanguage = [&] {
+        if (previous.isValid())
+            settings.setValue("ui/language", previous);
+        else
+            settings.remove("ui/language");
+        settings.sync();
+    };
+    settings.setValue("ui/language", language);
+    settings.sync();
+    if (settings.status() != QSettings::NoError) {
+        restoreLanguage();
+        QMessageBox::warning(this, tr("语言"), tr("无法保存语言设置。"));
+        return false;
+    }
+
+    const bool quitOnClose = QApplication::quitOnLastWindowClosed();
+    QApplication::setQuitOnLastWindowClosed(false);
+    const bool closed = close();
+    settings.sync();
+    const bool relaunched = closed && m_relaunch && m_relaunch(arguments);
+    QApplication::setQuitOnLastWindowClosed(quitOnClose);
+    if (relaunched)
+        return true;
+    restoreLanguage();
+    if (closed)
+        show();
+    QMessageBox::warning(this, tr("语言"), tr("无法重新启动 XRI。"));
+    return false;
 }

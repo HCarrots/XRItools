@@ -16,6 +16,15 @@ if (!$deployTool) { throw 'windeployqt.exe was not found in the Qt SDK.' }
 $qtpaths = @("$QtRoot\bin\qtpaths6.exe", "$QtRoot\bin\qtpaths.exe", "$QtRoot\lib\qt6\bin\qtpaths6.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 & $deployTool --qtpaths $qtpaths --release --no-translations --no-opengl-sw --compiler-runtime "$OutputDirectory\XRI.exe"
 if ($LASTEXITCODE) { throw 'Qt deployment failed.' }
+$qtTranslations = & $qtpaths --query QT_INSTALL_TRANSLATIONS
+if ($LASTEXITCODE -eq 0 -and $qtTranslations) {
+    $qtChinese = Join-Path $qtTranslations 'qtbase_zh_CN.qm'
+    if (Test-Path -LiteralPath $qtChinese -PathType Leaf) {
+        $translationDirectory = Join-Path $OutputDirectory 'translations'
+        New-Item -ItemType Directory -Path $translationDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $qtChinese -Destination $translationDirectory -Force
+    }
+}
 $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
 if (!$cmake) { $cmake = (Get-ChildItem -LiteralPath "$env:ProgramFiles\Microsoft Visual Studio" -Filter cmake.exe -Recurse | Select-Object -First 1).FullName }
 & $cmake "-DAPP=$OutputDirectory/XRI.exe" "-DOUTPUT=$OutputDirectory" "-DSEARCH_PATHS=$QtRoot/bin;$Hdf5Root/bin;$QtRoot/lib/qt6/bin" -P "$PSScriptRoot\copy-runtime.cmake"

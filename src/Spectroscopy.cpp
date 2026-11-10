@@ -1,4 +1,5 @@
 #include "Spectroscopy.h"
+#include <QCoreApplication>
 #include "SpectrumProcessing.h"
 #include <QDateTime>
 #include <QDir>
@@ -19,7 +20,7 @@ namespace {
 }
 void checkCancel(const std::atomic_bool &cancel) {
     if (cancel.load())
-        fail(QStringLiteral("已取消谱学计算。"));
+        fail(QCoreApplication::translate("Spectroscopy", "已取消谱学计算。"));
 }
 QString detectorPath(int d) {
     return d == 0 ? "/entry/data/D_LAMBDA" : "/entry/data/D_MINIPIX";
@@ -28,7 +29,7 @@ QVector<double> vectorData(const QString &file, const QString &path, int size = 
     auto data = HdfFile::read({file, path, {}, 0, -1});
     if (!data.error.isEmpty() || data.sampled || data.dims.size() != 1 ||
         (size >= 0 && data.values.size() != size))
-        fail(QStringLiteral("向量读取失败或长度不匹配：%1\n%2").arg(path, data.error));
+        fail(QCoreApplication::translate("Spectroscopy", "向量读取失败或长度不匹配：%1\n%2").arg(path, data.error));
     return data.values;
 }
 QString energyPath(const QString &file, const QString &requested) {
@@ -40,7 +41,7 @@ QString energyPath(const QString &file, const QString &requested) {
                 return path;
         } catch (const std::exception &) {
         }
-    fail(QStringLiteral("找不到实测能量轴，请指定能量数据集。"));
+    fail(QCoreApplication::translate("Spectroscopy", "找不到实测能量轴，请指定能量数据集。"));
 }
 DataSlice imageData(const QString &name, const QSize &size) {
     DataSlice image;
@@ -76,30 +77,30 @@ void validateSettings(const SpectrumSettings &s) {
     if (!std::isfinite(s.filterFraction) || s.filterFraction < 0 || s.filterFraction > 1 || s.roiSize < 1 ||
         s.roiSize > 2048 || s.fitModel < 0 || s.fitModel > 1 || !(s.centerMax > s.centerMin) ||
         !(s.maxFwhmEv > 0) || s.minRSquared < 0 || s.minRSquared > 1)
-        fail(QStringLiteral("掩膜或拟合参数无效。"));
+        fail(QCoreApplication::translate("Spectroscopy", "掩膜或拟合参数无效。"));
 }
 SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, bool elastic,
                       const ElasticCalibration *calibration, bool projection, const std::atomic_bool &cancel,
                       Spectroscopy::Progress progress) {
     checkCancel(cancel);
     if (HdfFile::formatFromFileName(file) == ScanFormat::GridScan)
-        fail(QStringLiteral("grid_scan 属于成像数据，不能作为一维谱学扫描：%1").arg(file));
+        fail(QCoreApplication::translate("Spectroscopy", "grid_scan 属于成像数据，不能作为一维谱学扫描：%1").arg(file));
     SpectrumScan scan;
     scan.file = QFileInfo(file).absoluteFilePath();
     scan.energyPath = energyPath(file, elastic ? settings.elasticEnergy : settings.xrsEnergy);
     scan.energyKev = vectorData(file, scan.energyPath);
     int count = int(scan.energyKev.size());
     if (count < 2)
-        fail(QStringLiteral("能量扫描至少需要两个点。"));
+        fail(QCoreApplication::translate("Spectroscopy", "能量扫描至少需要两个点。"));
     int direction = 0;
     for (int i = 0; i < count; ++i) {
         if (!std::isfinite(scan.energyKev[i]) || scan.energyKev[i] <= 0)
-            fail(QStringLiteral("能量轴包含非有限值或非正能量。"));
+            fail(QCoreApplication::translate("Spectroscopy", "能量轴包含非有限值或非正能量。"));
         if (i) {
             double d = scan.energyKev[i] - scan.energyKev[i - 1];
             int sign = d > 0 ? 1 : d < 0 ? -1 : 0;
             if (!sign || (direction && direction != sign))
-                fail(QStringLiteral("能量必须严格单调；重复或多维网格数据不能直接作为一维谱处理。"));
+                fail(QCoreApplication::translate("Spectroscopy", "能量必须严格单调；重复或多维网格数据不能直接作为一维谱处理。"));
             direction = sign;
         }
     }
@@ -123,7 +124,7 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
     }
     for (double v : scan.i0After)
         if (!std::isfinite(v) || v <= 0)
-            fail(QStringLiteral("I0 存在零值或非有限值且无法修复，请检查扫描或关闭归一化。"));
+            fail(QCoreApplication::translate("Spectroscopy", "I0 存在零值或非有限值且无法修复，请检查扫描或关闭归一化。"));
     if (calibration) {
         scan.raw.resize(75);
         scan.filtered.resize(75);
@@ -137,10 +138,10 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
         checkCancel(cancel);
         const auto node = HdfFile::inspect(file, detectorPath(d));
         if (node.dims.size() != 3 || node.dims[0] != quint64(count))
-            fail(QStringLiteral("探测器帧数与能量轴不一致：%1").arg(detectorPath(d)));
+            fail(QCoreApplication::translate("Spectroscopy", "探测器帧数与能量轴不一致：%1").arg(detectorPath(d)));
         QSize size(int(node.dims[2]), int(node.dims[1]));
         if (calibration && calibration->sizes[d] != size)
-            fail(QStringLiteral("XRS 探测器尺寸与弹性标定不一致。"));
+            fail(QCoreApplication::translate("Spectroscopy", "XRS 探测器尺寸与弹性标定不一致。"));
         DataSlice image = imageData(detectorPath(d), size);
         QVector<double> pending, previous;
         auto process = [&](int index, QVector<double> &raw) {
@@ -150,7 +151,7 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
                 double *sum = image.values.data();
                 for (qsizetype k = 0; k < raw.size(); ++k) {
                     if (!std::isfinite(pixels[k]))
-                        fail(QStringLiteral("探测器包含非有限计数。"));
+                        fail(QCoreApplication::translate("Spectroscopy", "探测器包含非有限计数。"));
                     sum[k] += pixels[k] / divisor;
                 }
             }
@@ -163,7 +164,7 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
                     for (int pixel : calibration->pixels[r]) {
                         double v = pixels[pixel];
                         if (!std::isfinite(v))
-                            fail(QStringLiteral("ROI 内出现非有限计数。"));
+                            fail(QCoreApplication::translate("Spectroscopy", "ROI 内出现非有限计数。"));
                         whole += v;
                     }
                     for (int pixel : calibration->filteredPixels[r])
@@ -261,24 +262,24 @@ ElasticFit Spectroscopy::fitPeak(const QVector<double> &energy, const QVector<do
                                  const SpectrumSettings &s) {
     ElasticFit result;
     if (energy.size() != intensity.size() || energy.size() < 8) {
-        result.reason = QStringLiteral("拟合至少需要 8 个有效能量点。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "拟合至少需要 8 个有效能量点。");
         return result;
     }
     for (int i = 0; i < energy.size(); ++i)
         if (!std::isfinite(energy[i]) || !std::isfinite(intensity[i])) {
-            result.reason = QStringLiteral("拟合数据含非有限值。");
+            result.reason = QCoreApplication::translate("Spectroscopy", "拟合数据含非有限值。");
             return result;
         }
     auto minmax = std::minmax_element(intensity.begin(), intensity.end());
     double scale = *minmax.second;
     if (!(scale > 0) || *minmax.second - *minmax.first <= std::max(1e-12, std::abs(scale) * 1e-10)) {
-        result.reason = QStringLiteral("谱线为空、全零或无峰形变化。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "谱线为空、全零或无峰形变化。");
         return result;
     }
     double origin = (energy.first() + energy.last()) * 500,
            span = std::abs(energy.last() - energy.first()) * 1000;
     if (!(span > 0)) {
-        result.reason = QStringLiteral("能量范围为零。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "能量范围为零。");
         return result;
     }
     QVector<double> x, y;
@@ -357,15 +358,15 @@ ElasticFit Spectroscopy::fitPeak(const QVector<double> &energy, const QVector<do
     for (double v : x)
         result.fitted.append(peak(v, p, s.fitModel) * scale);
     if (!converged)
-        result.reason = QStringLiteral("拟合未收敛。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "拟合未收敛。");
     else if (result.amplitude <= 0)
-        result.reason = QStringLiteral("拟合峰高非正。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "拟合峰高非正。");
     else if (result.centerKev < s.centerMin || result.centerKev > s.centerMax)
-        result.reason = QStringLiteral("弹性峰中心超出允许范围。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "弹性峰中心超出允许范围。");
     else if (result.fwhmEv > s.maxFwhmEv)
-        result.reason = QStringLiteral("FWHM 超过阈值。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "FWHM 超过阈值。");
     else if (!std::isfinite(result.rSquared) || result.rSquared < s.minRSquared)
-        result.reason = QStringLiteral("R² 低于阈值。");
+        result.reason = QCoreApplication::translate("Spectroscopy", "R² 低于阈值。");
     else
         result.accepted = true;
     return result;
@@ -375,9 +376,9 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
                                            const std::atomic_bool &cancel, Progress progress) {
     validateSettings(s);
     if (rois.count(RoiState::Pending))
-        fail(QStringLiteral("请先完成 ROI：未设置的晶体应框选或标记失效。"));
+        fail(QCoreApplication::translate("Spectroscopy", "请先完成 ROI：未设置的晶体应框选或标记失效。"));
     if (!rois.count(RoiState::Valid))
-        fail(QStringLiteral("没有有效晶体 ROI。"));
+        fail(QCoreApplication::translate("Spectroscopy", "没有有效晶体 ROI。"));
     ElasticCalibration out;
     out.original = rois;
     out.adjusted = rois;
@@ -397,15 +398,15 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
         checkCancel(cancel);
         const auto &roi = rois.items()[i];
         if (roi.state != RoiState::Valid) {
-            out.fits[i].reason = QStringLiteral("人工标记失效。");
+            out.fits[i].reason = QCoreApplication::translate("Spectroscopy", "人工标记失效。");
             continue;
         }
         int d = i < 60 ? 0 : 1;
         const auto &image = out.images[d];
         QRect bounds(0, 0, image.width, image.height), rect = roi.rect;
         if (rect.isEmpty() || !bounds.contains(rect))
-            fail(QStringLiteral("ROI 超出当前探测器：%1").arg(roi.label));
-        if (s.autoRoi) {
+            fail(QCoreApplication::translate("Spectroscopy", "ROI 超出当前探测器：%1").arg(roi.label));
+        if (s.autoRoi && roi.mask.isEmpty()) {
             double maximum = -INFINITY;
             QPoint location;
             for (int y = rect.top(); y <= rect.bottom(); ++y)
@@ -423,22 +424,21 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
                 y2 = int(std::nearbyint(location.y() + s.roiSize / 2.0)) + shift.y() + expand.y();
             rect = QRect(x1, y1, x2 - x1, y2 - y1).intersected(bounds);
             if (!out.adjusted.assign(i, rect, out.sizes[d]))
-                fail(QStringLiteral("自动调整后 ROI 为空：%1").arg(roi.label));
+                fail(QCoreApplication::translate("Spectroscopy", "自动调整后 ROI 为空：%1").arg(roi.label));
         }
+        const auto points = out.adjusted.items()[i].pixels();
         double maximum = -INFINITY;
-        for (int y = rect.top(); y <= rect.bottom(); ++y)
-            for (int x = rect.left(); x <= rect.right(); ++x)
-                maximum = std::max(maximum, image.values[y * image.width + x]);
-        for (int y = rect.top(); y <= rect.bottom(); ++y)
-            for (int x = rect.left(); x <= rect.right(); ++x) {
-                int pixel = y * image.width + x;
-                out.pixels[i].append(pixel);
-                ++rawUse[d][pixel];
-                if (image.values[pixel] > maximum * s.filterFraction) {
-                    out.filteredPixels[i].append(pixel);
-                    ++filteredUse[d][pixel];
-                }
+        for (const auto &p : points)
+            maximum = std::max(maximum, image.values[p.y() * image.width + p.x()]);
+        for (const auto &p : points) {
+            int pixel = p.y() * image.width + p.x();
+            out.pixels[i].append(pixel);
+            ++rawUse[d][pixel];
+            if (!roi.mask.isEmpty() || image.values[pixel] > maximum * s.filterFraction) {
+                out.filteredPixels[i].append(pixel);
+                ++filteredUse[d][pixel];
             }
+        }
     }
     for (int d = 0; d < 2; ++d) {
         auto mask = imageData(detectorPath(d) + " mask", out.sizes[d]);
@@ -469,7 +469,7 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
         if (out.adjusted.items()[i].state != RoiState::Valid)
             continue;
         if ((s.useFilter ? out.filteredPixels[i] : out.pixels[i]).isEmpty()) {
-            out.fits[i].reason = QStringLiteral("筛选或剔除重叠后无有效像素。");
+            out.fits[i].reason = QCoreApplication::translate("Spectroscopy", "筛选或剔除重叠后无有效像素。");
             continue;
         }
         out.fits[i] = fitPeak(out.scan.energyKev, s.useFilter ? out.scan.filtered[i] : out.scan.raw[i], s);
@@ -480,13 +480,13 @@ QVector<SpectrumScan> Spectroscopy::extract(const SpectrumSettings &s, const Ela
                                             const QStringList &files, const std::atomic_bool &cancel,
                                             Progress progress) {
     if (files.isEmpty())
-        fail(QStringLiteral("请至少勾选一个 XRS 扫描。"));
+        fail(QCoreApplication::translate("Spectroscopy", "请至少勾选一个 XRS 扫描。"));
     QVector<SpectrumScan> out;
     QSet<QString> seen;
     for (const auto &file : files) {
         auto path = QFileInfo(file).canonicalFilePath();
         if (seen.contains(path))
-            fail(QStringLiteral("不能重复叠加同一 XRS 文件。"));
+            fail(QCoreApplication::translate("Spectroscopy", "不能重复叠加同一 XRS 文件。"));
         seen.insert(path);
         out.append(loadScan(file, s, false, &calibration, true, cancel, progress));
     }
@@ -531,9 +531,9 @@ QPair<double, double> Spectroscopy::momentum(const QString &label, double angle,
 SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCalibration &calibration,
                                      const QVector<SpectrumScan> &scans, const std::atomic_bool &cancel) {
     if (scans.isEmpty())
-        fail(QStringLiteral("请先提取 XRS 谱。"));
+        fail(QCoreApplication::translate("Spectroscopy", "请先提取 XRS 谱。"));
     if (!(s.energyStepEv > 0) || !std::isfinite(s.energyStepEv) || s.qMax < s.qMin)
-        fail(QStringLiteral("能量步长或 Q 范围无效。"));
+        fail(QCoreApplication::translate("Spectroscopy", "能量步长或 Q 范围无效。"));
     SpectrumResult out;
     out.angles =
         s.angleSource == 2 ? s.angles : readAngles(s.angleSource == 0 ? s.elasticFile : scans.first().file);
@@ -551,7 +551,7 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
         const auto &fit = calibration.fits[r];
         auto &reason = out.reasons[r];
         if (roi.state != RoiState::Valid) {
-            reason = QStringLiteral("人工失效");
+            reason = QCoreApplication::translate("Spectroscopy", "人工失效");
             continue;
         }
         if (!fit.accepted) {
@@ -560,7 +560,7 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
         }
         QString module = roi.label.section('-', 0, 0);
         if (!out.angles.contains(module))
-            fail(QStringLiteral("缺少模组角度 %1，请指定角度来源或手动填写。").arg(module));
+            fail(QCoreApplication::translate("Spectroscopy", "缺少模组角度 %1，请指定角度来源或手动填写。").arg(module));
         long double sum = 0, dsum = 0;
         int count = 0;
         double min = INFINITY, max = -INFINITY, dmin = INFINITY, dmax = -INFINITY;
@@ -568,7 +568,7 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
             for (double energy : scan.energyKev) {
                 auto q = momentum(roi.label, out.angles[module], energy, fit.centerKev, s);
                 if (!std::isfinite(q.first) || !std::isfinite(q.second))
-                    fail(QStringLiteral("Q/dQ 计算失败：%1，检查角度和几何参数。").arg(roi.label));
+                    fail(QCoreApplication::translate("Spectroscopy", "Q/dQ 计算失败：%1，检查角度和几何参数。").arg(roi.label));
                 sum += q.first;
                 dsum += q.second;
                 min = std::min(min, q.first);
@@ -583,15 +583,15 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
         out.scatteringAngleDeg[r] = analyzerAngle(roi.label, out.angles[module], s.modulePitchDegrees) *
                                     (180. / 3.14159265358979323846);
         if (s.excludedCrystals.contains(r)) {
-            reason = QStringLiteral("手动排除");
+            reason = QCoreApplication::translate("Spectroscopy", "手动排除");
             continue;
         }
         if (!s.modules.contains(module)) {
-            reason = QStringLiteral("未选模组");
+            reason = QCoreApplication::translate("Spectroscopy", "未选模组");
             continue;
         }
         if (q.mean < s.qMin || q.mean > s.qMax) {
-            reason = QStringLiteral("Q 超出范围");
+            reason = QCoreApplication::translate("Spectroscopy", "Q 超出范围");
             continue;
         }
         out.included[r] = true;
@@ -604,17 +604,17 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
         }
     }
     if (!selected)
-        fail(QStringLiteral("没有通过 ROI、拟合质量、模组和 Q 筛选的晶体。"));
+        fail(QCoreApplication::translate("Spectroscopy", "没有通过 ROI、拟合质量、模组和 Q 筛选的晶体。"));
     double first = std::ceil(lower / s.energyStepEv - 1e-10) * s.energyStepEv,
            last = std::floor(upper / s.energyStepEv + 1e-10) * s.energyStepEv;
     if (!(last >= first))
-        fail(QStringLiteral("所选谱没有共同能量转移范围。"));
+        fail(QCoreApplication::translate("Spectroscopy", "所选谱没有共同能量转移范围。"));
     double gridSize = std::floor((last - first) / s.energyStepEv + 1e-8) + 1;
     if (!std::isfinite(gridSize) || gridSize > 200000)
-        fail(QStringLiteral("插值点超过 200000，请增大步长。"));
+        fail(QCoreApplication::translate("Spectroscopy", "插值点超过 200000，请增大步长。"));
     int n = int(gridSize);
     if (n < 2)
-        fail(QStringLiteral("共同范围内不足两个插值点。"));
+        fail(QCoreApplication::translate("Spectroscopy", "共同范围内不足两个插值点。"));
     for (int i = 0; i < n; ++i)
         out.energyTransferEv.append(first + i * s.energyStepEv);
     out.total.fill(0, n);
@@ -651,16 +651,16 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
     QString staging;
     try {
         if (result.total.isEmpty())
-            fail(QStringLiteral("没有可保存的叠加结果。"));
+            fail(QCoreApplication::translate("Spectroscopy", "没有可保存的叠加结果。"));
         if (QFileInfo::exists(directory))
-            fail(QStringLiteral("输出目录已存在，请选择新名称，避免覆盖。"));
+            fail(QCoreApplication::translate("Spectroscopy", "输出目录已存在，请选择新名称，避免覆盖。"));
         staging = directory + ".partial-" + QUuid::createUuid().toString(QUuid::Id128);
         if (!QDir().mkpath(staging))
-            fail(QStringLiteral("不能创建输出目录。"));
+            fail(QCoreApplication::translate("Spectroscopy", "不能创建输出目录。"));
         auto write = [&](const QString &name, const QByteArray &data) {
             QSaveFile file(staging + "/" + name);
             if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit())
-                fail(QStringLiteral("写入失败：%1").arg(name));
+                fail(QCoreApplication::translate("Spectroscopy", "写入失败：%1").arg(name));
         };
         auto table = [&](const QStringList &headers, const QVector<QVector<double>> &columns) {
             QString text;
@@ -796,12 +796,12 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
         write("spectrum_info.json", infoBytes);
         write("spectrum_info.txt", infoBytes);
         if (!QDir().rename(staging, directory))
-            fail(QStringLiteral("不能完成输出目录重命名。"));
+            fail(QCoreApplication::translate("Spectroscopy", "不能完成输出目录重命名。"));
         return true;
     } catch (const std::exception &e) {
         if (error)
             *error = QString::fromUtf8(e.what()) +
-                     (staging.isEmpty() ? QString() : QStringLiteral("\n未完成输出目录：") + staging);
+                     (staging.isEmpty() ? QString() : QCoreApplication::translate("Spectroscopy", "\n未完成输出目录：") + staging);
         return false;
     }
 }

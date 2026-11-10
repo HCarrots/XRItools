@@ -6,6 +6,7 @@
 class QPainter;
 
 class BondFigures : public QWidget {
+    Q_OBJECT
   public:
     explicit BondFigures(QWidget *parent = nullptr);
     void setMontage(const QVector<QVector<double>> &axes, const QVector<double> &field,

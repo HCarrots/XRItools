@@ -312,6 +312,53 @@ int main(int argc, char **argv) {
         auto commonResult = Imaging::run(common, stop);
         expect((commonResult.primary - result.primary).norm() < 1e-9,
                "shared ROI and legacy TSV produce the same physical reconstruction");
+        {
+            const int omitted = 23 * 19 + 9;
+            auto mask = shared.items()[0].pixels();
+            mask.removeAt(omitted);
+            expect(shared.assignMask(0, mask, {19, 47}), "assign nonrectangular shared ROI");
+            QFile maskFile(temp.filePath("masked.roi.json"));
+            expect(maskFile.open(QIODevice::WriteOnly) &&
+                       maskFile.write(shared.serialize("foil.nxs", {{19, 47}, {9, 9}})) > 0,
+                   "write common mask scheme");
+            maskFile.close();
+            auto masked = common;
+            auto input = masked["input"].toObject();
+            input["roi_table"] = maskFile.fileName();
+            masked["input"] = input;
+            auto runtime = masked["runtime"].toObject();
+            runtime["output_dir"] = temp.filePath("masked-output");
+            masked["runtime"] = runtime;
+            const auto maskRun = Imaging::run(masked, stop);
+            ImagingH5 original(commonResult.directory + "/solver_diagnostics.h5"),
+                maskedDiagnostics(maskRun.directory + "/solver_diagnostics.h5");
+            const auto pixelPath = QStringLiteral("rois/0_VB-A1/pixels_rc");
+            const auto samplePath = QStringLiteral("rois/0_VB-A1/measured_pyz");
+            auto fullMeasured = original.read(samplePath);
+            auto fullPixels = original.read(pixelPath);
+            const bool nonzero = fullMeasured[omitted * 4] > 0;
+            fullMeasured.remove(omitted * 4, 4);
+            fullPixels.remove(omitted * 2, 2);
+            expect(nonzero && maskedDiagnostics.read(pixelPath) == fullPixels &&
+                       maskedDiagnostics.read(samplePath) == fullMeasured,
+                   "imaging reconstructs using precisely the saved mask pixels and per-frame counts");
+
+            auto spectral = ImagingFixture::create(temp.filePath("mask-spectral"), false, false, false, true);
+            auto full = common;
+            auto fullInput = full["input"].toObject();
+            fullInput["sample_nxs"] = spectral["input"].toObject()["sample_nxs"];
+            full["input"] = fullInput;
+            input["sample_nxs"] = fullInput["sample_nxs"];
+            masked["input"] = input;
+            const auto fullContrast = BondImaging::prepareContrast(full, 1, 2, {}, stop);
+            const auto maskContrast = BondImaging::prepareContrast(masked, 1, 2, {}, stop);
+            const auto &a = fullContrast.differenceByCrystal.at("0_VB-A1");
+            const auto &b = maskContrast.differenceByCrystal.at("0_VB-A1");
+            expect(a(omitted, 0) > 0 && b.rows() == mask.size() &&
+                       b.topRows(omitted).isApprox(a.topRows(omitted)) &&
+                       b.bottomRows(b.rows() - omitted).isApprox(a.bottomRows(b.rows() - omitted)),
+                   "chemical contrast computes the energy difference only over saved mask pixels");
+        }
         for (bool enabled : {false, true}) {
             auto c = config;
             auto runtime = c["runtime"].toObject();

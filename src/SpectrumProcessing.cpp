@@ -1,4 +1,5 @@
 #include "SpectrumProcessing.h"
+#include <QCoreApplication>
 #include "ImagingIO.h"
 #include <Eigen/Cholesky>
 #include <QDir>
@@ -17,50 +18,50 @@ constexpr double energyTolerance = 1e-7;
 constexpr qsizetype maxPoints = 200000, maxCrystals = 256, maxValues = 20000000;
 void checkCancelled(const std::atomic_bool &stop) {
     if (stop.load())
-        fail(QStringLiteral("数据处理已取消。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "数据处理已取消。"));
 }
 ProcessedSpectrum readSpectrum(const QString &file, const SpectrumHdfLayout &layout) {
     auto axis = HdfFile::inspect(file, layout.energy);
     if (!axis.numeric || axis.dims.size() != 1 || axis.dims[0] < 2 || axis.dims[0] > maxPoints)
-        fail(QStringLiteral("能量转移数据须为含 2 至 200000 点的一维数值数组。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "能量转移数据须为含 2 至 200000 点的一维数值数组。"));
     ImagingH5 hdf(file);
     auto labels = hdf.strings(layout.labels, maxCrystals);
     const auto n = axis.dims[0], rows = quint64(labels.size());
     const auto shape = layout.energyFirst ? QVector<quint64>{n, rows} : QVector<quint64>{rows, n};
     auto intensity = HdfFile::inspect(file, layout.intensity);
     if (!intensity.numeric || intensity.dims != shape || n * rows > maxValues)
-        fail(QStringLiteral("强度矩阵的维度须与所选排列、能量轴和晶体标签数量匹配。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "强度矩阵的维度须与所选排列、能量轴和晶体标签数量匹配。"));
     ProcessedSpectrum out;
     out.sources = {file};
     auto unitPath = QString(group) + "intensity_unit";
     out.intensityUnit = hdf.contains(unitPath) ? hdf.text(unitPath) : layout.externalIntensityUnit;
     out.intensityUnit = out.intensityUnit.trimmed();
     if (out.intensityUnit.isEmpty())
-        fail(QStringLiteral("请指定强度单位。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "请指定强度单位。"));
     out.energyEv = hdf.read(layout.energy);
     for (double &value : out.energyEv) {
         if (layout.energyInKev)
             value *= 1000;
         if (!std::isfinite(value))
-            fail(QStringLiteral("能量轴含非有限值。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "能量轴含非有限值。"));
     }
     bool descending = out.energyEv.last() < out.energyEv.first();
     if (descending)
         std::reverse(out.energyEv.begin(), out.energyEv.end());
     for (qsizetype i = 1; i < out.energyEv.size(); ++i)
         if (out.energyEv[i] <= out.energyEv[i - 1])
-            fail(QStringLiteral("能量轴须严格单调，且同一文件内的能量点不可重复。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "能量轴须严格单调，且同一文件内的能量点不可重复。"));
     const auto values = hdf.read(layout.intensity);
     for (qsizetype r = 0; r < labels.size(); ++r) {
         const auto &label = labels[r];
         if (label.isEmpty() || label.size() > 256 || out.crystals.contains(label))
-            fail(QStringLiteral("晶体标签须非空且唯一：%1").arg(label));
+            fail(QCoreApplication::translate("SpectrumProcessing", "晶体标签须非空且唯一：%1").arg(label));
         QVector<double> row(n);
         for (qsizetype i = 0; i < row.size(); ++i) {
             auto source = descending ? row.size() - 1 - i : i;
             double value = values[layout.energyFirst ? source * labels.size() + r : r * row.size() + source];
             if (std::isinf(value))
-                fail(QStringLiteral("晶体 %1 的强度含无穷值。").arg(label));
+                fail(QCoreApplication::translate("SpectrumProcessing", "晶体 %1 的强度含无穷值。").arg(label));
             row[i] = value;
         }
         out.crystals.insert(label, std::move(row));
@@ -72,7 +73,7 @@ ProcessedSpectrum readSpectrum(const QString &file, const SpectrumHdfLayout &lay
         if (!hdf.contains(path))
             continue;
         if (HdfFile::inspect(file, path).dims != QVector<quint64>{rows})
-            fail(QStringLiteral("晶体几何数据集长度不匹配：%1").arg(path));
+            fail(QCoreApplication::translate("SpectrumProcessing", "晶体几何数据集长度不匹配：%1").arg(path));
         geometry[i] = hdf.read(path);
     }
     for (qsizetype i = 0; i < labels.size(); ++i)
@@ -83,7 +84,7 @@ ProcessedSpectrum readSpectrum(const QString &file, const SpectrumHdfLayout &lay
     if (layout.intensity == SpectrumHdfLayout{}.intensity && !layout.energyFirst && hdf.contains(widePath)) {
         if (HdfFile::inspect(file, widePath).dims != shape ||
             HdfFile::inspect(file, sourcePath).dims != shape)
-            fail(QStringLiteral("拼接文件中的宽谱或来源索引维度不匹配。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "拼接文件中的宽谱或来源索引维度不匹配。"));
         const auto original = hdf.read(widePath), origin = hdf.read(sourcePath);
         out.sources = hdf.strings(QString(group) + "source_files", 256);
         for (qsizetype r = 0; r < labels.size(); ++r) {
@@ -95,7 +96,7 @@ ProcessedSpectrum readSpectrum(const QString &file, const SpectrumHdfLayout &lay
                 const double code = origin[index];
                 if (!std::isfinite(code) || code < 0 || code >= out.sources.size() ||
                     std::floor(code) != code)
-                    fail(QStringLiteral("拼接文件的来源索引无效。"));
+                    fail(QCoreApplication::translate("SpectrumProcessing", "拼接文件的来源索引无效。"));
                 codes[i] = int(code);
             }
             out.wideCrystals.insert(labels[r], std::move(raw));
@@ -139,7 +140,7 @@ ProcessedSpectrum readReducedTable(const QString &file, const SpectrumHdfLayout 
     const auto headers = stream.readLine().split('\t');
     auto axis = headers.indexOf("Energy Transfer (eV)");
     if (axis < 0)
-        fail(QStringLiteral("请选择含 Energy Transfer (eV) 的逐晶体 *_all_data.txt。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "请选择含 Energy Transfer (eV) 的逐晶体 *_all_data.txt。"));
     ProcessedSpectrum out;
     out.sources = {file};
     out.intensityUnit = layout.externalIntensityUnit;
@@ -149,12 +150,12 @@ ProcessedSpectrum readReducedTable(const QString &file, const SpectrumHdfLayout 
         if (i == axis || label.isEmpty() || label.startsWith("Unnamed:"))
             continue;
         if (out.crystals.contains(label))
-            fail(QStringLiteral("强度表含重复晶体标签：%1").arg(label));
+            fail(QCoreApplication::translate("SpectrumProcessing", "强度表含重复晶体标签：%1").arg(label));
         out.crystals.insert(label, {});
         columns.append({i, label});
     }
     if (columns.isEmpty() || columns.size() > maxCrystals)
-        fail(QStringLiteral("逐晶体强度列数量无效。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "逐晶体强度列数量无效。"));
     while (!stream.atEnd()) {
         auto line = stream.readLine();
         if (line.trimmed().isEmpty())
@@ -165,18 +166,18 @@ ProcessedSpectrum readReducedTable(const QString &file, const SpectrumHdfLayout 
         if (!ok || !std::isfinite(e) || (!out.energyEv.isEmpty() && e <= out.energyEv.last()) ||
             fields.size() != headers.size() || out.energyEv.size() >= maxPoints ||
             (out.energyEv.size() + 1) * columns.size() > maxValues)
-            fail(QStringLiteral("逐晶体表的列数、能量顺序或大小无效。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "逐晶体表的列数、能量顺序或大小无效。"));
         out.energyEv.append(e);
         for (const auto &[i, label] : columns) {
             auto field = fields[i].trimmed();
             double value = field.toDouble(&ok);
             if (!ok && !field.isEmpty() && field.compare("nan", Qt::CaseInsensitive) != 0)
-                fail(QStringLiteral("晶体 %1 含无法读取的强度。").arg(label));
+                fail(QCoreApplication::translate("SpectrumProcessing", "晶体 %1 含无法读取的强度。").arg(label));
             out.crystals[label].append(ok && std::isfinite(value) ? value : NAN);
         }
     }
     if (out.energyEv.size() < 2)
-        fail(QStringLiteral("能量点不足。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "能量点不足。"));
     if (file.endsWith("_all_data.txt", Qt::CaseInsensitive)) {
         const auto path = file.chopped(13) + "_rois.txt";
         if (QFileInfo::exists(path))
@@ -230,7 +231,7 @@ QMap<QString, SpectrumGeometry> SpectrumProcessing::loadGeometry(const QString &
     if (centerCol < 0)
         centerCol = names.indexOf("center_eV");
     if (labelCol < 0 || qCol < 0 || centerCol < 0)
-        fail(QStringLiteral("晶体几何表须含 crystal、q_ave（Å⁻¹）和 center（eV）列。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "晶体几何表须含 crystal、q_ave（Å⁻¹）和 center（eV）列。"));
     const auto enabledCol = names.indexOf("add");
     QSet<QString> seen;
     QMap<QString, SpectrumGeometry> geometry;
@@ -272,15 +273,15 @@ ProcessedSpectrum SpectrumProcessing::replaceEdges(const ProcessedSpectrum &wide
                                                    const QVector<ProcessedSpectrum> &edges,
                                                    const std::atomic_bool &stop) {
     if (wide.crystals.isEmpty())
-        fail(QStringLiteral("请先载入康普顿宽谱。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "请先载入康普顿宽谱。"));
     auto result = wide;
     result.pointSources.clear();
     result.wideCrystals = edges.isEmpty() ? QMap<QString, QVector<double>>{} : wide.crystals;
-    result.sources = {wide.sources.isEmpty() ? QStringLiteral("当前原始谱") : wide.sources.join(" | ")};
+    result.sources = {wide.sources.isEmpty() ? QCoreApplication::translate("SpectrumProcessing", "当前原始谱") : wide.sources.join(" | ")};
     for (const auto &edge : edges) {
         checkCancelled(stop);
         if (edge.intensityUnit != wide.intensityUnit)
-            fail(QStringLiteral("宽谱与近边谱的强度单位不一致。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "宽谱与近边谱的强度单位不一致。"));
         QVector<qsizetype> indices;
         for (double value : edge.energyEv) {
             auto it = std::lower_bound(wide.energyEv.cbegin(), wide.energyEv.cend(), value);
@@ -288,11 +289,11 @@ ProcessedSpectrum SpectrumProcessing::replaceEdges(const ProcessedSpectrum &wide
                 (it == wide.energyEv.cend() || std::abs(*(it - 1) - value) < std::abs(*it - value)))
                 --it;
             if (it == wide.energyEv.cend() || std::abs(*it - value) > 1e-6)
-                fail(QStringLiteral("近边能量 %1 eV 与宽谱网格不对齐。请按共同能量网格重新导出。")
+                fail(QCoreApplication::translate("SpectrumProcessing", "近边能量 %1 eV 与宽谱网格不对齐。请按共同能量网格重新导出。")
                          .arg(value, 0, 'g', 12));
             auto index = it - wide.energyEv.cbegin();
             if (!indices.isEmpty() && index <= indices.last())
-                fail(QStringLiteral("多个近边点对应同一宽谱点。"));
+                fail(QCoreApplication::translate("SpectrumProcessing", "多个近边点对应同一宽谱点。"));
             indices.append(index);
         }
         qsizetype replaced = 0;
@@ -309,14 +310,14 @@ ProcessedSpectrum SpectrumProcessing::replaceEdges(const ProcessedSpectrum &wide
                     continue;
                 const auto index = indices[i];
                 if (origin[index] != 0)
-                    fail(QStringLiteral("近边文件在晶体 %1 的能区重叠，请重新选择。").arg(row.key()));
+                    fail(QCoreApplication::translate("SpectrumProcessing", "近边文件在晶体 %1 的能区重叠，请重新选择。").arg(row.key()));
                 target.value()[index] = row.value()[i];
                 origin[index] = source;
                 ++replaced;
             }
         }
         if (!replaced)
-            fail(QStringLiteral("近边文件没有可替换的同名晶体强度。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "近边文件没有可替换的同名晶体强度。"));
         result.sources.append(edge.sources.join(" | "));
     }
     return result;
@@ -325,7 +326,7 @@ ProcessedSpectrum SpectrumProcessing::replaceEdges(const ProcessedSpectrum &wide
 ProcessedSpectrum SpectrumProcessing::stitch(const QStringList &files, const SpectrumHdfLayout &layout,
                                              const std::atomic_bool &stop) {
     if (files.isEmpty())
-        fail(QStringLiteral("请选择谱学 HDF5 文件。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "请选择谱学 HDF5 文件。"));
     QVector<ProcessedSpectrum> inputs;
     ProcessedSpectrum out;
     QSet<QString> seenFiles;
@@ -344,10 +345,10 @@ ProcessedSpectrum SpectrumProcessing::stitch(const QStringList &files, const Spe
             fail(QStringLiteral("%1\n%2").arg(QFileInfo(file).fileName(), QString::fromUtf8(e.what())));
         }
         if (!out.intensityUnit.isEmpty() && out.intensityUnit != input.intensityUnit)
-            fail(QStringLiteral("所选文件的强度单位不一致，请先统一归一化方式。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "所选文件的强度单位不一致，请先统一归一化方式。"));
         totalValues += input.crystals.size() * input.energyEv.size();
         if (totalValues > maxValues)
-            fail(QStringLiteral("待拼接谱学数据超出内存限制，请分批处理。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "待拼接谱学数据超出内存限制，请分批处理。"));
         out.intensityUnit = input.intensityUnit;
         out.energyEv += input.energyEv;
         out.sources += input.sources;
@@ -362,7 +363,7 @@ ProcessedSpectrum SpectrumProcessing::stitch(const QStringList &files, const Spe
             out.energyEv[size++] = energy;
     out.energyEv.resize(size);
     if (size < 2 || size > maxPoints || labels.size() > maxCrystals || size * labels.size() > maxValues)
-        fail(QStringLiteral("拼接后的能量点或晶体数超出支持范围。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "拼接后的能量点或晶体数超出支持范围。"));
     for (const auto &label : labels) {
         checkCancelled(stop);
         QVector<double> row(size, NAN);
@@ -388,20 +389,20 @@ ProcessedSpectrum SpectrumProcessing::stitch(const QStringList &files, const Spe
             out.crystals.insert(label, std::move(row));
     }
     if (out.crystals.isEmpty())
-        fail(QStringLiteral("所选数据集没有有效晶体强度。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "所选数据集没有有效晶体强度。"));
     return out;
 }
 
 CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const QVector<double> &intensity,
                                           const BackgroundSettings &settings, const std::atomic_bool &stop) {
     if (energy.size() != intensity.size() || energy.size() < 2 || settings.windows.isEmpty())
-        fail(QStringLiteral("缺少可拟合的晶体谱或能量区间。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "缺少可拟合的晶体谱或能量区间。"));
     for (auto window : settings.windows)
         if (!std::isfinite(window.first) || !std::isfinite(window.second) || window.first >= window.second)
-            fail(QStringLiteral("拟合区间的结束值须大于起始值。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "拟合区间的结束值须大于起始值。"));
     const double span = energy.last() - energy.first(), origin = energy.first() + .5 * span;
     if (!(span > 0) || !std::isfinite(span))
-        fail(QStringLiteral("能量范围无效。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "能量范围无效。"));
     QVector<double> x, y;
     double scale = 0;
     for (qsizetype i = 0; i < energy.size(); ++i) {
@@ -416,7 +417,7 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         }
     }
     if (x.size() < (settings.pearson ? 8 : 2))
-        fail(QStringLiteral("拟合区间内至少需要 %1 个有效点。").arg(settings.pearson ? 8 : 2));
+        fail(QCoreApplication::translate("SpectrumProcessing", "拟合区间内至少需要 %1 个有效点。").arg(settings.pearson ? 8 : 2));
     scale = scale > 0 ? scale : 1;
     for (double &value : y)
         value /= scale;
@@ -430,7 +431,7 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         yy += dy * dy;
     }
     if (!(xx > 0))
-        fail(QStringLiteral("拟合区间缺少不同的能量点。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "拟合区间缺少不同的能量点。"));
     const double slope = xy / xx, intercept = meanY - slope * meanX;
     Parameters best;
     double bestError = INFINITY;
@@ -446,7 +447,7 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         auto extrema = std::minmax_element(y.begin(), y.end());
         const double height = *extrema.second - *extrema.first;
         if (height < 1e-10)
-            fail(QStringLiteral("所选区间没有可辨识的康普顿峰。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "所选区间没有可辨识的康普顿峰。"));
         const Parameters lower{-INFINITY, 0., -1.5, std::log(1e-5), std::log(.51)};
         const Parameters upper{INFINITY, 100., 1.5, std::log(5.), std::log(1000.)};
         for (double initialWidth : {.08, .25, .7}) {
@@ -504,7 +505,7 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
             }
         }
         if (!std::isfinite(bestError) || best[1] <= 1e-9)
-            fail(QStringLiteral("Pearson VII 拟合未收敛或峰高无效。请调整康普顿拟合区间。"));
+            fail(QCoreApplication::translate("SpectrumProcessing", "Pearson VII 拟合未收敛或峰高无效。请调整康普顿拟合区间。"));
     } else {
         bestError = 0;
         for (qsizetype i = 0; i < x.size(); ++i) {
@@ -533,9 +534,9 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
 void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data,
                               const QMap<QString, CrystalBackground> &backgrounds) {
     if (data.crystals.isEmpty() || data.energyEv.size() < 2)
-        fail(QStringLiteral("没有可保存的谱学结果。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "没有可保存的谱学结果。"));
     if (QFileInfo::exists(path))
-        fail(QStringLiteral("输出文件已存在，请使用新文件名。"));
+        fail(QCoreApplication::translate("SpectrumProcessing", "输出文件已存在，请使用新文件名。"));
     const QString staging = path + ".partial-" + QUuid::createUuid().toString(QUuid::Id128);
     try {
         {
@@ -555,7 +556,7 @@ void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data
                 for (const auto &label : labels) {
                     auto next = row(label);
                     if (next.size() != n)
-                        fail(QStringLiteral("晶体 %1 的强度长度与能量轴不一致。").arg(label));
+                        fail(QCoreApplication::translate("SpectrumProcessing", "晶体 %1 的强度长度与能量轴不一致。").arg(label));
                     values += next;
                 }
                 hdf.write(QString(group) + name, shape, values.constData());
@@ -621,7 +622,7 @@ void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data
             hdf.attributes(QString(group).chopped(1), {{"schema", "xri-spectrum-1"}});
         }
         if (!QFile::rename(staging, path))
-            fail(QStringLiteral("无法完成 HDF5 文件写入：%1").arg(path));
+            fail(QCoreApplication::translate("SpectrumProcessing", "无法完成 HDF5 文件写入：%1").arg(path));
     } catch (...) {
         QFile::remove(staging);
         throw;

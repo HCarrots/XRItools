@@ -9,20 +9,43 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QIcon>
+#include <QLibraryInfo>
+#include <QLocale>
 #include <QPointer>
+#include <QProcess>
 #include <QStyleFactory>
+#include <QSettings>
 #include <QTimer>
+#include <QTranslator>
 #include <cstdio>
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName("XRI");
     QCoreApplication::setApplicationName("XRI");
-    QCoreApplication::setApplicationVersion("0.2.2");
+    QCoreApplication::setApplicationVersion(QStringLiteral(XRI_VERSION));
+    QTranslator uiTranslator, qtTranslator;
+    const bool english = QSettings().value("ui/language").toString() == "en";
+    if (english) {
+        if (uiTranslator.load(":/i18n/xri_en.qm"))
+            app.installTranslator(&uiTranslator);
+        else
+            qWarning("Cannot load the embedded English UI catalog.");
+        if (QLocale::system().language() != QLocale::English)
+            app.setAttribute(Qt::AA_DontUseNativeDialogs);
+    } else if (qtTranslator.load("qtbase_zh_CN", app.applicationDirPath() + "/translations") ||
+               qtTranslator.load("qtbase_zh_CN", QLibraryInfo::path(QLibraryInfo::TranslationsPath))) {
+        app.installTranslator(&qtTranslator);
+        if (QLocale::system().language() != QLocale::Chinese)
+            app.setAttribute(Qt::AA_DontUseNativeDialogs);
+    }
     app.setWindowIcon(QIcon(QStringLiteral(":/assets/xri.png")));
-    // Keep Qt Widgets' Windows platform style, native dialogs, menus and frame.
+#ifdef Q_OS_WIN
     if (auto style = QStyleFactory::create("windowsvista"))
         app.setStyle(style);
+#elif defined(Q_OS_LINUX)
+    app.setDesktopFileName("io.github.HCarrots.XRItools");
+#endif
     QCommandLineParser parser;
     parser.setApplicationDescription("XRI - Synchrotron HDF5 / NeXus viewer");
     parser.addHelpOption();
@@ -39,7 +62,12 @@ int main(int argc, char *argv[]) {
     parser.addOption({"bond-result", "Open an existing four-dimensional contrast result", "path"});
     parser.addOption({"smoke-test", "Render current dataset and exit with verification status", "directory"});
     parser.process(app);
-    MainWindow window;
+    MainWindow window(nullptr, [](const QStringList &arguments) {
+        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments, QDir::currentPath()))
+            return false;
+        QCoreApplication::quit();
+        return true;
+    });
     window.show();
     auto args = parser.positionalArguments();
     if (!args.isEmpty())

@@ -54,6 +54,15 @@ void fixtures(const QString &path) {
     H5Sclose(space);
     hsize_t length = 3;
     space = H5Screate_simple(1, &length, nullptr);
+    type = H5Tenum_create(H5T_STD_I16BE);
+    unsigned char labels[][2] = {{0xff, 0xfe}, {0x00, 0x00}, {0x01, 0x02}};
+    H5Tenum_insert(type, "negative", labels[0]);
+    H5Tenum_insert(type, "zero", labels[1]);
+    H5Tenum_insert(type, "positive", labels[2]);
+    ds = H5Dcreate2(file, "enum", type, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(ds, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, labels);
+    H5Dclose(ds);
+    H5Tclose(type);
     ds = H5Dcreate2(file, "nonfinite", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     double nonfinite[] = {NAN, INFINITY, -INFINITY};
     H5Dwrite(ds, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, nonfinite);
@@ -133,7 +142,7 @@ int main(int argc, char **argv) {
         if (child.name == "cycle")
             cycle = child.group;
     }
-    expect(children.size() == 8 && broken && cycle, "enumerate broken and cyclic links without recursion");
+    expect(children.size() == 9 && broken && cycle, "enumerate broken and cyclic links without recursion");
     auto s = HdfFile::read({file, "/cube", {1, 0, 0}, 2, 1});
     expect(s.error.isEmpty() && s.width == 4 && s.height == 3 && s.values.first() == 12 &&
                s.values.last() == 23 && s.mean == 17.5,
@@ -152,6 +161,9 @@ int main(int argc, char **argv) {
     expect(s.values.isEmpty() && s.error.isEmpty(), "empty dataspace");
     s = HdfFile::read({file, "/nonfinite", {}, 0, -1});
     expect(s.finiteCount == 0 && std::isnan(s.mean), "nonfinite statistics");
+    s = HdfFile::read({file, "/enum", {}, 0, -1});
+    expect(s.error.isEmpty() && s.values == QVector<double>({-2, 0, 258}),
+           "read signed big-endian enum values");
     s = HdfFile::read({file, "/large", {}, 0, -1});
     expect(s.sampled && s.width <= 100000 && s.strides[0] == 3, "bounded vector preview");
     s = HdfFile::read({file, "/cube", {2, 0, 0}, 2, 1});
@@ -177,8 +189,11 @@ int main(int argc, char **argv) {
         s = HdfFile::read({real, "/entry/data/D_LAMBDA_image", {7055}, 0, -1});
         expect(s.error.isEmpty() && s.text.contains("1 element(s)") && s.text.contains("7055"),
                "bounded string array preview at final index");
+        // This dataset uses a datatype message version newer than HDF5 1.10 can decode.
+#if H5_VERSION_GE(1, 12, 0)
         s = HdfFile::read({real, "/entry/processed/fit_ok", {}, 0, -1});
         expect(s.error.isEmpty() && s.values.size() == 60, "real boolean enum");
+#endif
     }
     return failures ? 1 : 0;
 }

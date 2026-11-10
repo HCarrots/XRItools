@@ -161,7 +161,9 @@ void BondFigures::drawSpectralSection(QPainter &p) {
         return;
     }
     const auto &e = m_axes[0], &x = m_axes[1];
-    const auto [lo, hi, peakRow] = limits(m_rows);
+    const auto spectrumLimits = limits(m_rows);
+    const double lo = spectrumLimits.lo, hi = spectrumLimits.hi;
+    const int peakRow = spectrumLimits.peakRow;
     if (peakRow < 0) {
         p.drawText(rect(), Qt::AlignCenter, tr("当前 Y/Z 位置没有可显示的谱点"));
         return;

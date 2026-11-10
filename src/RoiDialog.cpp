@@ -1,4 +1,5 @@
 #include "RoiDialog.h"
+#include <QCoreApplication>
 #include "ScientificPlot.h"
 #include "WorkflowUi.h"
 #include <QCryptographicHash>
@@ -13,9 +14,9 @@ QString detectorPath(int i) {
     return i == 0 ? "/entry/data/D_LAMBDA" : "/entry/data/D_MINIPIX";
 }
 QString stateText(RoiState s) {
-    return s == RoiState::Valid     ? QStringLiteral("有效")
-           : s == RoiState::Invalid ? QStringLiteral("失效")
-                                    : QStringLiteral("未设置");
+    return s == RoiState::Valid     ? QCoreApplication::translate("RoiDialog", "有效")
+           : s == RoiState::Invalid ? QCoreApplication::translate("RoiDialog", "失效")
+                                    : QCoreApplication::translate("RoiDialog", "未设置");
 }
 DataSlice lineProfile(const DataSlice &image, bool horizontal, int x, int y) {
     DataSlice result;

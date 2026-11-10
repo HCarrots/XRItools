@@ -1,5 +1,6 @@
 #pragma once
 #include <QByteArray>
+#include <QJsonArray>
 #include <QRect>
 #include <QString>
 #include <QVector>
@@ -9,6 +10,8 @@ struct CrystalRoi {
     QString label, detector;
     QRect rect; // numpy convention: [x1,x2), [y1,y2)
     RoiState state = RoiState::Pending;
+    QVector<QPoint> mask; // Empty for a rectangular ROI.
+    QVector<QPoint> pixels() const;
 };
 class CrystalRois {
   public:
@@ -17,6 +20,8 @@ class CrystalRois {
         return m_items;
     }
     bool assign(int row, const QRect &rect, const QSize &detectorSize);
+    bool assignMask(int row, const QVector<QPoint> &mask, const QSize &detectorSize);
+    static QVector<QPoint> decodeMask(const QJsonArray &runs, const QSize &detectorSize);
     void invalidate(int row);
     void clear(int row);
     int count(RoiState state) const;

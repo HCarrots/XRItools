@@ -284,10 +284,12 @@ DataSlice HdfFile::read(const SliceRequest &r) {
         hsize_t memorySize = n;
         Handle memory(H5Screate_simple(1, &memorySize, nullptr), H5Sclose);
         if (cls == H5T_ENUM) {
-            // HDF5 does not define enum -> floating-point conversions.
-            std::vector<long long> integers(n, 0);
-            check(H5Dread(dataset, H5T_NATIVE_LLONG, memory, space, H5P_DEFAULT, integers.data()));
-            std::copy(integers.begin(), integers.end(), raw.begin());
+            // Read the enum unchanged, then convert its underlying integer representation.
+            Handle base(H5Tget_super(type), H5Tclose);
+            if (H5Tget_size(base) > sizeof(double))
+                throw std::runtime_error("Enum storage exceeds 64 bits.");
+            check(H5Dread(dataset, type, memory, space, H5P_DEFAULT, raw.data()));
+            check(H5Tconvert(base, H5T_NATIVE_DOUBLE, n, raw.data(), nullptr, H5P_DEFAULT));
         } else
             check(H5Dread(dataset, H5T_NATIVE_DOUBLE, memory, space, H5P_DEFAULT, raw.data()));
         out.values.resize(qsizetype(n));

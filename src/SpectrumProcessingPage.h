@@ -13,9 +13,13 @@ class QPushButton;
 class SpectrumPlot;
 
 class SpectrumProcessingPage : public QWidget {
+    Q_OBJECT
   public:
     explicit SpectrumProcessingPage(QWidget *parent = nullptr);
     ~SpectrumProcessingPage() override;
+    bool isBusy() const {
+        return m_busy;
+    }
     void setCurrentResult(ProcessedSpectrum result);
     QWidget *analysisPage() const {
         return m_analysisPage;
