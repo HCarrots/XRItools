@@ -73,15 +73,9 @@ void imageStats(DataSlice &image) {
     if (!image.finiteCount)
         image.minimum = image.maximum = NAN;
 }
-void validateSettings(const SpectrumSettings &s) {
-    if (!std::isfinite(s.filterFraction) || s.filterFraction < 0 || s.filterFraction > 1 || s.roiSize < 1 ||
-        s.roiSize > 2048 || s.fitModel < 0 || s.fitModel > 1 || !(s.centerMax > s.centerMin) ||
-        !(s.maxFwhmEv > 0) || s.minRSquared < 0 || s.minRSquared > 1)
-        fail(QCoreApplication::translate("Spectroscopy", "掩膜或拟合参数无效。"));
-}
 SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, bool elastic,
                       const ElasticCalibration *calibration, bool projection, const std::atomic_bool &cancel,
-                      Spectroscopy::Progress progress) {
+                      Spectroscopy::Progress progress, PixelSpectra *spectra = nullptr, int detector = -1) {
     checkCancel(cancel);
     if (HdfFile::formatFromFileName(file) == ScanFormat::GridScan)
         fail(QCoreApplication::translate("Spectroscopy", "grid_scan 属于成像数据，不能作为一维谱学扫描：%1").arg(file));
@@ -110,14 +104,19 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
     for (double &v : scan.i0Before)
         v = std::abs(v);
     scan.i0After = scan.i0Before;
-    QVector<bool> glitch(count, false);
+    QVector<double> repairWeight(count, -1.);
     if (normalize && !elastic && settings.repairGlitches) {
+        if (!(settings.glitchDropFraction > 0 && settings.glitchDropFraction < 1))
+            fail(QCoreApplication::translate("Spectroscopy", "I0 跌幅阈值须介于 0% 与 100% 之间。"));
+        const double ratio = 1 - settings.glitchDropFraction;
         for (int i = 1; i < count - 1; ++i) {
-            double a = scan.i0After[i - 1], b = scan.i0After[i], c = scan.i0After[i + 1];
-            if (std::isfinite(a) && std::isfinite(b) && std::isfinite(c) && a > 0 && c > 0 && b / a < 0.7 &&
-                b / c < 0.7) {
-                scan.i0After[i] = (a + c) / 2;
-                glitch[i] = true;
+            const double a = scan.i0Before[i - 1], b = scan.i0Before[i], c = scan.i0Before[i + 1];
+            if (std::isfinite(a) && a > 0 && std::isfinite(c) && c > 0 &&
+                (!std::isfinite(b) || b < ratio * std::min(a, c))) {
+                const double w = (scan.energyKev[i] - scan.energyKev[i - 1]) /
+                                 (scan.energyKev[i + 1] - scan.energyKev[i - 1]);
+                scan.i0After[i] = a + w * (c - a);
+                repairWeight[i] = w;
                 scan.glitches.append(i);
             }
         }
@@ -135,6 +134,8 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
             }
     }
     for (int d = 0; d < 2; ++d) {
+        if (detector >= 0 && detector != d)
+            continue;
         checkCancel(cancel);
         const auto node = HdfFile::inspect(file, detectorPath(d));
         if (node.dims.size() != 3 || node.dims[0] != quint64(count))
@@ -142,11 +143,28 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
         QSize size(int(node.dims[2]), int(node.dims[1]));
         if (calibration && calibration->sizes[d] != size)
             fail(QCoreApplication::translate("Spectroscopy", "XRS 探测器尺寸与弹性标定不一致。"));
-        DataSlice image = imageData(detectorPath(d), size);
+        QVector<int> offsets;
+        if (spectra) {
+            if (size != spectra->detectorSize)
+                fail(QCoreApplication::translate("Spectroscopy", "参考扫描与 ROI 探测器尺寸不一致。"));
+            if (qint64(count) * spectra->pixels.size() > 8000000)
+                fail(QCoreApplication::translate("Spectroscopy", "像素谱矩阵过大，请缩小初始 ROI。"));
+            spectra->energyKev = scan.energyKev;
+            for (const auto &point : spectra->pixels) {
+                if (!QRect(QPoint(), size).contains(point))
+                    fail(QCoreApplication::translate("Spectroscopy", "ROI 超出参考扫描范围。"));
+                offsets.append(point.y() * size.width() + point.x());
+                spectra->intensity.append(QVector<double>(count));
+            }
+        }
+        DataSlice image = projection ? imageData(detectorPath(d), size) : DataSlice{};
         QVector<double> pending, previous;
         auto process = [&](int index, QVector<double> &raw) {
             const double divisor = normalize ? scan.i0After[index] : 1;
             const double *pixels = raw.constData();
+            if (spectra)
+                for (int p = 0; p < offsets.size(); ++p)
+                    spectra->intensity[p][index] = pixels[offsets[p]] / divisor;
             if (projection) {
                 double *sum = image.values.data();
                 for (qsizetype k = 0; k < raw.size(); ++k) {
@@ -179,11 +197,12 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
                                  if (i == 0)
                                      pending = QVector<double>(raw, raw + width * height);
                                  else {
-                                     if (glitch[i - 1]) {
+                                     const double w = repairWeight[i - 1];
+                                     if (w >= 0) {
                                          double *values = pending.data();
                                          const double *prev = previous.constData();
                                          for (int k = 0; k < width * height; ++k)
-                                             values[k] = (prev[k] + raw[k]) / 2;
+                                             values[k] = prev[k] + w * (raw[k] - prev[k]);
                                      }
                                      process(i - 1, pending);
                                      previous = std::move(pending);
@@ -372,9 +391,30 @@ ElasticFit Spectroscopy::fitPeak(const QVector<double> &energy, const QVector<do
     return result;
 }
 
+PixelSpectra Spectroscopy::pixelSpectra(const QString &reference, const SpectrumSettings &settings,
+                                        const CrystalRoi &roi, const QSize &size,
+                                        const std::atomic_bool &cancel) {
+    if (roi.state != RoiState::Valid || !QRect(QPoint(), size).contains(roi.rect))
+        fail(QCoreApplication::translate("Spectroscopy", "请选择有效的晶体 ROI。"));
+    PixelSpectra spectra;
+    spectra.detectorSize = size;
+    spectra.pixels = roi.pixels();
+    loadScan(reference, settings, false, nullptr, false, cancel, {}, &spectra,
+             roi.detector == "D_LAMBDA" ? 0 : 1);
+    return spectra;
+}
+
 ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const CrystalRois &rois,
                                            const std::atomic_bool &cancel, Progress progress) {
-    validateSettings(s);
+    return fitElastic(s, prepareMasks(s, rois, cancel, progress), cancel, progress);
+}
+
+ElasticCalibration Spectroscopy::prepareMasks(const SpectrumSettings &s, const CrystalRois &rois,
+                                              const std::atomic_bool &cancel, Progress progress,
+                                              const QVector<DataSlice> &projection) {
+    if (!std::isfinite(s.filterFraction) || s.filterFraction < 0 || s.filterFraction > 1 ||
+        s.roiSize < 1 || s.roiSize > 2048)
+        fail(QCoreApplication::translate("Spectroscopy", "掩膜或拟合参数无效。"));
     if (rois.count(RoiState::Pending))
         fail(QCoreApplication::translate("Spectroscopy", "请先完成 ROI：未设置的晶体应框选或标记失效。"));
     if (!rois.count(RoiState::Valid))
@@ -382,8 +422,8 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
     ElasticCalibration out;
     out.original = rois;
     out.adjusted = rois;
-    auto first = loadScan(s.elasticFile, s, true, nullptr, true, cancel, progress);
-    out.images = first.images;
+    out.images = projection.isEmpty() ? loadScan(s.elasticFile, s, true, nullptr, true, cancel, progress).images
+                                      : projection;
     for (const auto &image : out.images)
         out.sizes.append(QSize(image.width, image.height));
     out.pixels.resize(75);
@@ -406,7 +446,13 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
         QRect bounds(0, 0, image.width, image.height), rect = roi.rect;
         if (rect.isEmpty() || !bounds.contains(rect))
             fail(QCoreApplication::translate("Spectroscopy", "ROI 超出当前探测器：%1").arg(roi.label));
-        if (s.autoRoi && roi.mask.isEmpty()) {
+        const bool spectral = s.useFilter && s.spectralMasks.contains(i);
+        QSet<QPoint> selected;
+        if (spectral) {
+            const auto &points = s.spectralMasks.constFind(i).value().pixels;
+            selected = QSet<QPoint>(points.cbegin(), points.cend());
+        }
+        if (s.autoRoi && !spectral && roi.mask.isEmpty()) {
             double maximum = -INFINITY;
             QPoint location;
             for (int y = rect.top(); y <= rect.bottom(); ++y)
@@ -434,11 +480,15 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
             int pixel = p.y() * image.width + p.x();
             out.pixels[i].append(pixel);
             ++rawUse[d][pixel];
-            if (!roi.mask.isEmpty() || image.values[pixel] > maximum * s.filterFraction) {
+            if (spectral ? selected.contains(p)
+                         : (!roi.mask.isEmpty() || image.values[pixel] > maximum * s.filterFraction)) {
                 out.filteredPixels[i].append(pixel);
                 ++filteredUse[d][pixel];
             }
         }
+        if (spectral && (out.filteredPixels[i].size() != selected.size() ||
+                         !out.adjusted.assignMask(i, s.spectralMasks.value(i).pixels, out.sizes[d])))
+            fail(QCoreApplication::translate("Spectroscopy", "谱分辨掩膜与初始 ROI 不匹配。"));
     }
     for (int d = 0; d < 2; ++d) {
         auto mask = imageData(detectorPath(d) + " mask", out.sizes[d]);
@@ -463,6 +513,14 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
     }
     for (auto &image : out.maskImages)
         imageStats(image);
+    return out;
+}
+
+ElasticCalibration Spectroscopy::fitElastic(const SpectrumSettings &s, ElasticCalibration out,
+                                           const std::atomic_bool &cancel, Progress progress) {
+    if (s.fitModel < 0 || s.fitModel > 1 || !(s.centerMax > s.centerMin) ||
+        !(s.maxFwhmEv > 0) || s.minRSquared < 0 || s.minRSquared > 1)
+        fail(QCoreApplication::translate("Spectroscopy", "掩膜或拟合参数无效。"));
     out.scan = loadScan(s.elasticFile, s, true, &out, false, cancel, progress);
     for (int i = 0; i < 75; ++i) {
         checkCancel(cancel);
@@ -738,8 +796,11 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
                 raw.append(p);
             for (int p : c.filteredPixels[r])
                 filtered.append(p);
-            maskRecords.append(QJsonObject{
-                {"crystal", c.adjusted.items()[r].label}, {"pixels", raw}, {"filtered_pixels", filtered}});
+            QJsonObject record{
+                {"crystal", c.adjusted.items()[r].label}, {"pixels", raw}, {"filtered_pixels", filtered}};
+            if (s.useFilter && s.spectralMasks.contains(r))
+                record.insert("spectral_selection", s.spectralMasks.value(r).provenance);
+            maskRecords.append(record);
         }
         write("spectrum_masks.json", QJsonDocument(maskRecords).toJson());
         QJsonObject angles;
@@ -766,7 +827,8 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
                          {"normalize_elastic", s.normalizeElastic},
                          {"normalize_xrs", s.normalizeXrs},
                          {"repair_i0_glitches", s.repairGlitches},
-                         {"glitch_ratio", 0.7},
+                         {"glitch_ratio", 1 - s.glitchDropFraction},
+                         {"glitch_interpolation", "linear_in_incident_energy"},
                          {"use_filter", s.useFilter},
                          {"filter_fraction", s.filterFraction},
                          {"auto_roi", s.autoRoi},

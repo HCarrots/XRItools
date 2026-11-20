@@ -10,6 +10,7 @@ class QCheckBox;
 class QTableWidget;
 class QPlainTextEdit;
 class QSpinBox;
+class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
 class QProgressBar;
@@ -31,6 +32,7 @@ class ImagingDialog : public QDialog {
         m_availableFiles = files;
     }
     void useRoiDraft(const QString &file, const QString &path);
+    void refreshOutputDestination();
     bool isBusy() const {
         return m_busy;
     }
@@ -49,8 +51,9 @@ class ImagingDialog : public QDialog {
     struct Work {
         ImagingValidation validation;
         ImagingResult result;
+        QJsonObject diagnosticReport;
         QVector<SurfaceTriangle> mesh;
-        QString error;
+        QString error, gifPath;
     };
     void buildUi();
     void refreshActions();
@@ -62,6 +65,14 @@ class ImagingDialog : public QDialog {
     void refreshImage();
     void refreshModelSource();
     void buildModel();
+    enum class DiagnosticTask { None, Depth, Models, Boundaries };
+    void runDiagnostic(DiagnosticTask);
+    void showDepthReport();
+    void showBoundaryReport();
+    void refreshDepth();
+    QString depthMethod(const QJsonObject &) const;
+    QString depthQuality(const QJsonObject &) const;
+    void saveModelGif();
     const ImageMatrix &volumeData(int method) const;
     void refreshTrajectory();
     void exclusions(bool exclude);
@@ -70,6 +81,8 @@ class ImagingDialog : public QDialog {
     QPair<QString, QString> m_pendingRoi;
     QByteArray m_roiBytes;
     QWidget *m_configTools = nullptr;
+    QLabel *m_workspaceOutput = nullptr;
+    QPushButton *m_chooseOutput = nullptr;
     QPushButton *m_nextButton = nullptr, *m_previousButton = nullptr;
     QMap<QString, QWidget *> m_fields;
     QMap<QString, QCheckBox *> m_auto;
@@ -77,8 +90,21 @@ class ImagingDialog : public QDialog {
     ImagingValidation m_validation;
     ImagingResult m_result;
     bool m_busy = false, m_updating = false, m_haveResult = false, m_validateOnly = false;
-    bool m_buildingModel = false;
+    bool m_buildingModel = false, m_exportingModelGif = false;
+    DiagnosticTask m_diagnosticTask = DiagnosticTask::None;
+    QJsonObject m_psfComparison;
+    QPushButton *m_comparePsf = nullptr;
+    QPushButton *m_compareBounds=nullptr,*m_showBounds=nullptr;
+    QJsonObject m_boundaryReport;
+    int m_depthIndex = -1;
+    QVector<double> m_relativeSensitivity;
+    QJsonObject m_depthReport;
+    QPushButton *m_validateDepth = nullptr, *m_showDepth = nullptr;
+    QCheckBox *m_showLow = nullptr;
+    QDoubleSpinBox *m_lowPercent = nullptr;
+    QLabel *m_depthText = nullptr;
     double m_modelMin = 0., m_modelMax = 0.;
+    double m_rotationPeriod = 6.;
     std::atomic_bool m_cancel{false};
     QTabWidget *m_tabs = nullptr;
     QWidget *m_inputs = nullptr, *m_parameters = nullptr;
@@ -88,11 +114,13 @@ class ImagingDialog : public QDialog {
     QProgressBar *m_progress = nullptr;
     QPushButton *m_validateButton = nullptr, *m_runButton = nullptr, *m_cancelButton = nullptr,
                 *m_importButton = nullptr, *m_exportButton = nullptr, *m_excludeButton = nullptr,
-                *m_includeButton = nullptr, *m_openButton = nullptr, *m_buildModelButton = nullptr;
+                *m_includeButton = nullptr, *m_openButton = nullptr, *m_buildModelButton = nullptr,
+                *m_saveModelGifButton = nullptr;
     QComboBox *m_method = nullptr, *m_plane = nullptr, *m_display = nullptr, *m_psfChoice = nullptr;
     QSpinBox *m_slice = nullptr;
     ScientificPlot *m_image = nullptr;
     QComboBox *m_modelSource = nullptr;
+    QLabel *m_psfSelection = nullptr;
     QLineEdit *m_modelLevel = nullptr;
     BondFigures *m_model = nullptr;
     SpectrumPlot *m_sensitivity = nullptr, *m_trajectory = nullptr, *m_spectrum = nullptr;

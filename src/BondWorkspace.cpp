@@ -6,6 +6,7 @@
 #include "ScientificPlot.h"
 #include "SpectrumPlot.h"
 #include "WorkflowUi.h"
+#include "WorkspacePaths.h"
 #include <QJsonArray>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -14,8 +15,11 @@
 #include <utility>
 
 namespace {
+using WorkspacePaths::Kind;
+using WorkspacePaths::Workflow;
+
 const QString volumes = QStringLiteral("XRI HDF5 (*.h5 *.hdf5)");
-constexpr int directContrastMode = 2;
+enum MapMode { SingleEnergy, EnergyDifference, IntervalIntegral };
 
 QLabel *hint(const QString &text = {}) {
     auto label = new QLabel(text);
@@ -88,8 +92,8 @@ QPair<double, double> readComptonWindows(ComptonSettings &parameters, const QStr
     return match.first();
 }
 
-BondSpectralSettings contrastComptonSettings(ComptonTransfer ref, const ComptonSettings &parameters,
-                                            QPair<double, double> match) {
+BondSpectralSettings comptonSettings(ComptonTransfer ref, const ComptonSettings &parameters,
+                                     QPair<double, double> match) {
     const auto incidentWindow = [analyzer = ref.analyzerKev](QPair<double, double> range) {
         return qMakePair(analyzer + range.first / 1000, analyzer + range.second / 1000);
     };
@@ -157,6 +161,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     WorkflowUi::compact(root);
     m_tabs = new QTabWidget;
     m_tabs->setObjectName("BondSteps");
+    m_tabs->setUsesScrollButtons(true);
     m_viewBar = new QWidget;
     auto viewRow = new QHBoxLayout(m_viewBar);
     viewRow->setContentsMargins(0, 0, 0, 0);
@@ -174,20 +179,17 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_selectedEnergy = new QLabel;
     energyPicker->addWidget(m_selectedEnergy);
     viewRow->addWidget(m_singleEnergy);
-    m_tabs->setCornerWidget(m_viewBar);
+    auto import = WorkflowUi::button("folder-open", tr("载入已有方案…"));
+    import->setObjectName("ImportBondConfig");
+    auto saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
+    saveConfig->setObjectName("SaveBondConfig");
+    auto reopen = WorkflowUi::button("folder-open", tr("查看已有结果…"));
+    m_configTools = WorkflowUi::cornerTools({import, saveConfig, reopen});
+    m_tabs->setCornerWidget(WorkflowUi::cornerTools({m_configTools, m_viewBar}));
     root->addWidget(m_tabs, 1);
     auto filePage = new QWidget;
     auto fileLayout = new QVBoxLayout(filePage);
     WorkflowUi::compact(fileLayout);
-    auto fileActions = new QHBoxLayout;
-    auto import = WorkflowUi::button("folder-open", tr("载入已有方案…"));
-    auto saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
-    auto reopen = WorkflowUi::button("folder-open", tr("查看已有结果…"));
-    fileActions->addWidget(import);
-    fileActions->addWidget(saveConfig);
-    fileActions->addWidget(reopen);
-    fileActions->addStretch();
-    fileLayout->addLayout(fileActions);
     auto columns = new QHBoxLayout;
     auto column = [&](int stretch) {
         auto body = new QWidget;
@@ -235,168 +237,48 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_roi = static_cast<QLineEdit *>(m_inputs["input.roi_table"]);
     left->addStretch();
 
-    auto output = new QGroupBox(tr("结果与诊断"));
-    auto outputForm = new QFormLayout(output);
-    m_output = new QLineEdit;
-    m_output->setObjectName("BondOutput");
-    auto chooseOutput = new QPushButton(tr("浏览…"));
-    auto outputRow = new QHBoxLayout;
-    outputRow->addWidget(m_output, 1);
-    outputRow->addWidget(chooseOutput);
-    outputForm->addRow(tr("新结果文件"), outputRow);
-    connect(chooseOutput, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getSaveFileName(this, tr("选择 HDF5 保存位置"), m_output->text(), volumes, nullptr,
-                                                 QFileDialog::DontConfirmOverwrite);
-        if (!path.isEmpty())
-            m_output->setText(QFileInfo(path).suffix().isEmpty() ? path + ".h5" : path);
-    });
-    auto volumeOptions = new QWidget;
-    auto volumeOutput = new QVBoxLayout(volumeOptions);
-    volumeOutput->setContentsMargins(0, 0, 0, 0);
-    auto flag = [&](const QString &key, const QString &label) {
-        auto box = new QCheckBox(label);
-        box->setObjectName(key);
-        m_inputs[key] = box;
-        volumeOutput->addWidget(box);
-    };
-    flag("output.save_diagnostics", tr("保存积分谱的各晶体正演矩阵、预测和残差"));
-    flag("output.plots", tr("保存积分谱诊断 PNG"));
-    outputForm->addRow(WorkflowUi::disclosure(tr("四维重建诊断"), volumeOptions));
     right->addStretch();
     fileLayout->addLayout(columns, 1);
-    auto next = WorkflowUi::button("check", tr("校验输入并设置谱处理"));
+    auto next = WorkflowUi::button("check", tr("校验数据"));
     next->setObjectName("CheckBondInputs");
     fileLayout->addWidget(next, 0, Qt::AlignRight);
     m_tabs->addTab(filePage, tr("1 数据与 ROI"));
 
-    auto spectraPage = new QWidget;
-    auto spectraLayout = new QVBoxLayout(spectraPage);
-    WorkflowUi::compact(spectraLayout);
-    m_quality = hint(tr("校验输入后核对参与计算的晶体。"));
-    spectraLayout->addWidget(m_quality);
-    auto spectraColumns = new QHBoxLayout;
-    auto parameters = new QGroupBox(tr("谱处理与差值投影"));
-    auto spectrumForm = new QFormLayout(parameters);
-    spectrumForm->addRow(hint(tr("探测器谱按 I₀ × 曝光归一化。选择扣背底方法后，计算 S(Eb) − S(Ea)。")));
-    m_contrastMode = new QComboBox;
-    m_contrastMode->setObjectName("BondProjectionBackgroundMode");
-    m_contrastMode->addItems({tr("仅做 I₀ 与曝光归一化"), tr("线性扣背底"), tr("按 q 分流扣背底")});
-    spectrumForm->addRow(tr("谱处理"), m_contrastMode);
-    m_contrastBackground = new QLineEdit;
-    m_contrastBackground->setObjectName("BondProjectionBackground");
-    m_contrastBackground->setPlaceholderText(tr("起点:终点，可填多段"));
-    spectrumForm->addRow(tr("线性拟合区间 / keV"), m_contrastBackground);
-    auto contrastReference = WorkflowUi::button("sliders-horizontal", tr("宽谱与康普顿参数…"));
-    spectrumForm->addRow(contrastReference);
-    m_contrastEa = number(10, 0, 1000, 0);
-    m_contrastEb = number(10, 0, 1000, 0);
-    m_contrastEa->setObjectName("BondContrastEa");
-    m_contrastEb->setObjectName("BondContrastEb");
-    spectrumForm->addRow(tr("Ea 入射能量 / keV"), m_contrastEa);
-    spectrumForm->addRow(tr("Eb 入射能量 / keV"), m_contrastEb);
-    auto updateBackground = [this, spectrumForm, contrastReference](int mode) {
-        spectrumForm->setRowVisible(m_contrastBackground, mode != 0);
-        spectrumForm->setRowVisible(contrastReference, mode == 2);
-        invalidateProjection();
-    };
-    spectrumForm->setRowVisible(m_contrastBackground, false);
-    spectrumForm->setRowVisible(contrastReference, false);
-    auto spectrumActions = new QHBoxLayout;
-    auto prepare = WorkflowUi::button("play", tr("计算差值投影"));
-    prepare->setObjectName("PrepareBondProjection");
-    spectrumActions->addWidget(prepare);
-    spectrumActions->addStretch();
-    spectrumForm->addRow(spectrumActions);
-    auto settings = new QWidget;
-    auto settingsLayout = new QVBoxLayout(settings);
-    settingsLayout->setContentsMargins(0, 0, 0, 0);
-    settingsLayout->addWidget(parameters);
-    auto settingsScroll = new QScrollArea;
-    settingsScroll->setWidgetResizable(true);
-    settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setWidget(settings);
-    auto spectrumControls = new QVBoxLayout;
-    spectrumControls->addWidget(settingsScroll, 1);
-    spectraColumns->addLayout(spectrumControls, 2);
-
-    auto details = m_spectraDetails = new QTabWidget;
-    m_crystals = new QTableWidget(0, 3);
-    m_crystals->setObjectName("BondCrystalSelection");
-    m_crystals->setHorizontalHeaderLabels({tr("纳入"), tr("晶体"), tr("ROI 像素")});
-    m_crystals->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_crystals->verticalHeader()->hide();
-    m_crystals->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_diagnostics = new QPlainTextEdit;
-    m_diagnostics->setObjectName("BondDiagnostics");
-    m_diagnostics->setReadOnly(true);
-    details->addTab(m_crystals, tr("晶体 ROI"));
-    details->addTab(m_diagnostics, tr("校验与计算记录"));
-    m_projectionPanel = new QWidget;
-    auto previewLayout = new QVBoxLayout(m_projectionPanel);
-    auto previewControls = new QHBoxLayout;
-    previewControls->addWidget(new QLabel(tr("晶体")));
-    m_projectionCrystal = new QComboBox;
-    m_projectionCrystal->setObjectName("BondProjectionCrystal");
-    previewControls->addWidget(m_projectionCrystal, 1);
-    previewLayout->addLayout(previewControls);
-    m_projectionPlot = new ScientificPlot;
-    m_projectionPlot->setObjectName("BondProjectionPlot");
-    m_projectionPlot->setAxisLabels(tr("Y / mm"), tr("Z / mm"));
-    previewLayout->addWidget(m_projectionPlot, 1);
-    details->addTab(m_projectionPanel, tr("差值投影（YZ）"));
-    details->setTabEnabled(details->indexOf(m_projectionPanel), false);
-    spectraColumns->addWidget(details, 3);
-    spectraLayout->addLayout(spectraColumns, 1);
-    auto solver = new QGroupBox(tr("空间反演"));
-    auto solverForm = new QFormLayout(solver);
-    m_xStep = new QLineEdit;
-    m_xStep->setObjectName("BondXStep");
-    m_xStep->setPlaceholderText(tr("自动（按薄膜标定）"));
-    solverForm->addRow(tr("X 网格步长 / mm"), m_xStep);
-    m_fitGains = new QCheckBox(tr("拟合相对晶体增益"));
-    m_fitGains->setChecked(true);
-    m_anchor = new QLineEdit("36_VU-C1");
-    m_anchor->setObjectName("BondGainAnchor");
-    m_iterations = new QSpinBox;
-    m_iterations->setRange(1, 1000000);
-    m_iterations->setValue(20000);
-    m_tolerance = number(12, 1e-12, 1., 1e-7);
-    m_tolerance->setSingleStep(1e-7);
-    solverForm->addRow(m_fitGains);
-    solverForm->addRow(tr("增益锚点（编号_标签）"), m_anchor);
-    solverForm->addRow(tr("NNLS 最大迭代"), m_iterations);
-    solverForm->addRow(tr("投影 KKT 容差"), m_tolerance);
-    settingsLayout->addWidget(solver);
-    settingsLayout->addWidget(output);
-    settingsLayout->addStretch();
-    m_runContrast = WorkflowUi::button("play", tr("反演三维衬度并保存"));
-    m_runContrast->setObjectName("RunBondContrast");
-    m_runContrast->setEnabled(false);
-    m_runContrast->setToolTip(tr("计算差值投影后可开始反演。"));
-    m_run = WorkflowUi::button("play", tr("重建四维体素并保存"));
-    m_run->setObjectName("RunBondVolume");
-    m_run->setToolTip(tr("使用所有能量通道重建四维体素，用于体素谱和参考谱拟合。"));
-    auto reconstructionActions = new QHBoxLayout;
-    reconstructionActions->addWidget(m_runContrast);
-    reconstructionActions->addWidget(m_run);
-    reconstructionActions->addStretch();
-    spectrumControls->addLayout(reconstructionActions);
-    m_tabs->addTab(spectraPage, tr("2 谱学处理与空间信息重建"));
-
-    connect(m_contrastMode, &QComboBox::currentIndexChanged, this, updateBackground);
-    for (auto *energy : {m_contrastEa, m_contrastEb})
-        connect(energy, &QDoubleSpinBox::valueChanged, this, &BondWorkspace::invalidateProjection);
-    connect(m_contrastBackground, &QLineEdit::textChanged, this, &BondWorkspace::invalidateProjection);
-    connect(contrastReference, &QPushButton::clicked, this, [this] { m_comptonOptions->exec(); });
-    connect(prepare, &QPushButton::clicked, this, &BondWorkspace::prepareProjection);
-    connect(m_projectionCrystal, &QComboBox::currentIndexChanged, this, &BondWorkspace::refreshProjection);
-    connect(m_runContrast, &QPushButton::clicked, this, &BondWorkspace::startContrast);
+    m_tabs->addTab(createSpatialPage(), tr("2 ROI标定"));
+    m_tabs->addTab(createCrystalPage(), tr("3 筛选晶体"));
+    m_tabs->addTab(createVolumeBuildPage(), tr("4 四维体素重建"));
 
     auto voxelPage = new QWidget;
     auto voxelLayout = new QVBoxLayout(voxelPage);
     WorkflowUi::compact(voxelLayout);
     m_volumeQuality = hint({});
     voxelLayout->addWidget(m_volumeQuality);
+    m_volumeFileStatus = hint();
+    voxelLayout->addWidget(m_volumeFileStatus);
+    m_volumeSaveTools = new QWidget;
+    auto saveRow = new QHBoxLayout(m_volumeSaveTools);
+    saveRow->setContentsMargins(0, 0, 0, 0);
+    saveRow->addWidget(new QLabel(tr("新结果文件")));
+    m_output = new QLineEdit;
+    m_output->setObjectName("BondOutput");
+    saveRow->addWidget(m_output, 1);
+    m_chooseOutput = new QPushButton(tr("浏览…"));
+    saveRow->addWidget(m_chooseOutput);
+    m_workspaceOutput = hint();
+    m_workspaceOutput->setObjectName("IxsWorkspaceOutput");
+    saveRow->addWidget(m_workspaceOutput, 1);
+    refreshOutputDestination();
+    connect(m_chooseOutput, &QPushButton::clicked, this, [this] {
+        auto path = QFileDialog::getSaveFileName(this, tr("选择 HDF5 保存位置"), m_output->text(), volumes, nullptr,
+                                                QFileDialog::DontConfirmOverwrite);
+        if (!path.isEmpty())
+            m_output->setText(QFileInfo(path).suffix().isEmpty() ? path + ".h5" : path);
+    });
+    auto saveVolume = WorkflowUi::button("save", tr("保存原始四维体素 HDF5"));
+    saveVolume->setObjectName("SaveBondVolume");
+    saveRow->addWidget(saveVolume);
+    connect(saveVolume, &QPushButton::clicked, this, &BondWorkspace::saveResult);
+    voxelLayout->addWidget(m_volumeSaveTools);
     auto coordinates = new QHBoxLayout;
     coordinates->addWidget(new QLabel(tr("空间索引")));
     m_x = index("BondVoxelX");
@@ -459,8 +341,8 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_normalization = new QLineEdit;
     m_normalization->setObjectName("BondAreaNormalization");
     m_normalization->setPlaceholderText(tr("起点:终点"));
-    auto apply = WorkflowUi::button("filter", tr("应用谱处理"));
-    apply->setObjectName("ApplyBondSpectralProcessing");
+    m_applyProcessing = WorkflowUi::button("filter", tr("应用谱处理"));
+    m_applyProcessing->setObjectName("ApplyBondSpectralProcessing");
     auto linearLabel = new QLabel(tr("线性拟合 / keV"));
     fitRow->addWidget(linearLabel);
     fitRow->addWidget(m_background, 2);
@@ -468,7 +350,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     normalizationLabel->setToolTip(tr("可选。在扣背底之后对指定区间积分并归一化。"));
     fitRow->addWidget(normalizationLabel);
     fitRow->addWidget(m_normalization, 1);
-    fitRow->addWidget(apply);
+    fitRow->addWidget(m_applyProcessing);
     processingLayout->addLayout(fitRow);
     auto processingHint = hint(tr("线性拟合可填多段入射能区。仅做面积归一化时，线性拟合区留空。"));
     processingLayout->addWidget(processingHint);
@@ -508,7 +390,8 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_spectralFigure->setObjectName("BondEnergyPosition");
     m_plots->addTab(m_spectralFigure, tr("沿 X 三维谱图"));
     voxelLayout->addWidget(m_plots, 1);
-    auto toFigures = WorkflowUi::button("layers", tr("查看衬度结果"));
+    auto toFigures = WorkflowUi::button("layers", tr("查看三维结果分析"));
+    toFigures->setObjectName("AnalyzeBondVolume");
     m_plots->setCornerWidget(toFigures);
 
     auto figurePage = new QWidget;
@@ -520,7 +403,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     auto mapRow = new QHBoxLayout;
     m_mode = new QComboBox;
     m_mode->setObjectName("BondContrastMode");
-    m_mode->addItems({tr("单能量强度"), tr("双能量差值 S(Eb) − S(Ea)")});
+    m_mode->addItems({tr("单能量强度"), tr("四维体素的双能量差值 S(Eb) − S(Ea)"), tr("区间积分强度")});
     m_dualEnergy = new QWidget;
     auto dualEnergyRow = new QHBoxLayout(m_dualEnergy);
     dualEnergyRow->setContentsMargins(10, 0, 0, 0);
@@ -534,6 +417,18 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     dualEnergyRow->addWidget(new QLabel("Eb"));
     dualEnergyRow->addWidget(m_eb);
     mapRow->addWidget(m_dualEnergy);
+    m_integralBounds = new QWidget;
+    auto boundsRow = new QHBoxLayout(m_integralBounds);
+    boundsRow->setContentsMargins(10, 0, 0, 0);
+    m_integralLo = number(10, -1e5, 1e5, 0.);
+    m_integralHi = number(10, -1e5, 1e5, 0.);
+    m_integralLo->setObjectName("BondIntegralLo");
+    m_integralHi->setObjectName("BondIntegralHi");
+    boundsRow->addWidget(new QLabel(tr("积分下限")));
+    boundsRow->addWidget(m_integralLo);
+    boundsRow->addWidget(new QLabel(tr("积分上限")));
+    boundsRow->addWidget(m_integralHi);
+    mapRow->addWidget(m_integralBounds);
     mapRow->addStretch();
     mapControlsLayout->addLayout(mapRow);
     m_mapInfo = hint();
@@ -569,13 +464,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_level = number(12, -1e12, 1e12, 0);
     m_level2 = number(12, -1e12, 1e12, 0);
     m_secondSurface = new QCheckBox(tr("第二等值面"));
-    auto mesh = WorkflowUi::button("layers", tr("生成等值面"));
-    mesh->setObjectName("BuildBondSurface");
+    m_buildSurface = WorkflowUi::button("layers", tr("生成等值面"));
+    m_buildSurface->setObjectName("BuildBondSurface");
     surfaceRow->addWidget(new QLabel(tr("阈值")));
     surfaceRow->addWidget(m_level);
     surfaceRow->addWidget(m_secondSurface);
     surfaceRow->addWidget(m_level2);
-    surfaceRow->addWidget(mesh);
+    surfaceRow->addWidget(m_buildSurface);
     surfaceRow->addStretch();
     surfaceLayout->addLayout(surfaceRow);
     m_surface = new BondFigures;
@@ -585,14 +480,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_figures->addTab(surfacePage, tr("三维等值面"));
     m_referencePage = createReferenceMaps();
     m_figures->addTab(m_referencePage, tr("参考谱拟合四联图"));
-    m_figures->setTabEnabled(m_figures->indexOf(m_referencePage), false);
     connect(m_figures, &QTabWidget::currentChanged, this, [this] { syncViewControls(); });
     figureLayout->addWidget(m_figures, 1);
-    m_tabs->addTab(figurePage, tr("3 三维体素"));
-    m_tabs->addTab(voxelPage, tr("4 四维体素与瀑布图"));
-    for (auto stage : {Spectra, Results, Volume})
-        m_tabs->setTabEnabled(stage, false);
-
+    m_tabs->addTab(voxelPage, tr("5 四维结果与体素谱"));
+    m_tabs->addTab(figurePage, tr("6 三维结果分析"));
+    m_stepHint = hint();
+    m_stepHint->setObjectName("BondStepHint");
+    root->addWidget(m_stepHint);
     auto footer = new QHBoxLayout;
     m_status = hint();
     m_status->setObjectName("BondStatus");
@@ -607,18 +501,22 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     root->addLayout(footer);
 
     connect(import, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("载入已有方案"), {}, "JSON (*.json)");
+        auto path = QFileDialog::getOpenFileName(this, tr("载入已有方案"),
+                                                 WorkspacePaths::directory(Workflow::Ixs, Kind::Config),
+                                                 "JSON (*.json)");
         if (!path.isEmpty())
             importConfiguration(path);
     });
     connect(saveConfig, &QPushButton::clicked, this, [this] {
-        const auto path =
-            QFileDialog::getSaveFileName(this, tr("保存当前配置"), "bond.config.json", "JSON (*.json)");
+        const auto path = WorkspacePaths::saveFile(this, Workflow::Ixs, Kind::Config, m_sample->text(),
+                                                   tr("保存当前配置"), "ixs.config.json", "JSON (*.json)",
+                                                   "bond.config.json");
         if (!path.isEmpty())
             saveConfiguration(path);
     });
     connect(reopen, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("选择 XRI 三维差值或四维结果"), {}, volumes);
+        auto path = QFileDialog::getOpenFileName(this, tr("选择 XRI 四维体素结果"),
+                                                 WorkspacePaths::directory(Workflow::Ixs, Kind::Result), volumes);
         if (!path.isEmpty())
             openVolume(path);
     });
@@ -643,7 +541,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             excluded.append(id);
         const QSignalBlocker block(field);
         ImagingInputUi::write(field, excluded);
-        invalidateProjection();
+        invalidateSpatial();
     });
     connect(m_loss, &QCheckBox::toggled, this, [this] { changeEnergyUnits(); });
     connect(m_analyzer, &QDoubleSpinBox::valueChanged, this, [this] { changeEnergyUnits(); });
@@ -652,10 +550,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             return;
         syncViewControls();
         refreshVoxel(false);
-        if (m_mode->currentIndex() == 0)
+        if (m_mode->currentIndex() == SingleEnergy)
             refreshMap();
     });
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this] { syncViewControls(); });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
+        syncViewControls();
+        refreshWorkflow();
+    });
     connect(m_plots, &QTabWidget::currentChanged, this, [this] { syncViewControls(); });
     connect(m_spectralStyle, &QComboBox::currentIndexChanged, this, [this] { refreshVoxel(); });
     for (auto pos : {m_x, m_y, m_z})
@@ -666,27 +567,25 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         m_y->setValue(p.x());
         refreshVoxel(true, false);
     });
-    connect(apply, &QPushButton::clicked, this, [this] { applySpectralProcessing(); });
+    connect(m_applyProcessing, &QPushButton::clicked, this, &BondWorkspace::applySpectralProcessing);
     connect(m_dataSource, &QComboBox::currentIndexChanged, this, [this] {
         refreshVoxel();
-        if (!showingContrast())
-            refreshMap();
+        refreshMap();
     });
     connect(m_mode, &QComboBox::currentIndexChanged, this, [this] {
         syncViewControls();
         refreshMap();
     });
-    for (auto e : {m_ea, m_eb})
+    for (auto e : {m_ea, m_eb, m_integralLo, m_integralHi})
         connect(e, &QDoubleSpinBox::valueChanged, this, [this] { refreshMap(); });
     for (auto z : {m_firstZ, m_countZ, m_strideZ})
         connect(z, &QSpinBox::valueChanged, this, [this] { refreshMontage(); });
-    connect(mesh, &QPushButton::clicked, this, [this] { buildSurfaces(); });
+    connect(m_buildSurface, &QPushButton::clicked, this, &BondWorkspace::buildSurfaces);
     m_level2->hide();
     connect(m_secondSurface, &QCheckBox::toggled, m_level2, &QDoubleSpinBox::setVisible);
     connect(&m_watcher, &QFutureWatcher<Work>::finished, this, [this] {
         auto result = m_watcher.result();
-        m_tabs->setEnabled(true);
-        m_viewBar->setEnabled(true);
+        setBusy(false);
         m_cancel->hide();
         m_progress->hide();
         const auto pending = std::exchange(m_pendingRoi, {});
@@ -696,30 +595,35 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             status(result.error, true);
             return;
         }
-        if (result.validation) {
-            showValidation(*result.validation);
-            m_tabs->setTabEnabled(Spectra, true);
-            selectStage(Spectra);
+        if (result.inputs) {
+            m_checkedInputs = std::move(result.inputs);
+            showValidation(m_checkedInputs->validation);
+            refreshWorkflow();
+            selectStage(Spatial);
         }
-        if (result.projection) {
-            m_projection = std::move(result.projection);
-            m_runContrast->setEnabled(true);
-            {
-                const QSignalBlocker block(m_projectionCrystal);
-                m_projectionCrystal->clear();
-                for (const auto &roi : m_projection->validation.rois)
-                    if (m_projection->differenceByCrystal.count(roi.key) != 0)
-                        m_projectionCrystal->addItem(roi.label, roi.key);
-            }
-            refreshProjection();
-            m_spectraDetails->setTabEnabled(m_spectraDetails->indexOf(m_projectionPanel), true);
-            m_spectraDetails->setCurrentWidget(m_projectionPanel);
-            selectStage(Spectra);
+        if (result.spatial) {
+            m_spatial = std::move(result.spatial);
+            showSpatialSummary();
+            refreshWorkflow();
         }
-        if (result.volume)
+        if (result.channels) {
+            m_channels = std::move(result.channels);
+            showChannelSummary();
+            refreshWorkflow();
+        }
+        if (result.volume) {
+            m_volumePendingSave = result.resultPath.isEmpty();
+            m_volumeFileStatus->setText(m_volumePendingSave ? tr("四维体素已求解，尚未保存。")
+                                                            : tr("结果文件：%1").arg(result.resultPath));
             installVolume(std::move(*result.volume));
-        if (result.contrast)
-            installContrast(std::move(*result.contrast));
+        }
+        if (result.savedVolume) {
+            m_volumePendingSave = false;
+            m_volume.bandDiagnostics.clear();
+            m_volume.diagnosticImage = {};
+            m_volumeFileStatus->setText(tr("结果文件：%1").arg(result.resultPath));
+            syncViewControls();
+        }
         if (result.processed) {
             m_processed = std::move(*result.processed);
             m_normalized = result.normalized;
@@ -743,8 +647,6 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         status(result.message);
         if (!pending.second.isEmpty())
             useRoiDraft(pending.first, pending.second);
-        if (result.contrast && !m_field.isEmpty())
-            buildSurfaces(result.message);
     });
     auto initial = Imaging::defaults();
     auto input = initial.value("input").toObject();
@@ -759,31 +661,212 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     syncViewControls();
 }
 
+QWidget *BondWorkspace::createCrystalPage() {
+    auto crystalsPage = new QWidget;
+    auto crystalsLayout = new QVBoxLayout(crystalsPage);
+    WorkflowUi::compact(crystalsLayout);
+    m_quality = hint(tr("校验输入后核对参与计算的晶体。"));
+    crystalsLayout->addWidget(m_quality);
+    auto inputDetails = new QTabWidget;
+    m_crystals = new QTableWidget(0, 3);
+    m_crystals->setObjectName("BondCrystalSelection");
+    m_crystals->setHorizontalHeaderLabels({tr("纳入"), tr("晶体"), tr("ROI 像素")});
+    m_crystals->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_crystals->verticalHeader()->hide();
+    m_crystals->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_diagnostics = new QPlainTextEdit;
+    m_diagnostics->setObjectName("BondDiagnostics");
+    m_diagnostics->setReadOnly(true);
+    inputDetails->addTab(m_crystals, tr("晶体 ROI"));
+    inputDetails->addTab(m_diagnostics, tr("输入校验记录"));
+    crystalsLayout->addWidget(inputDetails, 1);
+    auto actions = new QHBoxLayout;
+    actions->addStretch();
+    m_backToSpatial = WorkflowUi::button("chevron-left", tr("返回第 2 步更新标定"));
+    m_backToSpatial->setObjectName("UpdateBondSpatial");
+    actions->addWidget(m_backToSpatial);
+    connect(m_backToSpatial, &QPushButton::clicked, this, [this] { selectStage(Spatial); });
+    m_confirmCrystals = WorkflowUi::button("chevron-right", tr("确认晶体并进入四维重建"));
+    m_confirmCrystals->setObjectName("ConfirmBondCrystals");
+    actions->addWidget(m_confirmCrystals);
+    connect(m_confirmCrystals, &QPushButton::clicked, this, &BondWorkspace::confirmCrystals);
+    crystalsLayout->addLayout(actions);
+    return crystalsPage;
+}
+
+QWidget *BondWorkspace::createSpatialPage() {
+    auto spatialPage = new QWidget;
+    auto spatialLayout = new QVBoxLayout(spatialPage);
+    WorkflowUi::compact(spatialLayout);
+    spatialLayout->addWidget(hint(tr("用薄膜标定晶体的空间响应，用样品积分谱拟合相对增益。两条路线共用这套模型。")));
+    auto solver = new QGroupBox(tr("ROI 标定参数"));
+    auto solverForm = new QFormLayout(solver);
+    m_xStep = new QLineEdit;
+    m_xStep->setObjectName("BondXStep");
+    m_xStep->setPlaceholderText(tr("自动（按薄膜标定）"));
+    solverForm->addRow(tr("X 网格步长 / mm"), m_xStep);
+    m_fitGains = new QCheckBox(tr("拟合相对晶体增益"));
+    m_fitGains->setChecked(true);
+    m_anchor = new QLineEdit("36_VU-C1");
+    m_anchor->setObjectName("BondGainAnchor");
+    m_iterations = new QSpinBox;
+    m_iterations->setRange(1, 1000000);
+    m_iterations->setValue(20000);
+    m_tolerance = number(12, 1e-12, 1., 1e-7);
+    m_tolerance->setSingleStep(1e-7);
+    solverForm->addRow(m_fitGains);
+    solverForm->addRow(tr("增益锚点（编号_标签）"), m_anchor);
+    solverForm->addRow(tr("NNLS 最大迭代"), m_iterations);
+    solverForm->addRow(tr("投影 KKT 容差"), m_tolerance);
+    m_calibrate = WorkflowUi::button("play", tr("计算 ROI 标定"));
+    m_calibrate->setObjectName("PrepareBondSpatial");
+    solverForm->addRow(m_calibrate);
+    auto spatialColumns = new QHBoxLayout;
+    auto spatialControls = new QVBoxLayout;
+    spatialControls->addWidget(solver);
+    spatialControls->addStretch();
+    spatialColumns->addLayout(spatialControls, 2);
+    auto spatialReview = new QVBoxLayout;
+    m_spatialStatus = hint(tr("计算后检查体素网格、采用的晶体和增益收敛状态。"));
+    m_spatialStatus->setObjectName("BondSpatialSummary");
+    spatialReview->addWidget(m_spatialStatus);
+    auto spatialDetails = new QTabWidget;
+    m_spatialTable = new QTableWidget(0, 3);
+    m_spatialTable->setObjectName("BondSpatialCrystals");
+    m_spatialTable->setHorizontalHeaderLabels({tr("晶体编号"), tr("相对增益"), tr("空间模型或拒绝原因")});
+    m_spatialTable->horizontalHeader()->setStretchLastSection(true);
+    m_spatialTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    spatialDetails->addTab(m_spatialTable, tr("晶体标定"));
+    m_spatialDiagnostics = new QPlainTextEdit;
+    m_spatialDiagnostics->setReadOnly(true);
+    spatialDetails->addTab(m_spatialDiagnostics, tr("标定记录"));
+    spatialReview->addWidget(spatialDetails, 1);
+    spatialColumns->addLayout(spatialReview, 3);
+    spatialLayout->addLayout(spatialColumns, 1);
+    m_nextAfterSpatial = WorkflowUi::button("chevron-right", tr("下一步：筛选晶体"));
+    m_nextAfterSpatial->setObjectName("ContinueBondSpatial");
+    spatialLayout->addWidget(m_nextAfterSpatial, 0, Qt::AlignRight);
+    connect(m_calibrate, &QPushButton::clicked, this, &BondWorkspace::prepareSpatial);
+    connect(m_nextAfterSpatial, &QPushButton::clicked, this, [this] { selectStage(Crystals); });
+    const auto invalidateCalibration = [this] { invalidateSpatial(); };
+    for (auto *field : {m_xStep, m_anchor})
+        connect(field, &QLineEdit::textChanged, this, invalidateCalibration);
+    connect(m_fitGains, &QCheckBox::toggled, this, invalidateCalibration);
+    connect(m_iterations, &QSpinBox::valueChanged, this, invalidateCalibration);
+    connect(m_tolerance, &QDoubleSpinBox::valueChanged, this, invalidateCalibration);
+    return spatialPage;
+}
+
+QWidget *BondWorkspace::createVolumeBuildPage() {
+    auto channelsPage = new QWidget;
+    auto channelsLayout = new QHBoxLayout(channelsPage);
+    WorkflowUi::compact(channelsLayout);
+    auto channelControls = new QVBoxLayout;
+    auto backProject = new QGroupBox(tr("1. 逐能量反投影"));
+    auto backLayout = new QVBoxLayout(backProject);
+    backLayout->addWidget(hint(tr("汇总各能量、各 YZ 位置的剂量归一化计数，应用共用空间模型得到逐能量反投影。")));
+    m_prepareChannels = WorkflowUi::button("play", tr("计算逐能量反投影"));
+    m_prepareChannels->setObjectName("PrepareBondChannels");
+    backLayout->addWidget(m_prepareChannels);
+    channelControls->addWidget(backProject);
+    auto volumeSolve = new QGroupBox(tr("2. 四维体素求解"));
+    auto solveLayout = new QVBoxLayout(volumeSolve);
+    solveLayout->addWidget(hint(tr("对每个入射能量独立求解非负体素。扣背底在求解后的体素谱上设置。")));
+    auto flag = [this, solveLayout](const QString &key, const QString &label) {
+        auto box = new QCheckBox(label);
+        box->setObjectName(key);
+        m_inputs[key] = box;
+        solveLayout->addWidget(box);
+    };
+    flag("output.save_diagnostics", tr("保存积分谱的各晶体正演矩阵、预测和残差"));
+    flag("output.plots", tr("保存积分谱诊断 PNG"));
+    m_run = WorkflowUi::button("play", tr("求解四维体素"));
+    m_run->setObjectName("RunBondVolume");
+    solveLayout->addWidget(m_run);
+    channelControls->addWidget(volumeSolve);
+    channelControls->addStretch();
+    channelsLayout->addLayout(channelControls, 2);
+    auto channelReview = new QVBoxLayout;
+    m_channelStatus = hint(tr("计算后检查各能量通道的归一化探测器信号。"));
+    m_channelStatus->setObjectName("BondChannelSummary");
+    channelReview->addWidget(m_channelStatus);
+    m_channelTable = new QTableWidget(0, 2);
+    m_channelTable->setObjectName("BondChannelInputs");
+    m_channelTable->setHorizontalHeaderLabels({tr("入射能量 / keV"), tr("探测器信号 L2 范数")});
+    m_channelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_channelTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    channelReview->addWidget(m_channelTable, 1);
+    channelsLayout->addLayout(channelReview, 3);
+    connect(m_prepareChannels, &QPushButton::clicked, this, &BondWorkspace::prepareChannels);
+    return channelsPage;
+}
+
 BondWorkspace::~BondWorkspace() {
     m_stop.store(true);
     m_watcher.waitForFinished();
 }
 
 bool BondWorkspace::isBusy() const {
-    return !m_tabs->isEnabled();
+    return m_busy;
 }
 
 void BondWorkspace::selectStage(Stage stage) {
-    if (m_tabs->isTabEnabled(stage))
-        m_tabs->setCurrentIndex(stage);
+    m_tabs->setCurrentIndex(stage);
+}
+
+void BondWorkspace::confirmCrystals() {
+    if (isBusy() || !m_spatial)
+        return;
+    m_crystalsConfirmed = true;
+    refreshWorkflow();
+    selectStage(VolumeBuild);
+}
+
+void BondWorkspace::refreshWorkflow() {
+    const bool inputsReady = bool(m_checkedInputs);
+    const bool spatialReady = bool(m_spatial);
+    const bool reconstructionReady = spatialReady && m_crystalsConfirmed;
+    m_calibrate->setEnabled(inputsReady);
+    m_nextAfterSpatial->setEnabled(spatialReady);
+    m_confirmCrystals->setEnabled(spatialReady);
+    m_backToSpatial->setVisible(inputsReady && !spatialReady);
+    m_prepareChannels->setEnabled(reconstructionReady);
+    m_run->setEnabled(bool(m_channels));
+    m_applyProcessing->setEnabled(hasVolume());
+    m_buildSurface->setEnabled(hasVolume());
+    m_fitReference->setEnabled(hasVolume());
+
+    const int step = m_tabs->currentIndex();
+    QString hint;
+    if (step >= Volume && !hasVolume())
+        hint = tr("请先完成第 4 步四维体素重建，或在第 1 步打开已有结果。");
+    else if (step >= Spatial && step <= VolumeBuild && !inputsReady)
+        hint = tr("请先在第 1 步校验数据。");
+    else if (step >= Crystals && step <= VolumeBuild && !spatialReady)
+        hint = tr("请先完成第 2 步 ROI 标定。");
+    else if (step == VolumeBuild && !m_crystalsConfirmed)
+        hint = tr("请先在第 3 步确认晶体。");
+    m_stepHint->setText(hint);
+    m_stepHint->setVisible(!hint.isEmpty());
 }
 
 void BondWorkspace::syncViewControls() {
     const int step = m_tabs->currentIndex();
-    const bool voxel = m_plots->currentIndex() == 0, dual = m_mode->currentIndex() == 1;
+    const bool voxel = m_plots->currentIndex() == 0;
+    const int mode = m_mode->currentIndex();
     const bool referenceMaps = m_figures->currentWidget() == m_referencePage;
     m_mapControls->setVisible(!referenceMaps);
-    m_viewBar->setVisible(hasVolume() && (step == Volume || (step == Results && !referenceMaps && !showingContrast())));
-    m_singleEnergy->setVisible((step == Volume && voxel) || (step == Results && !dual));
-    m_dualEnergy->setVisible(dual);
+    const bool showViewTools = hasVolume() && (step == Volume || (step == Results && !referenceMaps));
+    m_configTools->setVisible(step == Inputs);
+    m_viewBar->setVisible(showViewTools);
+    m_tabs->cornerWidget()->setVisible(step == Inputs || showViewTools);
+    m_singleEnergy->setVisible((step == Volume && voxel) || (step == Results && mode == SingleEnergy));
+    m_dualEnergy->setVisible(mode == EnergyDifference);
+    m_integralBounds->setVisible(mode == IntervalIntegral);
     m_xControl->setVisible(voxel);
     m_voxelInfo->setVisible(voxel);
     m_spectralStyleControl->setVisible(!voxel);
+    m_volumeSaveTools->setVisible(m_volumePendingSave);
     if (hasVolume() && m_channel->value() < m_volume.axes[0].size()) {
         const double incident = m_volume.axes[0][m_channel->value()];
         m_selectedEnergy->setText(
@@ -795,37 +878,25 @@ void BondWorkspace::syncViewControls() {
 void BondWorkspace::invalidateInputs() {
     QFile roi(m_roi->text().trimmed());
     m_roiBytes = !roi.fileName().isEmpty() && roi.open(QIODevice::ReadOnly) ? roi.readAll() : QByteArray{};
-    if (m_tabs->currentIndex() == Spectra)
+    const int step = m_tabs->currentIndex();
+    if (step >= Spatial && step <= VolumeBuild)
         selectStage(Inputs);
-    invalidateProjection();
-    m_tabs->setTabEnabled(Spectra, false);
+    m_checkedInputs.reset();
+    invalidateSpatial();
     m_crystals->setRowCount(0);
     m_quality->setText(tr("校验输入后核对参与计算的晶体。"));
     m_diagnostics->clear();
 }
 
-void BondWorkspace::invalidateProjection() {
-    if (m_projection)
-        status(tr("输入或谱参数已变化，请重新计算差值投影。"));
-    m_projection.reset();
-    m_projectionPlot->setData({});
-    m_spectraDetails->setTabEnabled(m_spectraDetails->indexOf(m_projectionPanel), false);
-    m_runContrast->setEnabled(false);
-}
-
-void BondWorkspace::refreshProjection() {
-    if (!m_projection || m_projectionCrystal->currentIndex() < 0)
-        return;
-    const auto &axes = m_projection->validation.sample.axes;
-    const auto &y = axes[0], &z = axes[1];
-    const auto &detector = m_projection->differenceByCrystal.at(m_projectionCrystal->currentData().toString());
-    const auto sums = detector.colwise().sum().eval();
-    m_projectionPlot->setImageCoordinates(y.first(), y[1] - y[0], z.first(), z[1] - z[0]);
-    m_projectionPlot->setData(image(
-        int(y.size()), int(z.size()),
-        tr("%1 · ROI 像素差值和 · S(%2) − S(%3)")
-            .arg(m_projectionCrystal->currentText(), compact(m_projection->eb), compact(m_projection->ea)),
-        [&](int col, int row) { return sums[col * z.size() + row]; }));
+void BondWorkspace::invalidateSpatial() {
+    if (m_spatial)
+        status(tr("晶体选择或空间参数已变更，请重新计算 ROI 标定。"));
+    m_channels.reset();
+    m_spatial.reset();
+    m_crystalsConfirmed = false;
+    showSpatialSummary();
+    showChannelSummary();
+    refreshWorkflow();
 }
 
 void BondWorkspace::useRoiDraft(const QString &file, const QString &path) {
@@ -851,8 +922,7 @@ void BondWorkspace::status(const QString &text, bool error) {
 
 void BondWorkspace::launch(const QString &message, std::function<Work()> fn) {
     m_stop.store(false);
-    m_tabs->setEnabled(false);
-    m_viewBar->setEnabled(false);
+    setBusy(true);
     m_cancel->show();
     m_progress->setRange(0, 0);
     m_progress->show();
@@ -866,6 +936,14 @@ void BondWorkspace::launch(const QString &message, std::function<Work()> fn) {
             return result;
         }
     }));
+}
+
+void BondWorkspace::setBusy(bool busy) {
+    m_busy = busy;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        m_tabs->widget(i)->setEnabled(!busy);
+    m_configTools->setEnabled(!busy);
+    m_viewBar->setEnabled(!busy);
 }
 
 bool BondWorkspace::importConfiguration(const QString &path) {
@@ -887,7 +965,7 @@ bool BondWorkspace::importConfiguration(const QString &path) {
 bool BondWorkspace::saveConfiguration(const QString &path) {
     try {
         auto config = configuration();
-        if (!m_output->text().trimmed().isEmpty())
+        if (WorkspacePaths::root().isEmpty() && !m_output->text().trimmed().isEmpty())
             config["bond_output_file"] = QFileInfo(m_output->text().trimmed()).absoluteFilePath();
         ImageUtil::saveJson(path, config);
         status(tr("配置已保存到 %1").arg(path));
@@ -896,6 +974,14 @@ bool BondWorkspace::saveConfiguration(const QString &path) {
         status(QString::fromUtf8(error.what()), true);
         return false;
     }
+}
+
+void BondWorkspace::refreshOutputDestination() {
+    const auto folder = WorkspacePaths::directory(Workflow::Ixs, Kind::Result);
+    m_output->setVisible(folder.isEmpty());
+    m_chooseOutput->setVisible(folder.isEmpty());
+    m_workspaceOutput->setVisible(!folder.isEmpty());
+    m_workspaceOutput->setText(QDir::toNativeSeparators(folder));
 }
 
 void BondWorkspace::applyConfiguration(const QJsonObject &config) {
@@ -948,7 +1034,10 @@ QJsonObject BondWorkspace::configuration(bool spatial) const {
         c["grid"] = grid;
     }
     const auto output = m_output->text().trimmed();
-    runtime["output_dir"] = output.isEmpty() ? QDir::currentPath() : QFileInfo(output).absolutePath();
+    const auto workspace = WorkspacePaths::directory(Workflow::Ixs, Kind::Result);
+    runtime["output_dir"] = !workspace.isEmpty() ? workspace
+                          : output.isEmpty()    ? QDir::currentPath()
+                                                : QFileInfo(output).absolutePath();
     c["reconstruction"] = rec;
     c["runtime"] = runtime;
     return Imaging::config(c, QDir::currentPath());
@@ -962,8 +1051,8 @@ void BondWorkspace::validateInputs() {
         const auto config = configuration(false);
         launch(tr("正在校验扫描、剂量与 ROI…"), [this, config] {
             Work out;
-            out.validation = BondImaging::validate(config, m_stop);
-            out.message = tr("输入已校验。核对晶体后设置谱处理和 Ea、Eb。");
+            out.inputs = BondImaging::prepareInputs(config, m_stop);
+            out.message = tr("输入已校验。请计算 ROI 标定。");
             return out;
         });
     } catch (const std::exception &error) {
@@ -971,12 +1060,49 @@ void BondWorkspace::validateInputs() {
     }
 }
 
-QString BondWorkspace::outputPath(bool volume) {
+void BondWorkspace::prepareSpatial() {
+    if (isBusy() || !m_checkedInputs)
+        return;
+    try {
+        const auto config = configuration();
+        invalidateSpatial();
+        launch(tr("正在计算 ROI 标定…"), [this, config, inputs = m_checkedInputs] {
+            Work out;
+            out.spatial = BondImaging::prepareSpatial(
+                inputs, config, m_stop, [this](const QString &text, int percent) { reportProgress(text, percent); });
+            out.message = tr("ROI 标定完成。检查体素网格和晶体增益后继续。");
+            return out;
+        });
+    } catch (const std::exception &error) {
+        status(QString::fromUtf8(error.what()), true);
+    }
+}
+
+void BondWorkspace::prepareChannels() {
+    if (isBusy() || !m_spatial || !m_crystalsConfirmed)
+        return;
+    m_channels.reset();
+    showChannelSummary();
+    refreshWorkflow();
+    launch(tr("正在计算逐能量反投影…"), [this, spatial = m_spatial] {
+        Work out;
+        out.channels = BondImaging::prepareChannels(
+            spatial, m_stop, [this](const QString &text, int percent) { reportProgress(text, percent); });
+        out.message = tr("逐能量反投影已完成。检查通道后可求解四维体素。");
+        return out;
+    });
+}
+
+QString BondWorkspace::outputPath() {
+    const auto input = m_volume.diagnostics.value("config").toObject().value("input").toObject();
+    const auto automatic = WorkspacePaths::newPath(Workflow::Ixs, Kind::Result,
+                                                   input.value("sample_nxs").toString(), "voxels.h5");
+    if (!automatic.isEmpty())
+        return automatic;
     auto path = m_output->text().trimmed();
     if (path.isEmpty() || QFileInfo::exists(path)) {
-        const auto suffix = volume ? "_bond.h5" : "_contrast.h5";
-        const auto suggested = QFileInfo(m_sample->text()).completeBaseName() + suffix;
-        path = QFileDialog::getSaveFileName(this, volume ? tr("保存四维结果") : tr("保存三维差值结果"),
+        const auto suggested = QFileInfo(m_sample->text()).completeBaseName() + "_bond.h5";
+        path = QFileDialog::getSaveFileName(this, tr("保存四维结果"),
                                             QFileInfo(path).dir().filePath(suggested), volumes, nullptr,
                                             QFileDialog::DontConfirmOverwrite);
         if (path.isEmpty())
@@ -991,24 +1117,35 @@ QString BondWorkspace::outputPath(bool volume) {
 }
 
 void BondWorkspace::startVolume() {
-    if (isBusy() || !m_tabs->isTabEnabled(Spectra))
+    if (isBusy() || !m_channels)
         return;
     try {
-        const auto path = outputPath(true);
+        const auto output = configuration(false).value("output").toObject();
+        launch(tr("正在逐能量求解四维体素…"), [this, output, channels = m_channels] {
+            Work out;
+            out.volume = BondImaging::reconstructVolume(
+                *channels, output, m_stop, [this](const QString &text, int percent) { reportProgress(text, percent); });
+            out.message = tr("四维体素已求解。检查结果和通道收敛情况后保存。");
+            return out;
+        });
+    } catch (const std::exception &error) {
+        status(QString::fromUtf8(error.what()), true);
+    }
+}
+
+void BondWorkspace::saveResult() {
+    if (isBusy() || !m_volumePendingSave)
+        return;
+    try {
+        const auto path = outputPath();
         if (path.isEmpty())
             return;
-        const auto config = configuration();
-        if (config["output"].toObject()["plots"].toBool() &&
-            QFileInfo::exists(BondImaging::diagnosticPngPath(path)))
-            ImageUtil::fail(tr("诊断 PNG 已存在，请选择新的结果文件名。"));
-        launch(tr("正在校验四维重建输入…"), [this, config, path] {
+        launch(tr("正在写入 HDF5 结果…"), [this, path] {
             Work out;
-            out.volume = BondImaging::run(config, m_stop,
-                                          [this](const QString &text, int percent) { reportProgress(text, percent); });
-            BondImaging::save(path, *out.volume, m_stop);
-            out.volume->bandDiagnostics.clear();
-            out.volume->diagnosticImage = {};
-            out.message = tr("四维结果已保存到 %1").arg(path);
+            BondImaging::save(path, m_volume, m_stop);
+            out.savedVolume = true;
+            out.resultPath = path;
+            out.message = tr("结果已保存到 %1").arg(path);
             return out;
         });
     } catch (const std::exception &error) {
@@ -1029,121 +1166,14 @@ void BondWorkspace::reportProgress(const QString &text, int percent) {
         Qt::QueuedConnection);
 }
 
-void BondWorkspace::prepareProjection() {
-    if (isBusy() || !m_tabs->isTabEnabled(Spectra))
-        return;
-    try {
-        const double ea = m_contrastEa->value(), eb = m_contrastEb->value();
-        if (std::abs(eb - ea) <= 1e-9)
-            ImageUtil::fail(tr("请选择两个不同的入射能量。"));
-        const int mode = m_contrastMode->currentIndex();
-        const auto linear = mode == 0 ? SpectrumWindows{} : windows(m_contrastBackground->text());
-        if (mode == 1 && linear.isEmpty())
-            ImageUtil::fail(tr("请填写线性背底拟合区间。"));
-        const auto referencePath = m_wideSpectrum->text().trimmed();
-        if (mode == 2 && referencePath.isEmpty())
-            ImageUtil::fail(tr("请先选择含晶体 q 的逐晶体宽谱。"));
-        ComptonSettings parameters;
-        parameters.highQMin = m_highQ->value();
-        parameters.coreScale = m_coreScale->value();
-        parameters.valenceCutoffEv = m_valenceCutoff->value();
-        parameters.hfTable = m_hfTable->text().trimmed();
-        parameters.composition = m_composition->text().trimmed();
-        QStringList ranges;
-        for (auto edit : m_comptonWindows)
-            ranges.append(edit->text());
-
-        const auto config = configuration(false);
-        launch(tr("正在准备探测器谱与差值投影…"),
-               [this, config, ea, eb, mode, linear, referencePath, parameters, ranges] {
-            Work out;
-            QJsonObject spectral{{"mode", mode == 2 ? "momentum_split" : mode == 1 ? "linear" : "dose_normalized"}};
-            QJsonArray linearRanges;
-            for (auto range : linear)
-                linearRanges.append(QJsonArray{range.first, range.second});
-            spectral["linear_windows_kev"] = linearRanges;
-            if (mode == 2) {
-                spectral["wide_spectrum"] = QFileInfo(referencePath).absoluteFilePath();
-                spectral["high_q_min_inv_angstrom"] = parameters.highQMin;
-            }
-            const auto prepare = [&](const QVector<double> &axis, const QStringList &labels) {
-                QMap<QString, ComptonTransfer> transfers;
-                ComptonSettings highSettings = parameters;
-                QPair<double, double> match;
-                if (mode == 2) {
-                    const auto wide = wideReference(referencePath);
-                    const auto high = highMomentum(wide, labels, parameters.highQMin);
-                    if (high.size() != labels.size() && linear.isEmpty())
-                        ImageUtil::fail(tr("请填写低 q 线性拟合区间。"));
-                    if (!high.isEmpty()) {
-                        match = readComptonWindows(highSettings, ranges);
-                        transfers = transferCompton(wide, high, axis, highSettings, m_stop);
-                        spectral["high_q_crystals"] = QJsonArray::fromStringList(high);
-                        spectral["hf_table"] = QFileInfo(parameters.hfTable).absoluteFilePath();
-                        spectral["composition"] = parameters.composition;
-                        spectral["core_scale"] = parameters.coreScale;
-                        spectral["valence_cutoff_ev"] = parameters.valenceCutoffEv;
-                        spectral["high_q_windows_ev"] = QJsonObject{{"hf_normalization", ranges[0]},
-                                                                     {"core_tail", ranges[1]},
-                                                                     {"clean_reference", ranges[2]},
-                                                                     {"residual_linear", ranges[3]},
-                                                                     {"amplitude_match", ranges[4]}};
-                    }
-                }
-                QVector<BondSpectralSettings> spectra;
-                for (const auto &label : labels) {
-                    BondSpectralSettings settings;
-                    settings.background = linear;
-                    if (transfers.contains(label))
-                        settings = contrastComptonSettings(transfers.value(label), highSettings, match);
-                    spectra.append(std::move(settings));
-                }
-                return spectra;
-            };
-            auto projection = std::make_shared<BondProjection>(
-                BondImaging::prepareContrast(config, ea, eb, prepare, m_stop,
-                                            [this](const QString &text, int percent) { reportProgress(text, percent); }));
-            projection->spectralProcessing = spectral;
-            out.projection = std::move(projection);
-            out.message = tr("差值投影已完成。可在本页检查投影、设置空间参数并反演。");
-            return out;
-        });
-    } catch (const std::exception &error) {
-        status(QString::fromUtf8(error.what()), true);
-    }
-}
-
-void BondWorkspace::startContrast() {
-    if (isBusy() || !m_projection)
-        return;
-    try {
-        const auto path = outputPath(false);
-        if (path.isEmpty())
-            return;
-        const auto config = configuration();
-        launch(tr("正在准备空间反演…"), [this, config, path, projection = m_projection] {
-            Work out;
-            out.contrast = BondImaging::reconstructContrast(
-                *projection, config, m_stop,
-                [this](const QString &text, int percent) { reportProgress(text, percent); });
-            BondImaging::saveContrast(path, *out.contrast, m_stop);
-            out.message = tr("三维差值已保存到 %1").arg(path);
-            return out;
-        });
-    } catch (const std::exception &error) {
-        status(QString::fromUtf8(error.what()), true);
-    }
-}
-
 void BondWorkspace::openVolume(const QString &path) {
     if (isBusy())
         return;
-    launch(tr("正在打开衬度结果…"), [this, path] {
+    launch(tr("正在打开四维体素结果…"), [this, path] {
         Work out;
-        out.contrast = BondImaging::loadContrast(path);
-        if (!out.contrast)
-            out.volume = BondImaging::load(path);
+        out.volume = BondImaging::load(path);
         ImageUtil::cancel(m_stop);
+        out.resultPath = path;
         out.message = tr("已打开结果 %1").arg(path);
         return out;
     });
@@ -1157,7 +1187,7 @@ void BondWorkspace::showValidation(const ImagingValidation &validation) {
         auto choice = new QTableWidgetItem(roi.id);
         choice->setData(Qt::UserRole, roi.id);
         choice->setCheckState(roi.excluded ? Qt::Unchecked : Qt::Checked);
-        if (roi.rect.isEmpty())
+        if (roi.sourceInvalid || roi.rect.isEmpty())
             choice->setFlags(choice->flags() & ~Qt::ItemIsUserCheckable);
         m_crystals->setItem(row, 0, choice);
         m_crystals->setItem(row, 1, new QTableWidgetItem(roi.label));
@@ -1165,15 +1195,71 @@ void BondWorkspace::showValidation(const ImagingValidation &validation) {
     }
     m_diagnostics->setPlainText(QString::fromUtf8(QJsonDocument(validation.report).toJson()));
     const auto &incident = validation.sample.axes[2];
-    for (auto *energy : {m_contrastEa, m_contrastEb}) {
-        energy->setRange(incident.first(), incident.last());
-        energy->setSingleStep(incident[1] - incident[0]);
-    }
-    m_contrastEa->setValue(incident.first());
-    m_contrastEb->setValue(incident.last());
     m_quality->setText(tr("样品帧 %1 · 独立能量点 %2")
                            .arg(validation.sample.monitor.size())
-                           .arg(validation.sample.axes[2].size()));
+                           .arg(incident.size()));
+}
+
+void BondWorkspace::showSpatialSummary() {
+    if (!m_spatial) {
+        m_spatialStatus->setText(tr("计算后检查体素网格、采用的晶体和增益收敛状态。"));
+        m_spatialTable->setRowCount(0);
+        m_spatialDiagnostics->clear();
+        return;
+    }
+    const auto summary = BondImaging::spatialSummary(*m_spatial);
+    const auto grid = summary.value("grid_xyz").toArray();
+    const auto keys = summary.value("crystal_keys").toArray();
+    const auto gains = summary.value("relative_gains").toArray();
+    const auto models = summary.value("psf_models").toObject();
+    const auto rejected = summary.value("psf_rejected").toObject();
+    const auto gainStatus = !m_fitGains->isChecked() ? tr("未启用")
+                          : summary.value("gain_fit_converged").toBool() ? tr("已收敛") : tr("未收敛");
+    m_spatialStatus->setText(
+        tr("网格 %1 × %2 × %3 · ΔX %4 mm · 采用 %5 块晶体 · 拒绝 %6 块 · 增益 %7 · 积分谱 NNLS %8")
+            .arg(grid[0].toInt()).arg(grid[1].toInt()).arg(grid[2].toInt())
+            .arg(compact(summary.value("x_step_mm").toDouble()))
+            .arg(keys.size())
+            .arg(rejected.size())
+            .arg(gainStatus)
+            .arg(summary.value("integrated_nnls_converged").toBool() ? tr("已收敛") : tr("未收敛")));
+    m_spatialTable->setRowCount(int(keys.size() + rejected.size()));
+    int row = 0;
+    const auto addCrystal = [this, &row](const QString &key, const QString &gain, const QString &detail) {
+        m_spatialTable->setItem(row, 0, new QTableWidgetItem(key));
+        m_spatialTable->setItem(row, 1, new QTableWidgetItem(gain));
+        auto item = new QTableWidgetItem(detail);
+        item->setToolTip(detail);
+        m_spatialTable->setItem(row++, 2, item);
+    };
+    const QMap<QString, QString> modelNames{{"constant_gaussian", tr("固定高斯")},
+                                            {"varying_gaussian", tr("随 X 变化的高斯")},
+                                            {"measured_template", tr("实测模板")}};
+    for (qsizetype i = 0; i < keys.size(); ++i) {
+        const auto key = keys[i].toString();
+        const auto selection = models.value(key).toObject().value("model_selection").toObject();
+        const auto model = selection.value("selected_model").toString();
+        addCrystal(key, compact(gains[i].toDouble()), modelNames.value(model, model));
+    }
+    for (auto it = rejected.constBegin(); it != rejected.constEnd(); ++it)
+        addCrystal(it.key(), QStringLiteral("—"), it.value().toString());
+    m_spatialDiagnostics->setPlainText(QString::fromUtf8(QJsonDocument(summary).toJson()));
+}
+
+void BondWorkspace::showChannelSummary() {
+    if (!m_channels) {
+        m_channelStatus->setText(tr("计算后检查各能量通道的归一化探测器信号。"));
+        m_channelTable->setRowCount(0);
+        return;
+    }
+    const auto &energy = m_checkedInputs->validation.sample.axes[2];
+    const auto norms = BondImaging::channelNorms(*m_channels);
+    m_channelTable->setRowCount(int(energy.size()));
+    for (int row = 0; row < energy.size(); ++row) {
+        m_channelTable->setItem(row, 0, new QTableWidgetItem(compact(energy[row])));
+        m_channelTable->setItem(row, 1, new QTableWidgetItem(compact(norms[row])));
+    }
+    m_channelStatus->setText(tr("已准备 %1 个能量通道，供下一步非负求解。").arg(energy.size()));
 }
 
 void BondWorkspace::installVolume(BondVolume volume) {
@@ -1213,10 +1299,12 @@ void BondWorkspace::installVolume(BondVolume volume) {
     setIndex(m_firstZ, m_volume.axes[3].size(), 0);
     m_strideZ->setMaximum(std::max(1, int(m_volume.axes[3].size() - 1)));
     m_strideZ->setValue(std::max(1, int(m_volume.axes[3].size() / 6)));
-    for (auto spin : {m_ea, m_eb}) {
+    for (auto spin : {m_ea, m_eb, m_integralLo, m_integralHi}) {
         spin->setRange(e.first(), e.last());
         spin->setSingleStep(e[1] - e[0]);
     }
+    for (auto spin : {m_integralLo, m_integralHi})
+        spin->setSuffix(m_transfer ? QStringLiteral(" eV") : QStringLiteral(" keV"));
     int a = std::max(0, channel - 1), b = std::max(channel, 1);
     if (!m_volume.converged[a] || !m_volume.converged[b]) {
         QVector<int> valid;
@@ -1230,27 +1318,38 @@ void BondWorkspace::installVolume(BondVolume volume) {
     }
     m_ea->setValue(e[a]);
     m_eb->setValue(e[b]);
-    if (auto model = qobject_cast<QStandardItemModel *>(m_mode->model())) {
-        model->item(0)->setEnabled(true);
-        model->item(1)->setEnabled(true);
+    int start = 0, lo = 0, hi = 1;
+    double widest = 0.;
+    for (int i = 0; i < e.size(); ++i) {
+        if (!m_volume.converged[i]) {
+            start = i + 1;
+            continue;
+        }
+        if (const double width = e[i] - e[start]; width > widest) {
+            widest = width;
+            lo = start;
+            hi = i;
+        }
     }
-    m_mode->setCurrentIndex(0);
-    m_diagnostics->setPlainText(QString::fromUtf8(QJsonDocument(m_volume.diagnostics).toJson()));
+    m_integralLo->setValue(e[lo]);
+    m_integralHi->setValue(e[hi]);
+    m_mode->setCurrentIndex(SingleEnergy);
     const auto converged = std::count(m_volume.converged.cbegin(), m_volume.converged.cend(), true);
+    const auto recon = m_volume.diagnostics.value("config").toObject().value("reconstruction").toObject();
+    const auto gainStatus = !recon.value("fit_gains").toBool(true) ? tr("未启用")
+                          : m_volume.diagnostics.value("gain_fit_converged").toBool() ? tr("已收敛") : tr("未收敛");
     m_volumeQuality->setText(
         tr("收敛通道 %1 / %2 · 选用晶体 %3 · 增益拟合 %4")
             .arg(converged)
             .arg(e.size())
             .arg(m_volume.diagnostics.value("crystal_keys").toArray().size())
-            .arg(m_volume.diagnostics.value("gain_fit_converged").toBool() ? tr("已收敛") : tr("未收敛")));
+            .arg(gainStatus));
     m_referenceZ->setRange(0, int(m_volume.axes[3].size()) - 1);
     m_referenceZ->setValue(m_z->value());
     for (auto *map : m_referenceMaps)
         map->setData({});
     m_referenceSpectra->setCurves({}, tr("D · 分区平均谱与参考谱"));
-    m_figures->setTabEnabled(m_figures->indexOf(m_referencePage), true);
-    m_tabs->setTabEnabled(Volume, true);
-    m_tabs->setTabEnabled(Results, true);
+    refreshWorkflow();
     selectStage(Volume);
     m_refreshing = false;
     syncViewControls();
@@ -1258,37 +1357,7 @@ void BondWorkspace::installVolume(BondVolume volume) {
     refreshMap();
 }
 
-void BondWorkspace::installContrast(BondContrast contrast) {
-    m_refreshing = true;
-    m_contrast = std::move(contrast);
-    if (m_mode->count() == directContrastMode)
-        m_mode->addItem(tr("先谱处理的三维差值"));
-    if (auto model = qobject_cast<QStandardItemModel *>(m_mode->model())) {
-        model->item(0)->setEnabled(hasVolume());
-        model->item(1)->setEnabled(hasVolume());
-    }
-    m_mode->setCurrentIndex(directContrastMode);
-    const auto nz = int(m_contrast->axes[2].size());
-    m_firstZ->setMaximum(nz - 1);
-    m_firstZ->setValue(0);
-    m_strideZ->setMaximum(std::max(1, nz - 1));
-    m_strideZ->setValue(std::max(1, nz / 6));
-    m_diagnostics->setPlainText(QString::fromUtf8(QJsonDocument(m_contrast->diagnostics).toJson()));
-    m_tabs->setTabEnabled(Results, true);
-    m_figures->setCurrentIndex(1);
-    selectStage(Results);
-    m_refreshing = false;
-    syncViewControls();
-    refreshMap();
-}
-
-bool BondWorkspace::showingContrast() const {
-    return m_contrast && m_mode->currentIndex() == directContrastMode;
-}
-
 QVector<QVector<double>> BondWorkspace::spatialAxes() const {
-    if (showingContrast())
-        return m_contrast->axes;
     return hasVolume() ? m_volume.axes.sliced(1) : QVector<QVector<double>>{};
 }
 
@@ -1306,10 +1375,20 @@ QString BondWorkspace::energyLabel() const {
     return m_transfer ? tr("能量转移 (eV)") : tr("入射能量 (keV)");
 }
 
+double BondWorkspace::incidentEnergy(double displayedEnergy) const {
+    return m_transfer ? m_referenceKev + displayedEnergy / 1000 : displayedEnergy;
+}
+
 QString BondWorkspace::intensityLabel() const {
     if (showingProcessed() && m_normalized)
         return tr("面积归一强度 (1/keV)");
     return showingProcessed() ? tr("扣背底后的相对强度") : tr("相对强度");
+}
+
+QString BondWorkspace::mapIntensityLabel() const {
+    if (m_mode->currentIndex() != IntervalIntegral)
+        return intensityLabel();
+    return showingProcessed() && m_normalized ? tr("积分面积（无量纲）") : tr("积分强度（相对单位 × keV）");
 }
 
 bool BondWorkspace::showingProcessed() const {
@@ -1326,25 +1405,28 @@ void BondWorkspace::changeEnergyUnits() {
         status(tr("请先填写适用于所选晶体的分析器参考能量。"), true);
     if (transfer == m_transfer && (!transfer || m_referenceKev == m_analyzer->value()))
         return;
-    const double ea = m_transfer ? m_referenceKev + m_ea->value() / 1000 : m_ea->value();
-    const double eb = m_transfer ? m_referenceKev + m_eb->value() / 1000 : m_eb->value();
+    const std::array spins{m_ea, m_eb, m_integralLo, m_integralHi};
+    std::array<double, spins.size()> incident{};
+    for (size_t i = 0; i < spins.size(); ++i)
+        incident[i] = incidentEnergy(spins[i]->value());
     m_referenceKev = m_analyzer->value();
     m_transfer = transfer;
     if (!hasVolume())
         return;
     m_refreshing = true;
     const auto e = energy();
-    for (auto spin : {m_ea, m_eb}) {
+    for (size_t i = 0; i < spins.size(); ++i) {
+        auto spin = spins[i];
         spin->setRange(e.first(), e.last());
         spin->setSingleStep(e[1] - e[0]);
+        spin->setValue(transfer ? 1000 * (incident[i] - m_referenceKev) : incident[i]);
     }
-    m_ea->setValue(transfer ? 1000 * (ea - m_referenceKev) : ea);
-    m_eb->setValue(transfer ? 1000 * (eb - m_referenceKev) : eb);
+    for (auto spin : {m_integralLo, m_integralHi})
+        spin->setSuffix(transfer ? QStringLiteral(" eV") : QStringLiteral(" keV"));
     m_refreshing = false;
     syncViewControls();
     refreshVoxel();
-    if (!showingContrast())
-        refreshMap();
+    refreshMap();
     if (!m_loss->isChecked() || transfer)
         status(tr("显示能量坐标已更新。谱处理使用设置中标明的单位。"));
 }
@@ -1427,23 +1509,20 @@ void BondWorkspace::refreshVoxel(bool refreshSection, bool refreshSlice) {
 }
 
 void BondWorkspace::refreshMap() {
-    if (m_refreshing || !hasResult())
+    if (m_refreshing || !hasVolume())
         return;
-    const bool dual = m_mode->currentIndex() == 1;
-    const bool direct = showingContrast();
+    const int mode = m_mode->currentIndex();
+    const bool dual = mode == EnergyDifference;
     m_field.clear();
     m_surface->setMesh({}, {}, {}, tr("生成等值面后，按住左键拖动旋转。"));
     try {
         const auto e = energy();
         const auto &samples = values();
         const int channel = m_channel->value();
-        if (direct) {
-            m_field = m_contrast->values;
-            m_fieldLabel = tr("三维差值 · S(%1) − S(%2)")
-                               .arg(compact(m_contrast->diagnostics["eb_kev"].toDouble()),
-                                    compact(m_contrast->diagnostics["ea_kev"].toDouble()));
-        } else if (!hasVolume()) {
-            ImageUtil::fail(tr("请选择已载入的三维差值结果。"));
+        if (mode == IntervalIntegral) {
+            const double lo = m_integralLo->value(), hi = m_integralHi->value();
+            m_field = BondImaging::energyIntegral(m_volume, samples, {incidentEnergy(lo), incidentEnergy(hi)});
+            m_fieldLabel = tr("区间积分强度 · %1 至 %2 · %3").arg(compact(lo), compact(hi), mapIntensityLabel());
         } else if (dual) {
             if (m_ea->value() == m_eb->value())
                 ImageUtil::fail(tr("请选择两个不同的能量。"));
@@ -1473,14 +1552,14 @@ void BondWorkspace::refreshMap() {
         const double range = m_hi - m_lo;
         m_level->setValue(m_lo + .65 * range);
         m_level2->setValue(m_lo + .35 * range);
-        if (direct || dual || m_lo < 0.) {
+        if (dual || m_lo < 0.) {
             m_hi = std::max({std::abs(m_lo), std::abs(m_hi), 1e-12});
             m_lo = -m_hi;
         } else if (m_lo == m_hi) {
             m_hi = m_lo + std::max(1e-10, std::abs(m_lo) * .001);
         }
         m_mapInfo->setText(tr("%1    ·    %2    ·    有效体素 %3 / %4")
-                               .arg(m_fieldLabel, direct ? tr("入射能量 (keV)") : energyLabel())
+                               .arg(m_fieldLabel, energyLabel())
                                .arg(valid)
                                .arg(m_field.size()) +
                            (valid < m_field.size() ? tr("    灰色为无效") : QString{}));
@@ -1488,8 +1567,8 @@ void BondWorkspace::refreshMap() {
         m_field.clear();
         m_mapInfo->setText(QString::fromUtf8(error.what()));
     }
-    if (direct || hasVolume()) {
-        const auto nz = int(spatialAxes()[2].size());
+    {
+        const auto nz = int(m_volume.axes[3].size());
         const QSignalBlocker firstBlock(m_firstZ), strideBlock(m_strideZ);
         m_firstZ->setMaximum(nz - 1);
         m_strideZ->setMaximum(std::max(1, nz - 1));
@@ -1498,7 +1577,7 @@ void BondWorkspace::refreshMap() {
 }
 
 void BondWorkspace::refreshMontage() {
-    if (m_refreshing || !hasResult())
+    if (m_refreshing || !hasVolume())
         return;
     const auto axes = spatialAxes();
     QVector<int> slices;
@@ -1506,8 +1585,7 @@ void BondWorkspace::refreshMontage() {
          z += m_strideZ->value())
         slices.append(z);
     m_montage->setMontage(axes, m_field, slices, m_lo, m_hi,
-                          showingContrast() || m_mode->currentIndex() == 1 || m_lo < 0.,
-                          showingContrast() ? tr("相对密度差值") : intensityLabel());
+                          m_mode->currentIndex() == EnergyDifference || m_lo < 0., mapIntensityLabel());
 }
 
 QWidget *BondWorkspace::createReferenceMaps() {
@@ -1552,9 +1630,9 @@ QWidget *BondWorkspace::createReferenceMaps() {
     controls->addWidget(m_referenceWindow, 1);
     controls->addWidget(new QLabel(tr("系数阈值 ±")));
     controls->addWidget(m_referenceThreshold);
-    auto run = WorkflowUi::button("play", tr("拟合当前切片"));
-    run->setObjectName("FitBondReferenceMaps");
-    controls->addWidget(run);
+    m_fitReference = WorkflowUi::button("play", tr("拟合当前切片"));
+    m_fitReference->setObjectName("FitBondReferenceMaps");
+    controls->addWidget(m_fitReference);
     layout->addLayout(controls);
     layout->addWidget(hint(tr("使用四维原始体素谱和线性背底。基体与目标参考谱均须覆盖拟合能区，"
                               "且至少有五个已收敛通道。")));
@@ -1582,7 +1660,7 @@ QWidget *BondWorkspace::createReferenceMaps() {
         charts->setColumnStretch(i, 1);
     }
     layout->addLayout(charts, 1);
-    connect(run, &QPushButton::clicked, this, &BondWorkspace::fitReferenceMaps);
+    connect(m_fitReference, &QPushButton::clicked, this, &BondWorkspace::fitReferenceMaps);
     const auto clear = [this, titles] {
         for (int i = 0; i < 3; ++i) {
             DataSlice blank;
@@ -1715,16 +1793,6 @@ void BondWorkspace::createComptonOptions() {
     }
     form->addRow(hint(tr("幅度匹配使用一段与宽谱共有、避开待分析吸收边的能区。"
                          "低 q 只需逐晶体谱中的 q 和主页面的线性拟合区间。")));
-    const auto referenceChanged = [this] {
-        if (m_contrastMode->currentIndex() == 2)
-            invalidateProjection();
-    };
-    for (auto *edit : {m_wideSpectrum, m_hfTable, m_composition})
-        connect(edit, &QLineEdit::textChanged, this, referenceChanged);
-    for (auto *edit : m_comptonWindows)
-        connect(edit, &QLineEdit::textChanged, this, referenceChanged);
-    for (auto *spin : {m_highQ, m_coreScale, m_valenceCutoff})
-        connect(spin, &QDoubleSpinBox::valueChanged, this, referenceChanged);
     auto buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, m_comptonOptions, &QDialog::reject);
     form->addRow(buttons);
@@ -1779,8 +1847,8 @@ void BondWorkspace::applySpectralProcessing() {
                     const auto match = readComptonWindows(parameters, ranges);
                     const auto &label = high.first();
                     const auto normalization = settings.normalization;
-                    settings = contrastComptonSettings(transferCompton(wide, label, e, parameters, m_stop),
-                                                       parameters, match);
+                    settings = comptonSettings(transferCompton(wide, label, e, parameters, m_stop),
+                                               parameters, match);
                     settings.normalization = normalization;
                     method = tr("高 q 康普顿扣除 · %1").arg(label);
                 }
@@ -1799,7 +1867,7 @@ void BondWorkspace::applySpectralProcessing() {
     }
 }
 
-void BondWorkspace::buildSurfaces(const QString &resultMessage) {
+void BondWorkspace::buildSurfaces() {
     if (m_field.isEmpty() || isBusy()) {
         status(tr("请先选择有有效体素的强度或衬度场。"), true);
         return;
@@ -1808,13 +1876,12 @@ void BondWorkspace::buildSurfaces(const QString &resultMessage) {
     const auto field = m_field;
     const double level = m_level->value(), second = m_level2->value();
     const bool includeSecond = m_secondSurface->isChecked();
-    const bool diverging = m_mode->currentIndex() == 1 || m_lo < 0.;
+    const bool diverging = m_mode->currentIndex() == EnergyDifference || m_lo < 0.;
     const auto color = [&](double value) {
         return BondFigures::fieldColor((value - m_lo) / (m_hi - m_lo), diverging);
     };
-    const auto colors = showingContrast() ? std::array{QColor("#c93038"), QColor("#8f2026")}
-                                          : std::array{color(level), color(second)};
-    launch(tr("正在提取三维等值面…"), [this, axes, field, level, second, includeSecond, resultMessage, colors] {
+    const std::array colors{color(level), color(second)};
+    launch(tr("正在提取三维等值面…"), [this, axes, field, level, second, includeSecond, colors] {
         Work out;
         out.surfaceColors = colors;
         out.surfaces.emplace();
@@ -1827,8 +1894,6 @@ void BondWorkspace::buildSurfaces(const QString &resultMessage) {
         const auto triangles = (*out.surfaces)[0].size() + (*out.surfaces)[1].size();
         out.message = triangles ? tr("等值面已生成，共 %1 个三角形。").arg(triangles)
                                 : tr("当前阈值没有等值面，请调整阈值。");
-        if (!resultMessage.isEmpty())
-            out.message = resultMessage + tr(" · ") + out.message;
         return out;
     });
 }

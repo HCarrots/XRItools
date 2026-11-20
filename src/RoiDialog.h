@@ -28,6 +28,7 @@ class RoiDialog : public QDialog {
     }
     bool saveTo(const QString &path);
     bool loadFrom(const QString &path);
+    QString currentSchemePath() const;
 
   protected:
     void closeEvent(QCloseEvent *) override;
@@ -42,7 +43,7 @@ class RoiDialog : public QDialog {
     void nextPending();
     void storeDraft();
     void updateProfiles();
-    QString m_file, m_draftPath;
+    QString m_file, m_draftPath, m_workspaceScheme;
     CrystalRois m_rois;
     QVector<QSize> m_sizes;
     QVector<quint64> m_frames;

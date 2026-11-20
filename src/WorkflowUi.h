@@ -17,6 +17,18 @@ inline void compact(QLayout *layout) {
     layout->setSpacing(4);
 }
 
+inline QWidget *cornerTools(std::initializer_list<QWidget *> controls) {
+    auto bar = new QWidget;
+    auto layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(0, 0, 0, 0);
+    for (auto control : controls) {
+        if (auto button = qobject_cast<QPushButton *>(control))
+            button->setAutoDefault(false);
+        layout->addWidget(control);
+    }
+    return bar;
+}
+
 inline QToolButton *disclosureButton(const QString &title, QWidget *body, bool expanded = false) {
     auto toggle = new QToolButton;
     toggle->setText(title);

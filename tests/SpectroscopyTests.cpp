@@ -159,6 +159,37 @@ int main(int argc, char **argv) {
         auto reverse = SpectrumFixture::create(temp.path(), false, true);
         s.elasticFile = elastic;
         auto rois = SpectrumFixture::rois();
+        {
+            const auto reference = Spectroscopy::pixelSpectra(xrs, s, rois.items()[0], {8, 8}, cancel);
+            expect(reference.pixels.size() == 4 && close(reference.intensity[0][30], 11.875),
+                   "spectral reference applies glitch correction and I0 exactly once");
+            PixelSpectra mixture;
+            mixture.energyKev = {1, 2, 3, 4};
+            mixture.intensity = {{1, 1, 1, 1}, {4, 4, 4, 4},   {0, 0, 3, 3},
+                                 {1, 1, 7, 7}, {9, 9, 12, 12}, {2, 2, 11, 11}};
+            const QVector<int> rows{0, 1, 2, 3, 4, 5};
+            for (auto method : {UnmixMethod::NNMF, UnmixMethod::PCA, UnmixMethod::ICA}) {
+                const auto factors = decomposePixels(mixture, rows, method, 2, cancel);
+                expect(factors.spectra.size() == 2 && factors.relativeResidual < 1e-3,
+                       "two-component model reconstructs rank-two sample/background spectra");
+                const int target =
+                    std::abs(factors.covariance[0][2]) > std::abs(factors.covariance[1][2]) ? 0 : 1;
+                const auto &scores = factors.covariance[target];
+                expect(close(scores[0], 0) && std::abs(scores[2]) > 0.1 && close(scores[3], 2 * scores[2]) &&
+                           close(scores[2], scores[4]),
+                       "sample covariance rejects flat background and is offset invariant");
+            }
+            expect(throws([&] { decomposePixels(mixture, {0}, UnmixMethod::PCA, 2, cancel); }),
+                   "one surviving pixel cannot be decomposed into two components");
+            auto options = s;
+            options.spectralMasks[0].pixels = {{1, 1}};
+            const auto refined = Spectroscopy::calibrate(options, rois, cancel);
+            auto target = Spectroscopy::extract(options, refined, {reverse}, cancel);
+            expect(refined.pixels[0].size() == 4 && refined.filteredPixels[0] == QVector<int>{9} &&
+                       refined.adjusted.items()[0].mask == options.spectralMasks[0].pixels &&
+                       close(target[0].filtered[0][40], 12.5) && target[0].raw[0][40] > 12.5,
+                   "spectral mask preserves coarse comparison and transfers to independent target scan");
+        }
         auto c = Spectroscopy::calibrate(s, rois, cancel);
         expect(c.fits[0].accepted && c.fits[1].accepted && c.fits[60].accepted && !c.fits[2].accepted,
                "three valid crystals fit, manually invalid crystals skipped");
@@ -197,6 +228,27 @@ int main(int argc, char **argv) {
         expect(close(scans[0].i0Before[30], .2) && close(scans[0].i0After[30], 2) &&
                    close(scans[0].filtered[0][30], 1.25 * (10 + .5 * 3.75)),
                "glitch repairs both frame and I0 before normalization");
+        {
+            QTemporaryDir irregular;
+            auto options = s;
+            for (bool descending : {false, true}) {
+                const auto file = SpectrumFixture::create(irregular.path(), false, descending, true, true);
+                const auto repaired = Spectroscopy::extract(s, c, {file}, cancel).first();
+                const int i = descending ? 50 : 30;
+                const double w = .625;
+                const double flux = (1 - w) * 2 + w * 2.04;
+                const double counts = (1 - w) * 2 * (10 + .5 * 29 * .125) +
+                                      w * 2.04 * (10 + .5 * 31 * .125);
+                expect(repaired.glitches == QVector<int>{i} && close(repaired.i0After[i], flux) &&
+                           close(repaired.filtered[0][i], 1.25 * counts / flux) &&
+                           close(repaired.filtered[60][i], 3.75 * counts / flux),
+                       "an isolated 8% dropout repairs I0 and both detectors on an irregular energy grid");
+                options.glitchDropFraction = .30;
+                const auto strict = Spectroscopy::extract(options, c, {file}, cancel).first();
+                expect(strict.glitches.isEmpty() && strict.i0Before == strict.i0After &&
+                           strict.filtered[0][i] == 0, "30% threshold leaves shallow drop and lost frame intact");
+            }
+        }
         auto result = Spectroscopy::combine(s, c, scans, cancel);
         double error = 0;
         for (int i = 0; i < result.total.size(); ++i)

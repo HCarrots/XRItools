@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include "ScientificPlot.h"
 #include "WorkflowUi.h"
+#include "WorkspacePaths.h"
 #include <QCryptographicHash>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -10,6 +11,9 @@
 #include <limits>
 
 namespace {
+using WorkspacePaths::Kind;
+using WorkspacePaths::Workflow;
+
 QString detectorPath(int i) {
     return i == 0 ? "/entry/data/D_LAMBDA" : "/entry/data/D_MINIPIX";
 }
@@ -221,6 +225,7 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     auto bottom = new QHBoxLayout;
     auto load = WorkflowUi::button("folder-open", tr("加载 ROI 方案…"));
     auto save = WorkflowUi::button("save", tr("保存 ROI 方案…"));
+    save->setObjectName("SaveCrystalRois");
     m_finish = WorkflowUi::button("check", tr("完成 ROI 选取"));
     m_finish->setObjectName("FinishCrystalRois");
     auto close = WorkflowUi::button("chevron-left", tr("返回（保留草稿）"));
@@ -304,21 +309,33 @@ RoiDialog::RoiDialog(const QString &file, const QString &workflow, QWidget *pare
     connect(next, &QPushButton::clicked, this, &RoiDialog::nextPending);
     connect(close, &QPushButton::clicked, this, &RoiDialog::reject);
     connect(save, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getSaveFileName(this, tr("保存 ROI 方案"),
-                                                 QFileInfo(m_file).completeBaseName() + ".roi.json",
-                                                 "ROI (*.roi.json)");
-        if (!path.isEmpty())
-            saveTo(path);
+        const auto path = WorkspacePaths::saveFile(this, Workflow::Roi, Kind::Config, m_file,
+                                                    tr("保存 ROI 方案"), "manual.roi.json", "ROI (*.roi.json)",
+                                                    QFileInfo(m_file).completeBaseName() + ".roi.json");
+        if (!path.isEmpty() && saveTo(path) && !WorkspacePaths::root().isEmpty())
+            m_workspaceScheme = path;
     });
     connect(load, &QPushButton::clicked, this, [this] {
-        auto path = QFileDialog::getOpenFileName(this, tr("加载 ROI 方案"), {}, "ROI (*.roi.json)");
+        auto path = QFileDialog::getOpenFileName(this, tr("加载 ROI 方案"),
+                                                 WorkspacePaths::directory(Workflow::Roi, Kind::Config),
+                                                 "ROI (*.roi.json)");
         if (!path.isEmpty())
             loadFrom(path);
     });
     connect(m_finish, &QPushButton::clicked, this, [this] {
-        storeDraft();
         if (m_autoDraft && !saveTo(m_draftPath))
             return;
+        try {
+            const auto path = WorkspacePaths::newPath(Workflow::Roi, Kind::Config, m_file, "manual.roi.json");
+            if (!path.isEmpty()) {
+                if (!saveTo(path))
+                    return;
+                m_workspaceScheme = path;
+            }
+        } catch (const std::exception &error) {
+            m_message->setText(QString::fromUtf8(error.what()));
+            return;
+        }
         accept();
     });
     if (m_autoDraft) {
@@ -581,6 +598,11 @@ bool RoiDialog::loadFrom(const QString &path) {
     return true;
 }
 void RoiDialog::storeDraft() {
+    m_workspaceScheme.clear();
     if (m_autoDraft && !m_draftPath.isEmpty())
         saveTo(m_draftPath);
+}
+
+QString RoiDialog::currentSchemePath() const {
+    return QFileInfo(m_workspaceScheme).isFile() ? m_workspaceScheme : m_draftPath;
 }

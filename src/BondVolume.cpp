@@ -13,14 +13,13 @@ using namespace ImageUtil;
 namespace {
 constexpr qsizetype maxSamples = 16000000;
 const QString fieldPath = QStringLiteral("/entry/bond/intensity");
-const QString contrastPath = QStringLiteral("/entry/bond/contrast");
 const QString diagnosticsPath = QStringLiteral("/entry/bond/diagnostics_json");
 const QStringList axisPaths{"/entry/bond/incident_energy_kev", "/entry/bond/x_mm", "/entry/bond/y_mm",
                             "/entry/bond/z_mm"};
 
-qsizetype checkedSize(const QVector<quint64> &shape, int rank = 4) {
+qsizetype checkedSize(const QVector<quint64> &shape) {
     qsizetype count = 1;
-    if (shape.size() != rank)
+    if (shape.size() != 4)
         fail(QCoreApplication::translate("BondVolume", "结果数组的维数与格式不一致。"));
     for (auto n : shape) {
         if (n < 2 || n > quint64(maxSamples / count))
@@ -61,18 +60,11 @@ double valueAt(const double *data, qsizetype stride, Bracket b) {
     return b.first == b.last ? first : first + b.fraction * (data[b.last * stride] - first);
 }
 
-void addAt(QVector<double> &weights, Bracket b, double scale) {
-    weights[b.first] += (1. - b.fraction) * scale;
-    if (b.first != b.last)
-        weights[b.last] += b.fraction * scale;
-}
-
 struct SpectralIntegral {
     QVector<double> energy;
     QVector<Bracket> points;
 
-    SpectralIntegral(const QVector<double> &axis, QPair<double, double> range,
-                     const QVector<bool> &usable) {
+    SpectralIntegral(const QVector<double> &axis, QPair<double, double> range) {
         const auto [lo, hi] = range;
         if (!(lo < hi))
             fail(QCoreApplication::translate("BondVolume", "积分区间必须递增。"));
@@ -81,30 +73,24 @@ struct SpectralIntegral {
             if (lo < e && e < hi)
                 energy.append(e);
         energy.append(hi);
-        for (double e : energy) {
-            const auto b = bracket(axis, e);
-            if (!usable[b.first] || !usable[b.last])
-                fail(QCoreApplication::translate("BondVolume", "积分区间包含未收敛通道或超出参考轮廓覆盖。"));
-            points.append(b);
-        }
+        for (double e : energy)
+            points.append(bracket(axis, e));
     }
 
-    double area(const QVector<double> &row) const {
-        double sum = 0, prev = valueAt(row.constData(), 1, points.first());
+    bool coveredBy(const QVector<bool> &usable) const {
+        return std::all_of(points.cbegin(), points.cend(), [&](Bracket b) {
+            return usable[b.first] && usable[b.last];
+        });
+    }
+
+    double area(const double *data, qsizetype stride = 1) const {
+        double sum = 0, prev = valueAt(data, stride, points.first());
         for (qsizetype i = 1; i < points.size(); ++i) {
-            const double current = valueAt(row.constData(), 1, points[i]);
+            const double current = valueAt(data, stride, points[i]);
             sum += .5 * (prev + current) * (energy[i] - energy[i - 1]);
             prev = current;
         }
         return sum;
-    }
-
-    void addWeights(QVector<double> &weights, double scale) const {
-        for (qsizetype i = 1; i < points.size(); ++i) {
-            const double halfStep = scale * .5 * (energy[i] - energy[i - 1]);
-            addAt(weights, points[i - 1], halfStep);
-            addAt(weights, points[i], halfStep);
-        }
     }
 };
 
@@ -125,136 +111,6 @@ qsizetype BondVolume::voxel(int x, int y, int z) const {
 QString BondImaging::diagnosticPngPath(const QString &path) {
     const QFileInfo result(path);
     return result.dir().filePath(result.completeBaseName() + ".diagnostics.png");
-}
-
-void BondImaging::saveContrast(const QString &path, const BondContrast &contrast, const std::atomic_bool &stop) {
-    cancel(stop);
-    QVector<quint64> shape;
-    for (const auto &axis : contrast.axes) {
-        checkAxis(axis);
-        shape.append(quint64(axis.size()));
-    }
-    if (checkedSize(shape, 3) != contrast.values.size())
-        fail(QCoreApplication::translate("BondVolume", "衬度数据与空间坐标尺寸不一致。"));
-    const QFileInfo target(path);
-    QTemporaryDir temp(target.dir().filePath(".xri-bond-XXXXXX"));
-    if (!temp.isValid())
-        fail(QCoreApplication::translate("BondVolume", "无法在输出目录建立临时文件。"));
-    const auto staged = temp.filePath("contrast.h5");
-    {
-        ImagingH5 hdf(staged, true);
-        hdf.write(contrastPath, shape, contrast.values.constData());
-        const auto spatialPaths = axisPaths.sliced(1);
-        for (int i = 0; i < spatialPaths.size(); ++i)
-            hdf.write(spatialPaths[i], {shape[i]}, contrast.axes[i].constData(), false);
-        hdf.scales(contrastPath, spatialPaths);
-        hdf.attributes(contrastPath, {{"axis_order", "X,Y,Z"}, {"units", "relative density difference"},
-                                      {"schema", "XRI.bond.contrast.v1"}});
-        hdf.writeText(diagnosticsPath,
-                      QString::fromUtf8(QJsonDocument(contrast.diagnostics).toJson(QJsonDocument::Compact)));
-    }
-    cancel(stop);
-    if (!QFile::rename(staged, target.absoluteFilePath()))
-        fail(QCoreApplication::translate("BondVolume", "无法提交三维衬度文件，请确认文件名尚未使用。"));
-}
-
-std::optional<BondContrast> BondImaging::loadContrast(const QString &path) {
-    ImagingH5 hdf(path);
-    if (!hdf.contains(contrastPath))
-        return std::nullopt;
-    const auto shape = HdfFile::inspect(path, contrastPath).dims;
-    checkedSize(shape, 3);
-    BondContrast contrast;
-    for (int i = 0; i < shape.size(); ++i) {
-        if (HdfFile::inspect(path, axisPaths[i + 1]).dims != QVector<quint64>{shape[i]})
-            fail(QCoreApplication::translate("BondVolume", "衬度数据与空间坐标尺寸不一致。"));
-        auto axis = hdf.read(axisPaths[i + 1]);
-        checkAxis(axis);
-        contrast.axes.append(std::move(axis));
-    }
-    contrast.diagnostics = QJsonDocument::fromJson(hdf.text(diagnosticsPath).toUtf8()).object();
-    if (contrast.diagnostics.value("schema").toString() != "XRI.bond.contrast.v1")
-        fail(QCoreApplication::translate("BondVolume", "无法识别三维衬度结果版本。"));
-    const double ea = contrast.diagnostics.value("ea_kev").toDouble(NAN);
-    const double eb = contrast.diagnostics.value("eb_kev").toDouble(NAN);
-    if (!std::isfinite(ea) || !std::isfinite(eb) || std::abs(eb - ea) <= 1e-9)
-        fail(QCoreApplication::translate("BondVolume", "三维衬度结果缺少有效的 Ea、Eb。"));
-    contrast.values = hdf.read(contrastPath);
-    return contrast;
-}
-
-QVector<double> BondImaging::contrastWeights(const QVector<double> &energy, double ea, double eb,
-                                           const BondSpectralSettings &settings) {
-    checkAxis(energy);
-    if (std::abs(eb - ea) <= 1e-9 || settings.normalization)
-        fail(QCoreApplication::translate("BondVolume", "三维衬度需要两个不同能量，使用相对强度差值。"));
-    const auto a = bracket(energy, ea), b = bracket(energy, eb);
-    const auto *reference = settings.compton ? &*settings.compton : nullptr;
-    QVector<bool> covered(energy.size(), true);
-    if (reference) {
-        if (reference->correction.size() != energy.size() || reference->valence.size() != energy.size() ||
-            reference->reference.size() != energy.size())
-            fail(QCoreApplication::translate("BondVolume", "康普顿参考与实测能量轴不一致。"));
-        for (qsizetype i = 0; i < energy.size(); ++i) {
-            const auto correction = reference->correction[i];
-            if (!(std::isfinite(correction) && correction > 0))
-                fail(QCoreApplication::translate("BondVolume", "康普顿截面修正无效。"));
-            covered[i] = std::isfinite(reference->valence[i]);
-        }
-        if (!covered[a.first] || !covered[a.last] || !covered[b.first] || !covered[b.last])
-            fail(QCoreApplication::translate("BondVolume", "Ea 或 Eb 超出康普顿参考轮廓覆盖。"));
-    }
-    QVector<double> weights(energy.size(), 0.);
-    addAt(weights, a, -1.);
-    addAt(weights, b, 1.);
-    if (reference)
-        for (qsizetype i = 0; i < weights.size(); ++i)
-            weights[i] /= reference->correction[i];
-
-    // Apply the transpose of the spectral preprocessing to the two-energy difference.
-    if (!settings.background.isEmpty()) {
-        for (auto range : settings.background) {
-            if (!(range.first < range.second))
-                fail(QCoreApplication::translate("BondVolume", "线性拟合区间必须递增。"));
-            bracket(energy, range.first);
-            bracket(energy, range.second);
-        }
-        QVector<qsizetype> fitPoints;
-        double mean = 0.;
-        for (qsizetype i = 0; i < energy.size(); ++i)
-            if (covered[i] && std::any_of(settings.background.cbegin(), settings.background.cend(),
-                                          [&](auto range) { return energy[i] >= range.first - 1e-9 &&
-                                                                   energy[i] <= range.second + 1e-9; })) {
-                fitPoints.append(i);
-                mean += energy[i];
-            }
-        if (fitPoints.size() < 2)
-            fail(QCoreApplication::translate("BondVolume", "线性背底至少需要两个有参考覆盖的实测能量点。"));
-        mean /= fitPoints.size();
-        double xx = 0., offset = 0., slope = 0.;
-        for (auto i : fitPoints)
-            xx += (energy[i] - mean) * (energy[i] - mean);
-        for (qsizetype i = 0; i < energy.size(); ++i) {
-            offset += weights[i];
-            slope += weights[i] * (energy[i] - mean);
-        }
-        for (auto i : fitPoints)
-            weights[i] -= offset / fitPoints.size() + slope * (energy[i] - mean) / xx;
-    }
-    if (reference) {
-        const SpectralIntegral match(energy, reference->matchWindow, covered);
-        const double area = match.area(reference->reference);
-        if (!(std::isfinite(area) && area > 0))
-            fail(QCoreApplication::translate("BondVolume", "幅度匹配区间需要完整覆盖和正的宽谱积分。"));
-        double valence = 0.;
-        for (qsizetype i = 0; i < weights.size(); ++i)
-            if (covered[i])
-                valence += weights[i] * reference->valence[i];
-        match.addWeights(weights, -valence / area);
-        for (qsizetype i = 0; i < weights.size(); ++i)
-            weights[i] *= reference->correction[i];
-    }
-    return weights;
 }
 
 void BondImaging::save(const QString &path, const BondVolume &volume, const std::atomic_bool &stop) {
@@ -299,7 +155,7 @@ void BondImaging::save(const QString &path, const BondVolume &volume, const std:
                                    {"units", "relative intensity"},
                                    {"energy_kind", "incident"},
                                    {"schema", "XRI.bond.v1"}});
-        hdf.writeText("/entry/bond/diagnostics_json",
+        hdf.writeText(diagnosticsPath,
                       QString::fromUtf8(QJsonDocument(volume.diagnostics).toJson(QJsonDocument::Compact)));
         for (const auto &item : volume.bandDiagnostics) {
             cancel(stop);
@@ -321,9 +177,11 @@ void BondImaging::save(const QString &path, const BondVolume &volume, const std:
 }
 
 BondVolume BondImaging::load(const QString &path) {
+    ImagingH5 hdf(path);
+    if (!hdf.contains(fieldPath) && hdf.contains("/entry/bond/contrast"))
+        fail(QCoreApplication::translate("BondVolume", "此文件是旧版三维差值结果。请在数据浏览器中查看，或选择四维体素 HDF5。"));
     const auto shape = HdfFile::inspect(path, fieldPath).dims;
     checkedSize(shape);
-    ImagingH5 hdf(path);
     BondVolume out;
     auto readVector = [&](const QString &name, quint64 expected) {
         if (HdfFile::inspect(path, name).dims != QVector<quint64>{expected})
@@ -344,7 +202,7 @@ BondVolume BondImaging::load(const QString &path) {
             fail(QCoreApplication::translate("BondVolume", "无效的通道收敛标记。"));
         out.converged.append(value == 1);
     }
-    out.diagnostics = QJsonDocument::fromJson(hdf.text("/entry/bond/diagnostics_json").toUtf8()).object();
+    out.diagnostics = QJsonDocument::fromJson(hdf.text(diagnosticsPath).toUtf8()).object();
     if (out.diagnostics.value("schema").toString() != "XRI.bond.v1")
         fail(QCoreApplication::translate("BondVolume", "无法识别四维结果版本。"));
     out.intensity = hdf.read(fieldPath);
@@ -367,6 +225,12 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
     const auto *compton = settings.compton ? &*settings.compton : nullptr;
     auto usable = v.converged;
     std::optional<SpectralIntegral> match, normalize;
+    auto prepareIntegral = [&](QPair<double, double> range) {
+        SpectralIntegral integral(energy, range);
+        if (!integral.coveredBy(usable))
+            fail(QCoreApplication::translate("BondVolume", "积分区间包含未收敛通道或超出参考轮廓覆盖。"));
+        return integral;
+    };
     double referenceArea = 0;
     if (compton) {
         if (compton->reference.size() != energy.size() || compton->valence.size() != energy.size() ||
@@ -377,13 +241,13 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
                 fail(QCoreApplication::translate("BondVolume", "康普顿截面修正无效。"));
             usable[e] = usable[e] && std::isfinite(compton->valence[e]);
         }
-        match.emplace(energy, compton->matchWindow, usable);
-        referenceArea = match->area(compton->reference);
+        match = prepareIntegral(compton->matchWindow);
+        referenceArea = match->area(compton->reference.constData());
         if (!(std::isfinite(referenceArea) && referenceArea > 0))
             fail(QCoreApplication::translate("BondVolume", "幅度匹配区间需要完整覆盖和正的宽谱积分。"));
     }
     if (settings.normalization)
-        normalize.emplace(energy, *settings.normalization, usable);
+        normalize = prepareIntegral(*settings.normalization);
     QVector<int> fitPoints;
     for (int e = 0; e < energy.size(); ++e)
         if (usable[e] &&
@@ -406,7 +270,7 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
         if (compton) {
             for (qsizetype e = 0; e < energy.size(); ++e)
                 row[e] *= compton->correction[e];
-            const double scale = match->area(row) / referenceArea;
+            const double scale = match->area(row.constData()) / referenceArea;
             if (!(std::isfinite(scale) && scale > 0))
                 continue;
             for (qsizetype e = 0; e < energy.size(); ++e)
@@ -439,7 +303,7 @@ QVector<double> BondImaging::process(const BondVolume &v, const QVector<double> 
         if (compton)
             for (qsizetype e = 0; e < energy.size(); ++e)
                 row[e] /= compton->correction[e];
-        const double area = normalize ? normalize->area(row) : 1.;
+        const double area = normalize ? normalize->area(row.constData()) : 1.;
         if (!(std::isfinite(area) && area > 0))
             continue;
         for (int e = 0; e < energy.size(); ++e)
@@ -464,6 +328,30 @@ QVector<double> BondImaging::energySlice(const BondVolume &v, const QVector<doub
     for (qsizetype i = 0; i < n; ++i)
         if (!requireConvergence || supported(v, i))
             out[i] = valueAt(data.constData() + i, n, b);
+    return out;
+}
+
+QVector<double> BondImaging::energyIntegral(const BondVolume &v, const QVector<double> &data,
+                                           QPair<double, double> boundsKev) {
+    const auto n = v.voxelCount();
+    if (!n || v.converged.size() != v.axes[0].size() || v.sensitivity.size() != v.axes[1].size() ||
+        data.size() != n * v.axes[0].size())
+        fail(QCoreApplication::translate("BondVolume", "能量轴与四维结果不一致。"));
+    const auto &energy = v.axes[0];
+    checkAxis(energy);
+    const SpectralIntegral integral(energy, boundsKev);
+    if (!integral.coveredBy(v.converged))
+        fail(QCoreApplication::translate("BondVolume", "积分区间包含未收敛通道，请选择连续的已收敛能区。"));
+
+    QVector<double> out(n, NAN);
+    const auto *input = data.constData();
+    for (qsizetype i = 0; i < n; ++i) {
+        if (!supported(v, i))
+            continue;
+        const double area = integral.area(input + i, n);
+        if (std::isfinite(area))
+            out[i] = area;
+    }
     return out;
 }
 

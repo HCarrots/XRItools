@@ -26,6 +26,7 @@ class SpectroscopyDialog;
 class ImagingDialog;
 class BondWorkspace;
 class RoiDialog;
+class RoiDetectionDialog;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow {
@@ -71,6 +72,7 @@ class MainWindow : public QMainWindow {
   private:
     void buildUi();
     bool restartForLanguage(const QString &language);
+    void openAutomaticRoi();
     void showWorkspace(QWidget *page, const QString &title = {});
     void updateBrowserTitle();
     QTreeWidgetItem *fileRoot(const QString &file) const;
@@ -117,7 +119,7 @@ class MainWindow : public QMainWindow {
     QSpinBox *m_frame = nullptr;
     QToolButton *m_play = nullptr;
     QProgressBar *m_progress = nullptr;
-    QAction *m_roiAction = nullptr;
+    QAction *m_roiAction = nullptr, *m_automaticRoiAction = nullptr;
     QAction *m_exportAction = nullptr, *m_closeFileAction = nullptr, *m_closeAllAction = nullptr,
             *m_cancelExportAction = nullptr;
     QFutureWatcher<QString> m_exportWatcher;
@@ -128,6 +130,7 @@ class MainWindow : public QMainWindow {
     SpectroscopyDialog *m_spectroscopy = nullptr;
     ImagingDialog *m_imaging = nullptr;
     BondWorkspace *m_bond = nullptr;
+    RoiDetectionDialog *m_automaticRoi = nullptr;
     QStackedWidget *m_workspaces = nullptr;
     QWidget *m_browser = nullptr, *m_roiReturn = nullptr, *m_frameControls = nullptr;
     QToolButton *m_backToBrowser = nullptr;

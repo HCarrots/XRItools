@@ -6,6 +6,7 @@
 #include "ScientificPlot.h"
 #include "SpectroscopyDialog.h"
 #include "WorkflowUi.h"
+#include "WorkspacePaths.h"
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
@@ -106,6 +107,31 @@ MainWindow::~MainWindow() {
 void MainWindow::buildUi() {
     auto fileMenu = menuBar()->addMenu(tr("文件(&F)"));
     fileMenu->setObjectName("FileMenu");
+    auto selectWorkspace = fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("指定工作区…"));
+    selectWorkspace->setObjectName("SpecifyWorkspace");
+    const auto describeRoot = [this, selectWorkspace] {
+        const auto path = WorkspacePaths::root();
+        selectWorkspace->setStatusTip(path.isEmpty() ? tr("选择自动保存配置和结果的工作文件夹")
+                                                       : tr("当前工作区 %1").arg(QDir::toNativeSeparators(path)));
+    };
+    describeRoot();
+    connect(selectWorkspace, &QAction::triggered, this, [this, describeRoot] {
+        const auto path = QFileDialog::getExistingDirectory(this, tr("指定工作区"), WorkspacePaths::root());
+        if (path.isEmpty())
+            return;
+        try {
+            WorkspacePaths::setRoot(path);
+            if (m_imaging)
+                m_imaging->refreshOutputDestination();
+            if (m_bond)
+                m_bond->refreshOutputDestination();
+            describeRoot();
+            statusBar()->showMessage(tr("当前工作区 %1").arg(QDir::toNativeSeparators(WorkspacePaths::root())));
+        } catch (const std::exception &error) {
+            QMessageBox::warning(this, tr("指定工作区"), QString::fromUtf8(error.what()));
+        }
+    });
+    fileMenu->addSeparator();
     auto open = fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("导入 HDF5 文件(&O)…"),
                                     QKeySequence::Open);
     open->setObjectName("ImportHdfFiles");
@@ -158,17 +184,14 @@ void MainWindow::buildUi() {
     reset->setObjectName("ResetBrowserPlot");
     connect(reset, &QAction::triggered, this, [this] { m_plot->resetView(); });
     auto roiMenu = menuBar()->addMenu(tr("ROI(&R)"));
-    m_roiAction = roiMenu->addAction(WorkflowUi::icon("scan"), tr("选取分析晶体 ROI…"));
+    roiMenu->setObjectName("RoiMenu");
+    m_roiAction = roiMenu->addAction(tr("手动选取 ROI"));
     m_roiAction->setObjectName("SelectCrystalRois");
     m_roiAction->setEnabled(false);
     connect(m_roiAction, &QAction::triggered, this, [this] { openRoi(); });
-    auto automaticRoi = roiMenu->addAction(WorkflowUi::icon("scan"), tr("自动识别光斑 ROI…"));
-    automaticRoi->setObjectName("DetectSpotRois");
-    connect(automaticRoi, &QAction::triggered, this, [this] {
-        auto dialog = new RoiDetectionDialog(m_file, this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->open();
-    });
+    m_automaticRoiAction = roiMenu->addAction(tr("自动选取 ROI"));
+    m_automaticRoiAction->setObjectName("DetectSpotRois");
+    connect(m_automaticRoiAction, &QAction::triggered, this, &MainWindow::openAutomaticRoi);
     auto spectroscopyMenu = menuBar()->addMenu(tr("谱学(&S)"));
     auto spectrum = spectroscopyMenu->addAction(WorkflowUi::icon("chart-line"), tr("打开谱学处理工作区"));
     spectrum->setObjectName("SpectroscopyStep0");
@@ -177,7 +200,7 @@ void MainWindow::buildUi() {
     auto imaging = imagingMenu->addAction(WorkflowUi::icon("image"), tr("打开成像处理工作区"));
     imaging->setObjectName("ImagingStep0");
     connect(imaging, &QAction::triggered, this, [this] { openImaging(); });
-    auto chemicalBondMenu = menuBar()->addMenu(tr("化学键衬度分析(&O)"));
+    auto chemicalBondMenu = menuBar()->addMenu(tr("IXS衬度成像(&O)"));
     chemicalBondMenu->addAction(WorkflowUi::icon("layers"), tr("打开四维衬度工作区"), this,
                                 [this] { openBondImaging(); })
         ->setObjectName("OpenBondWorkspace");
@@ -254,6 +277,8 @@ void MainWindow::buildUi() {
     connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
         if (item)
             selectItem(item);
+        else if (!m_file.isEmpty())
+            clearPreview();
     });
 
     auto center = new QWidget;
@@ -273,6 +298,12 @@ void MainWindow::buildUi() {
     connect(m_files, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (index >= 0)
             activateFile(m_files->itemData(index).toString());
+        else if (!m_file.isEmpty()) {
+            rememberFile();
+            QSignalBlocker block(m_tree);
+            m_tree->setCurrentItem(nullptr);
+            clearPreview();
+        }
     });
     m_path = new QLabel(tr("未选择数据集"));
     QFont pathFont = m_path->font();
@@ -440,9 +471,7 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     m_play->setChecked(false);
     if (auto editor = qobject_cast<RoiDialog *>(m_workspaces->currentWidget()); editor && editor != page) {
         const auto file = m_roiEditors.key(editor);
-        const auto path =
-            QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/roi-drafts/" +
-            QCryptographicHash::hash(file.toUtf8(), QCryptographicHash::Sha256).toHex() + ".json";
+        const auto path = editor->currentSchemePath();
         if (m_spectroscopy)
             m_spectroscopy->useRoiDraft(file, path);
         if (m_imaging)
@@ -461,7 +490,7 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     else
         setWindowTitle(tr("%1 — XRI").arg(title));
     m_backToBrowser->setVisible(page != m_browser);
-    m_roiAction->setEnabled(page != m_browser || !m_file.isEmpty());
+    m_roiAction->setEnabled(!m_file.isEmpty() || (page != m_browser && page != m_automaticRoi));
     show();
 }
 
@@ -518,7 +547,7 @@ BondWorkspace *MainWindow::openBondImaging() {
         });
     }
     m_bond->setAvailableFiles(openedFiles());
-    showWorkspace(m_bond, tr("化学键衬度分析 · 三维差值与四维体素谱"));
+    showWorkspace(m_bond, tr("IXS衬度成像 · 三维差值与四维体素谱"));
     return m_bond;
 }
 RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
@@ -568,6 +597,16 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
         editor->loadFrom(roiScheme);
     showWorkspace(editor, tr("共用 ROI · 75 个分析晶体 — %1").arg(QFileInfo(file).fileName()));
     return editor;
+}
+
+void MainWindow::openAutomaticRoi() {
+    if (m_file.isEmpty())
+        return;
+    if (!m_automaticRoi) {
+        m_automaticRoi = new RoiDetectionDialog(m_file, this);
+        m_workspaces->addWidget(m_automaticRoi);
+    }
+    showWorkspace(m_automaticRoi, m_automaticRoi->windowTitle());
 }
 
 void MainWindow::populate(QTreeWidgetItem *parent, const QString &path, int depth) {
@@ -656,6 +695,8 @@ void MainWindow::rememberFile() {
                                m_yAxis->currentData().toInt(), m_tabs->currentIndex()};
 }
 void MainWindow::syncFiles() {
+    if (m_automaticRoi)
+        m_automaticRoi->setBrowserSource(m_file);
     if (m_spectroscopy)
         m_spectroscopy->setAvailableFiles(openedFiles());
     if (m_imaging)
@@ -672,6 +713,7 @@ void MainWindow::syncFiles() {
     m_files->setEnabled(m_files->count() > 0);
     m_fileCount->setText(tr("共 %1 个文件").arg(m_files->count()));
     m_roiAction->setEnabled(!m_file.isEmpty());
+    m_automaticRoiAction->setEnabled(!m_file.isEmpty());
     m_exportAction->setEnabled(!m_file.isEmpty() && !m_exporting);
     m_closeFileAction->setEnabled(!m_file.isEmpty());
     m_closeAllAction->setEnabled(m_files->count() > 0);

@@ -1,6 +1,7 @@
 #pragma once
 #include "ImagingIO.h"
 #include "WorkflowUi.h"
+#include "WorkspacePaths.h"
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <algorithm>
@@ -32,6 +33,8 @@ inline QJsonValue read(QWidget *widget, const QString &key) {
                 ids.append(id);
             return ids;
         } else if (kind == 3 || kind == 4) {
+            if (text.isEmpty() && key=="statistics.background_yz_mm")
+                return QJsonArray{};
             QJsonParseError error;
             auto doc = QJsonDocument::fromJson(text.toUtf8(), &error);
             if (error.error != QJsonParseError::NoError || (kind == 3 && !doc.isObject()) ||
@@ -90,10 +93,17 @@ void build(QWidget *context, QVBoxLayout *ll, QVBoxLayout *rr, QMap<QString, QWi
         QObject::connect(
             choose, &QPushButton::clicked, context, [context, &availableFiles, edit, label, scan] {
                 const auto title = QObject::tr("选择%1").arg(label);
+                auto folder = QFileInfo(edit->text()).absolutePath();
+                if (!scan && edit->text().isEmpty()) {
+                    const auto workspace = WorkspacePaths::directory(WorkspacePaths::Workflow::Roi,
+                                                                      WorkspacePaths::Kind::Config);
+                    if (!workspace.isEmpty())
+                        folder = workspace;
+                }
                 const auto path =
                     scan
                         ? WorkflowUi::selectSource(context, availableFiles, edit->text(), title)
-                        : QFileDialog::getOpenFileName(context, title, QFileInfo(edit->text()).absolutePath(),
+                        : QFileDialog::getOpenFileName(context, title, folder,
                                                        "ROI (*.json *.txt *.tsv);;All files (*)");
                 if (!path.isEmpty())
                     edit->setText(path);

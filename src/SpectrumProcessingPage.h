@@ -21,12 +21,20 @@ class SpectrumProcessingPage : public QWidget {
         return m_busy;
     }
     void setCurrentResult(ProcessedSpectrum result);
+    QMap<QString, QWidget *> configurationFields() const;
+    void resetInputs();
+    void prepareStitching();
+    bool ensureAnalysis(bool fromStitching);
     QWidget *analysisPage() const {
         return m_analysisPage;
     }
     QWidget *resultPage() const {
         return m_resultPage;
     }
+
+  signals:
+    void busyChanged();
+    void analysisFinished(bool usable);
 
   private:
     enum InputSource { CurrentSpectrum, ExternalSpectrum, StitchingSpectrum };
@@ -55,6 +63,7 @@ class SpectrumProcessingPage : public QWidget {
     QFutureWatcher<Work> m_watcher;
     std::atomic_bool m_cancel{false};
     bool m_busy = false;
+    bool m_autoWide = false;
     quint64 m_analysisRevision = 0;
     QWidget *m_analysisPage = nullptr, *m_resultPage = nullptr;
     QWidget *m_inputControls = nullptr, *m_fitControls = nullptr, *m_resultControls = nullptr;

@@ -5,16 +5,19 @@
 #include <QWidget>
 
 struct SpectrumCurve {
+    enum class Draw { Samples, Line, Circles };
     QString name;
     QVector<double> x, y;
     QColor color;
     bool dashed = false;
+    Draw draw = Draw::Samples;
 };
 // Energy coordinates are explicit: irregular and descending scans retain their physical axes.
 class SpectrumPlot : public QWidget {
     Q_OBJECT
   public:
-    explicit SpectrumPlot(QWidget *parent = nullptr);
+    enum class Style { Standard, Spectroscopy };
+    explicit SpectrumPlot(QWidget *parent = nullptr, Style style = Style::Standard);
     void setFineGrid(bool enabled) {
         m_fineGrid = enabled;
         update();
@@ -39,4 +42,5 @@ class SpectrumPlot : public QWidget {
     QRectF m_extent, m_view;
     bool m_grid = true, m_minorTicks = true, m_hasData = false;
     bool m_fineGrid = false;
+    Style m_style;
 };

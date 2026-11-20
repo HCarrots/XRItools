@@ -5,12 +5,13 @@
 #include <cmath>
 namespace ImagingFixture {
 inline QJsonObject create(const QString &directory, bool missing = false, bool reorderedRepeat = false,
-                          bool energyOuter = false, bool spectral = false, bool spatial = false) {
+                          bool energyOuter = false, bool spectral = false, bool spatial = false,
+                          bool twoCrystals = false) {
     if (!QDir().mkpath(directory))
         ImageUtil::fail("Cannot create imaging fixture directory");
-    int height = 47, width = 19;
+    int height = 47, width = twoCrystals ? 38 : 19;
     auto spot = [](double x, int row, int col) {
-        double u = (row - 23 - 10 * x) / 1.1, v = (col - 9 - .3 * x) / 1.3;
+        double u = (row - 23 - 10 * x) / 1.1, v = (col % 19 - 9 - .3 * x) / 1.3;
         return 2000 * std::exp(-(u * u - .2 * u * v + v * v) / (2 * .99));
     };
     auto write = [](ImagingH5 &f, const QString &path, const QVector<double> &data) {
@@ -78,6 +79,8 @@ inline QJsonObject create(const QString &directory, bool missing = false, bool r
     if (!roi.open(QIODevice::WriteOnly) ||
         roi.write("\troi_label\tx1\tx2\ty1\ty2\n1\told\t0\t19\t0\t47\n") < 0)
         ImageUtil::fail("Fixture ROI write failed");
+    if (twoCrystals && roi.write("2\tsecond\t19\t38\t0\t47\n") < 0)
+        ImageUtil::fail("Second fixture ROI write failed");
     roi.close();
     QJsonObject config{
         {"input", QJsonObject{{"calibration_nxs", "foil.nxs"},

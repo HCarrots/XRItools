@@ -1,10 +1,14 @@
 #include "SpectrumProcessingPage.h"
 #include "SpectrumPlot.h"
 #include "WorkflowUi.h"
+#include "WorkspacePaths.h"
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 
 namespace {
+using WorkspacePaths::Kind;
+using WorkspacePaths::Workflow;
+
 const QString inputFilter = QStringLiteral("Spectra (*.h5 *.hdf5 *.nxs *.txt *.tsv);;All files (*)");
 QDoubleSpinBox *numberBox(double min, double max, double value, int precision = 4) {
     auto box = new QDoubleSpinBox;
@@ -14,9 +18,8 @@ QDoubleSpinBox *numberBox(double min, double max, double value, int precision = 
     box->setKeyboardTracking(false);
     return box;
 }
-SpectrumPlot *finePlot(const QString &name) {
-    auto plot = new SpectrumPlot;
-    plot->setFineGrid(true);
+SpectrumPlot *spectroscopyPlot(const QString &name) {
+    auto plot = new SpectrumPlot(nullptr, SpectrumPlot::Style::Spectroscopy);
     plot->setObjectName(name);
     return plot;
 }
@@ -43,11 +46,9 @@ SpectrumWindows parseWindows(const QString &text, const QString &label) {
     }
     return result;
 }
-QString savePath(QWidget *parent, const QString &name) {
-    auto path = QFileDialog::getSaveFileName(parent, QObject::tr("保存谱学结果"), name, "HDF5 (*.h5 *.hdf5)");
-    if (!path.isEmpty() && QFileInfo(path).suffix().isEmpty())
-        path += ".h5";
-    return path;
+QString savePath(QWidget *parent, const QString &source, const QString &name) {
+    return WorkspacePaths::saveFile(parent, Workflow::Spectroscopy, Kind::Result, source,
+                                    QObject::tr("保存谱学结果"), name, "HDF5 (*.h5 *.hdf5)");
 }
 } // namespace
 
@@ -93,7 +94,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     selection->addWidget(m_inputInfo, 1);
     controls->addLayout(selection);
     input->addWidget(m_inputControls);
-    m_inputPlot = finePlot("StitchedSpectrum");
+    m_inputPlot = spectroscopyPlot("StitchedSpectrum");
     input->addWidget(m_inputPlot, 1);
     input->addWidget(m_status[0] = textLabel());
 
@@ -177,8 +178,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     reviewRow->addStretch();
     review->addLayout(reviewRow);
     auto diagnostic = new QTabWidget;
-    m_fitPlot = finePlot("MomentumBackgroundDiagnostics");
-    m_referencePlot = finePlot("ValenceMomentumReference");
+    m_fitPlot = spectroscopyPlot("MomentumBackgroundDiagnostics");
+    m_referencePlot = spectroscopyPlot("ValenceMomentumReference");
     diagnostic->addTab(m_fitPlot, tr("晶体扣除诊断"));
     diagnostic->addTab(m_referencePlot, tr("高 q 价电子轮廓"));
     diagnostic->setTabVisible(1, false);
@@ -215,12 +216,13 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
     resultRow->addWidget(m_resultHi);
     resultRow->addWidget(m_saveResult);
     results->addWidget(m_resultControls);
-    m_resultPlot = finePlot("CorrectedCrystalSpectrum");
+    m_resultPlot = spectroscopyPlot("CorrectedCrystalSpectrum");
     results->addWidget(m_resultPlot, 1);
     results->addWidget(m_resultInfo = textLabel());
     results->addWidget(m_status[2] = textLabel());
 
     connect(m_useCurrent, &QPushButton::clicked, this, [this] {
+        m_autoWide = false;
         m_wide = m_current;
         m_stitched = m_wide;
         refreshInput();
@@ -268,7 +270,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
         });
     });
     connect(m_saveStitch, &QPushButton::clicked, this, [this] {
-        auto path = savePath(this, "stitched_spectra.h5");
+        const auto path = savePath(this, m_stitched.sources.value(0), "stitched_spectra.h5");
         if (path.isEmpty())
             return;
         auto spectrum = m_stitched;
@@ -414,7 +416,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
             fits.insert(label, std::move(fit));
         }
         spectrum.processing["normalization_scales"] = normalizationScales;
-        auto path = savePath(m_resultPage, "background_corrected.h5");
+        const auto path = savePath(m_resultPage, spectrum.sources.value(0), "background_corrected.h5");
         if (path.isEmpty())
             return;
         start(
@@ -443,6 +445,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
         if (result.stitched)
             m_stitched = std::move(*result.stitched);
         if (updatedStitching) {
+            m_autoWide = false;
             refreshInput();
             if (m_analysisSource->currentIndex() == StitchingSpectrum)
                 refreshAnalysisInput();
@@ -454,6 +457,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
             else
                 m_analysisSource->setCurrentIndex(ExternalSpectrum);
         }
+        if (m_cancel.load())
+            result.analysis.reset();
         if (result.analysis && result.analysisRevision != m_analysisRevision) {
             result.analysis.reset();
             result.message = tr("输入谱已更新，请重新扣背底。");
@@ -497,6 +502,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QWidget *parent) : QWidget(parent
         m_resultControls->setEnabled(true);
         m_cancelButton->hide();
         refreshButtons();
+        emit busyChanged();
+        emit analysisFinished(result.analysis.has_value() && !m_analysis.crystals.isEmpty());
     });
     refreshInput();
     refreshAnalysisInput();
@@ -507,12 +514,76 @@ SpectrumProcessingPage::~SpectrumProcessingPage() {
     m_watcher.waitForFinished();
 }
 
+QMap<QString, QWidget *> SpectrumProcessingPage::configurationFields() const {
+    return {{"external_energy_dataset", m_energyPath},
+            {"external_labels_dataset", m_labelsPath},
+            {"external_intensity_dataset", m_intensityPath},
+            {"external_intensity_unit", m_unit},
+            {"external_energy_kev", m_kev},
+            {"external_energy_first", m_energyFirst},
+            {"background_source", m_analysisSource},
+            {"background_mode", m_backgroundMode},
+            {"high_q_min", m_qMin},
+            {"hf_table", m_hfTable},
+            {"hf_composition", m_composition},
+            {"hf_core_scale", m_coreScale},
+            {"valence_cutoff_ev", m_cutoff},
+            {"hf_normalization_window", m_windows[0]},
+            {"hf_core_tail_windows", m_windows[1]},
+            {"hf_clean_reference_windows", m_windows[2]},
+            {"high_q_residual_windows", m_windows[3]},
+            {"low_q_linear_windows", m_windows[4]},
+            {"result_energy_min_ev", m_resultLo},
+            {"result_energy_max_ev", m_resultHi}};
+}
+
+void SpectrumProcessingPage::resetInputs() {
+    m_current = {};
+    m_wide = {};
+    m_stitched = {};
+    m_external = {};
+    m_autoWide = false;
+    refreshInput();
+    refreshAnalysisInput();
+    message({});
+}
+
 void SpectrumProcessingPage::setCurrentResult(ProcessedSpectrum result) {
     m_current = std::move(result);
-    if (m_analysisSource->currentIndex() == CurrentSpectrum)
+    if (m_autoWide) {
+        m_wide = m_current;
+        m_stitched = m_wide;
+        refreshInput();
+    }
+    if (m_analysisSource->currentIndex() == CurrentSpectrum ||
+        (m_autoWide && m_analysisSource->currentIndex() == StitchingSpectrum))
         refreshAnalysisInput();
     else
         refreshButtons();
+}
+
+void SpectrumProcessingPage::prepareStitching() {
+    if (m_wide.crystals.isEmpty() && !m_current.crystals.isEmpty()) {
+        m_useCurrent->click();
+        m_autoWide = true;
+    }
+}
+
+bool SpectrumProcessingPage::ensureAnalysis(bool fromStitching) {
+    if (m_busy)
+        return false;
+    if (fromStitching && !m_autoWide && !m_stitched.crystals.isEmpty() &&
+        m_analysisSource->currentIndex() == CurrentSpectrum)
+        m_analysisSource->setCurrentIndex(StitchingSpectrum);
+    if (!m_analysis.crystals.isEmpty()) {
+        refreshResult();
+        return true;
+    }
+    if (m_run->isEnabled())
+        m_run->click();
+    else
+        message(m_analysisInputInfo->text(), true);
+    return false;
 }
 
 const ProcessedSpectrum &SpectrumProcessingPage::analysisInput() const {
@@ -558,6 +629,7 @@ void SpectrumProcessingPage::message(const QString &text, bool error) {
 
 void SpectrumProcessingPage::start(const QString &text, std::function<Work()> job, bool cancellable) {
     m_busy = true;
+    emit busyChanged();
     for (auto controls : {m_inputControls, m_fitControls, m_resultControls})
         controls->setEnabled(false);
     m_cancel.store(false);
@@ -585,8 +657,14 @@ void SpectrumProcessingPage::resetAnalysis() {
 }
 
 void SpectrumProcessingPage::refreshInput() {
-    if (m_stitched.crystals.isEmpty())
+    if (m_stitched.crystals.isEmpty()) {
+        QSignalBlocker block(m_inputCrystal);
+        m_inputCrystal->clear();
+        m_inputPlot->setCurves({}, {});
+        m_inputInfo->clear();
+        refreshButtons();
         return;
+    }
     auto label = m_inputCrystal->currentText();
     const auto names = m_stitched.crystals.keys();
     QStringList shown;
@@ -667,11 +745,11 @@ void SpectrumProcessingPage::refreshAnalysis() {
     } else {
         const auto &e = target.energyEv;
         QVector<SpectrumCurve> curves{{tr("输入谱"), e, item->input, QColor("#0072b2")},
-                                      {tr("扣除项"), e, item->fit.background, QColor("#d55e00"), true},
+                                      {tr("扣除项"), e, item->fit.background, QColor("#d55e00"), true, SpectrumCurve::Draw::Line},
                                       {tr("扣除后"), e, item->fit.corrected, QColor("#009e73")}};
         if (item->high) {
-            curves.append({tr("价电子轮廓"), e, item->valence, QColor("#895fa2"), true});
-            curves.append({tr("HF 芯谱参考"), e, item->hfCore, QColor("#858585"), true});
+            curves.append({tr("价电子轮廓"), e, item->valence, QColor("#895fa2"), true, SpectrumCurve::Draw::Line});
+            curves.append({tr("HF 芯谱参考"), e, item->hfCore, QColor("#858585"), true, SpectrumCurve::Draw::Line});
         }
         m_fitPlot->setCurves(curves, label, "Energy transfer (eV)",
                              item->high ? "HF-normalized S (1/eV)" : target.intensityUnit);
@@ -689,7 +767,7 @@ void SpectrumProcessingPage::refreshAnalysis() {
         reference.append({tr("高 q 中位轮廓"), m_analysis.pz, m_analysis.measuredJ, QColor("#777777")});
     if (!m_analysis.fittedJ.isEmpty())
         reference.append(
-            {tr("Pearson VII 价电子轮廓"), m_analysis.pz, m_analysis.fittedJ, QColor("#0072b2")});
+            {tr("Pearson VII 价电子轮廓"), m_analysis.pz, m_analysis.fittedJ, QColor("#0072b2"), false, SpectrumCurve::Draw::Line});
     m_referencePlot->setCurves(reference,
                                tr("高 q 参考 · %1 个晶体 · Pearson R² %2")
                                    .arg(m_analysis.references.size())

@@ -30,7 +30,8 @@ inline CrystalRois rois() {
     r.assign(60, {1, 1, 2, 2}, {6, 6});
     return r;
 }
-inline QString create(const QString &directory, bool elastic, bool descending = false, bool withI0 = true) {
+inline QString create(const QString &directory, bool elastic, bool descending = false, bool withI0 = true,
+                      bool shallowGlitch = false) {
     auto path = QDir(directory).filePath(elastic      ? "1_scan_20261106000000_1.nxs"
                                          : descending ? "3_scan_20261106000000_1.nxs"
                                                       : "2_scan_20261106000000_1.nxs");
@@ -41,12 +42,20 @@ inline QString create(const QString &directory, bool elastic, bool descending = 
     for (int i = 0; i < 81; ++i) {
         int index = descending ? 80 - i : i;
         double e = (elastic ? 9.680 : 9.685) + index * .000125;
+        if (shallowGlitch && index == 30)
+            e += .00003125;
         energy.append(e);
         double flux = !elastic && index == 30 ? .2 : 2;
+        if (shallowGlitch && index == 30)
+            flux = 1.84;
+        if (shallowGlitch && index == 31)
+            flux = 2.04;
         i0.append(-flux);
         double signal =
             elastic ? 100 / (1 + std::pow((e - 9.685) * 1000 / .35, 2)) + 3 : 10 + .5 * (e - 9.685) * 1000;
         auto fill = [&](QVector<double> &image, int width, int x, int y, double factor) {
+            if (shallowGlitch && index == 30)
+                factor = 0; // A lost detector frame distinguishes frame repair from I0-only correction.
             int base = i * width * width + y * width + x;
             image[base] = flux * signal * factor;
             image[base + 1] = flux * signal * factor * .25;

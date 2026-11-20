@@ -4,6 +4,10 @@
     <context>
         <name>BondFigures</name>
         <message>
+            <source>相对灵敏度 · X (mm) · 点击曲线选取深度</source>
+            <translation>Relative sensitivity · X (mm) · Click to select depth</translation>
+        </message>
+        <message>
             <source>左键拖动旋转，滚轮缩放，双击复位</source>
             <translation>Left-drag to rotate, scroll to zoom, and double-click to reset</translation>
         </message>
@@ -35,6 +39,10 @@
     <context>
         <name>BondVolume</name>
         <message>
+            <source>此文件是旧版三维差值结果。请在数据浏览器中查看，或选择四维体素 HDF5。</source>
+            <translation>This file contains a legacy 3D difference result. View it in the data browser or choose a 4D voxel HDF5 file.</translation>
+        </message>
+        <message>
             <source>结果数组的维数与格式不一致。</source>
             <translation>The result array dimensions do not match the format.</translation>
         </message>
@@ -63,48 +71,16 @@
             <translation>The integration range includes unconverged channels or extends beyond the reference profile.</translation>
         </message>
         <message>
-            <source>衬度数据与空间坐标尺寸不一致。</source>
-            <translation>The contrast data dimensions do not match the spatial coordinates.</translation>
+            <source>积分区间包含未收敛通道，请选择连续的已收敛能区。</source>
+            <translation>The integration range includes unconverged channels. Select a continuous range of converged channels.</translation>
         </message>
         <message>
             <source>无法在输出目录建立临时文件。</source>
             <translation>Could not create a temporary file in the output directory.</translation>
         </message>
         <message>
-            <source>无法提交三维衬度文件，请确认文件名尚未使用。</source>
-            <translation>Could not finalize the 3D contrast file. Check that the filename is available.</translation>
-        </message>
-        <message>
-            <source>无法识别三维衬度结果版本。</source>
-            <translation>Unrecognized 3D contrast result version.</translation>
-        </message>
-        <message>
-            <source>三维衬度结果缺少有效的 Ea、Eb。</source>
-            <translation>The 3D contrast result is missing valid Ea and Eb values.</translation>
-        </message>
-        <message>
-            <source>三维衬度需要两个不同能量，使用相对强度差值。</source>
-            <translation>3D contrast requires two distinct energies and uses the difference in relative intensity.</translation>
-        </message>
-        <message>
-            <source>康普顿参考与实测能量轴不一致。</source>
-            <translation>The Compton reference does not match the measured energy axis.</translation>
-        </message>
-        <message>
             <source>康普顿截面修正无效。</source>
             <translation>Invalid Compton cross-section correction.</translation>
-        </message>
-        <message>
-            <source>Ea 或 Eb 超出康普顿参考轮廓覆盖。</source>
-            <translation>Ea or Eb is outside the range covered by the Compton reference profile.</translation>
-        </message>
-        <message>
-            <source>线性拟合区间必须递增。</source>
-            <translation>Linear fitting bounds must be in ascending order.</translation>
-        </message>
-        <message>
-            <source>线性背底至少需要两个有参考覆盖的实测能量点。</source>
-            <translation>A linear background requires at least two measured energy points covered by the reference.</translation>
         </message>
         <message>
             <source>幅度匹配区间需要完整覆盖和正的宽谱积分。</source>
@@ -218,6 +194,238 @@
     <context>
         <name>BondWorkspace</name>
         <message>
+            <source>4 四维体素重建</source>
+            <translation>4 4D Voxel Reconstruction</translation>
+        </message>
+        <message>
+            <source>查看三维结果分析</source>
+            <translation>View 3D Result Analysis</translation>
+        </message>
+        <message>
+            <source>5 四维结果与体素谱</source>
+            <translation>5 4D Results and Voxel Spectra</translation>
+        </message>
+        <message>
+            <source>6 三维结果分析</source>
+            <translation>6 3D Result Analysis</translation>
+        </message>
+        <message>
+            <source>选择 XRI 四维体素结果</source>
+            <translation>Select an XRI 4D Voxel Result</translation>
+        </message>
+        <message>
+            <source>确认晶体并进入四维重建</source>
+            <translation>Confirm Crystals and Continue to 4D Reconstruction</translation>
+        </message>
+        <message>
+            <source>正在打开四维体素结果…</source>
+            <translation>Opening the 4D voxel result…</translation>
+        </message>
+        <message>
+            <source>校验数据</source>
+            <translation>Validate Data</translation>
+        </message>
+        <message>
+            <source>请先完成第 4 步四维体素重建，或在第 1 步打开已有结果。</source>
+            <translation>Complete Step 4 to reconstruct the 4D voxels, or open an existing result in Step 1.</translation>
+        </message>
+        <message>
+            <source>请先在第 1 步校验数据。</source>
+            <translation>Validate the data in Step 1 first.</translation>
+        </message>
+        <message>
+            <source>请先完成第 2 步 ROI 标定。</source>
+            <translation>Complete the ROI calibration in Step 2 first.</translation>
+        </message>
+        <message>
+            <source>请先在第 3 步确认晶体。</source>
+            <translation>Confirm the crystals in Step 3 first.</translation>
+        </message>
+        <message>
+            <source>输入校验记录</source>
+            <translation>Input Validation Log</translation>
+        </message>
+        <message>
+            <source>3 筛选晶体</source>
+            <translation>3 Crystal Selection</translation>
+        </message>
+        <message>
+            <source>用薄膜标定晶体的空间响应，用样品积分谱拟合相对增益。两条路线共用这套模型。</source>
+            <translation>Calibrate each crystal's spatial response with the foil and fit relative gains from the integrated sample signal. Both routes use this model.</translation>
+        </message>
+        <message>
+            <source>ROI 标定参数</source>
+            <translation>ROI Calibration Settings</translation>
+        </message>
+        <message>
+            <source>计算 ROI 标定</source>
+            <translation>Calculate ROI Calibration</translation>
+        </message>
+        <message>
+            <source>计算后检查体素网格、采用的晶体和增益收敛状态。</source>
+            <translation>After calibration, review the voxel grid, accepted crystals and gain convergence.</translation>
+        </message>
+        <message>
+            <source>晶体编号</source>
+            <translation>Crystal ID</translation>
+        </message>
+        <message>
+            <source>相对增益</source>
+            <translation>Relative Gain</translation>
+        </message>
+        <message>
+            <source>空间模型或拒绝原因</source>
+            <translation>Spatial Model or Rejection Reason</translation>
+        </message>
+        <message>
+            <source>晶体标定</source>
+            <translation>Crystal Calibration</translation>
+        </message>
+        <message>
+            <source>标定记录</source>
+            <translation>Calibration Log</translation>
+        </message>
+        <message>
+            <source>2 ROI标定</source>
+            <translation>2 ROI Calibration</translation>
+        </message>
+        <message>
+            <source>1. 逐能量反投影</source>
+            <translation>1. Per-Energy Back-Projection</translation>
+        </message>
+        <message>
+            <source>汇总各能量、各 YZ 位置的剂量归一化计数，应用共用空间模型得到逐能量反投影。</source>
+            <translation>Pool dose-normalized counts at each energy and YZ position, then apply the shared spatial model to back-project each channel.</translation>
+        </message>
+        <message>
+            <source>计算逐能量反投影</source>
+            <translation>Calculate Per-Energy Back-Projections</translation>
+        </message>
+        <message>
+            <source>2. 四维体素求解</source>
+            <translation>2. 4D Voxel Solve</translation>
+        </message>
+        <message>
+            <source>对每个入射能量独立求解非负体素。扣背底在求解后的体素谱上设置。</source>
+            <translation>Solve for nonnegative voxels independently at each incident energy. Set background subtraction on the resulting voxel spectra.</translation>
+        </message>
+        <message>
+            <source>求解四维体素</source>
+            <translation>Solve 4D Voxels</translation>
+        </message>
+        <message>
+            <source>计算后检查各能量通道的归一化探测器信号。</source>
+            <translation>After back-projection, review the normalized detector signal for each energy channel.</translation>
+        </message>
+        <message>
+            <source>入射能量 / keV</source>
+            <translation>Incident Energy / keV</translation>
+        </message>
+        <message>
+            <source>探测器信号 L2 范数</source>
+            <translation>Detector Signal L2 Norm</translation>
+        </message>
+        <message>
+            <source>保存原始四维体素 HDF5</source>
+            <translation>Save Raw 4D Voxels as HDF5</translation>
+        </message>
+        <message>
+            <source>未启用</source>
+            <translation>Disabled</translation>
+        </message>
+        <message>
+            <source>四维体素的双能量差值 S(Eb) − S(Ea)</source>
+            <translation>Dual-Energy Difference from 4D Voxels S(Eb) − S(Ea)</translation>
+        </message>
+        <message>
+            <source>区间积分强度</source>
+            <translation>Energy-Interval Integral</translation>
+        </message>
+        <message>
+            <source>积分下限</source>
+            <translation>Lower bound</translation>
+        </message>
+        <message>
+            <source>积分上限</source>
+            <translation>Upper bound</translation>
+        </message>
+        <message>
+            <source>四维体素已求解，尚未保存。</source>
+            <translation>4D voxels have been solved and are unsaved.</translation>
+        </message>
+        <message>
+            <source>结果文件：%1</source>
+            <translation>Result File: %1</translation>
+        </message>
+        <message>
+            <source>下一步：筛选晶体</source>
+            <translation>Next: Select Crystals</translation>
+        </message>
+        <message>
+            <source>返回第 2 步更新标定</source>
+            <translation>Back to Step 2 to Update Calibration</translation>
+        </message>
+        <message>
+            <source>晶体选择或空间参数已变更，请重新计算 ROI 标定。</source>
+            <translation>Crystal selection or spatial settings changed. Recalculate the ROI calibration.</translation>
+        </message>
+        <message>
+            <source>输入已校验。请计算 ROI 标定。</source>
+            <translation>Inputs validated. Calculate the ROI calibration.</translation>
+        </message>
+        <message>
+            <source>正在计算 ROI 标定…</source>
+            <translation>Calculating ROI calibration…</translation>
+        </message>
+        <message>
+            <source>ROI 标定完成。检查体素网格和晶体增益后继续。</source>
+            <translation>ROI calibration complete. Review the grid and crystal gains before continuing.</translation>
+        </message>
+        <message>
+            <source>正在计算逐能量反投影…</source>
+            <translation>Calculating per-energy back-projections…</translation>
+        </message>
+        <message>
+            <source>逐能量反投影已完成。检查通道后可求解四维体素。</source>
+            <translation>Per-energy back-projections are ready. Review the channels, then solve the 4D voxels.</translation>
+        </message>
+        <message>
+            <source>正在逐能量求解四维体素…</source>
+            <translation>Solving 4D voxels by energy…</translation>
+        </message>
+        <message>
+            <source>四维体素已求解。检查结果和通道收敛情况后保存。</source>
+            <translation>4D voxels are ready. Review the result and channel convergence, then save.</translation>
+        </message>
+        <message>
+            <source>正在写入 HDF5 结果…</source>
+            <translation>Writing the HDF5 result…</translation>
+        </message>
+        <message>
+            <source>结果已保存到 %1</source>
+            <translation>Result saved to %1</translation>
+        </message>
+        <message>
+            <source>网格 %1 × %2 × %3 · ΔX %4 mm · 采用 %5 块晶体 · 拒绝 %6 块 · 增益 %7 · 积分谱 NNLS %8</source>
+            <translation>Grid %1 × %2 × %3 · ΔX %4 mm · %5 accepted crystals · %6 rejected · gain fit %7 · integrated NNLS %8</translation>
+        </message>
+        <message>
+            <source>固定高斯</source>
+            <translation>Fixed Gaussian</translation>
+        </message>
+        <message>
+            <source>随 X 变化的高斯</source>
+            <translation>X-Dependent Gaussian</translation>
+        </message>
+        <message>
+            <source>实测模板</source>
+            <translation>Measured Template</translation>
+        </message>
+        <message>
+            <source>已准备 %1 个能量通道，供下一步非负求解。</source>
+            <translation>%1 energy channels ready for the nonnegative solve.</translation>
+        </message>
+        <message>
             <source>显示数据</source>
             <translation>Display data</translation>
         </message>
@@ -294,44 +502,12 @@
             <translation>Detector spectra are normalized by I₀ × exposure. Choose a background method, then calculate S(Eb) − S(Ea).</translation>
         </message>
         <message>
-            <source>仅做 I₀ 与曝光归一化</source>
-            <translation>Normalize by I₀ and exposure only</translation>
-        </message>
-        <message>
-            <source>线性扣背底</source>
-            <translation>Subtract linear background</translation>
-        </message>
-        <message>
-            <source>按 q 分流扣背底</source>
-            <translation>Background subtraction by q</translation>
-        </message>
-        <message>
-            <source>谱处理</source>
-            <translation>Spectral processing</translation>
-        </message>
-        <message>
             <source>起点:终点，可填多段</source>
             <translation>Start:end, multiple ranges allowed</translation>
         </message>
         <message>
-            <source>线性拟合区间 / keV</source>
-            <translation>Linear fitting range / keV</translation>
-        </message>
-        <message>
             <source>宽谱与康普顿参数…</source>
             <translation>Wide-range spectrum and Compton settings…</translation>
-        </message>
-        <message>
-            <source>Ea 入射能量 / keV</source>
-            <translation>Ea incident energy / keV</translation>
-        </message>
-        <message>
-            <source>Eb 入射能量 / keV</source>
-            <translation>Eb incident energy / keV</translation>
-        </message>
-        <message>
-            <source>计算差值投影</source>
-            <translation>Calculate difference projection</translation>
         </message>
         <message>
             <source>纳入</source>
@@ -356,14 +532,6 @@
         <message>
             <source>Y / mm</source>
             <translation>Y / mm</translation>
-        </message>
-        <message>
-            <source>Z / mm</source>
-            <translation>Z / mm</translation>
-        </message>
-        <message>
-            <source>差值投影（YZ）</source>
-            <translation>Difference projection (YZ)</translation>
         </message>
         <message>
             <source>空间反演</source>
@@ -506,10 +674,6 @@
             <translation>3D spectral plot along X</translation>
         </message>
         <message>
-            <source>查看衬度结果</source>
-            <translation>View contrast result</translation>
-        </message>
-        <message>
             <source>单能量强度</source>
             <translation>Single-energy intensity</translation>
         </message>
@@ -578,24 +742,12 @@
             <translation>Save current configuration</translation>
         </message>
         <message>
-            <source>选择 XRI 三维差值或四维结果</source>
-            <translation>Select an XRI 3D difference or 4D result</translation>
-        </message>
-        <message>
             <source>正在取消…</source>
             <translation>Canceling…</translation>
         </message>
         <message>
             <source>%1 %2</source>
             <translation>%1 %2</translation>
-        </message>
-        <message>
-            <source>输入或谱参数已变化，请重新计算差值投影。</source>
-            <translation>Inputs or spectral parameters have changed. Recalculate the difference projection.</translation>
-        </message>
-        <message>
-            <source>%1 · ROI 像素差值和 · S(%2) − S(%3)</source>
-            <translation>%1 · ROI pixel difference sum · S(%2) − S(%3)</translation>
         </message>
         <message>
             <source>已载入方案，请核对文件和曝光。</source>
@@ -622,10 +774,6 @@
             <translation>Save 4D result</translation>
         </message>
         <message>
-            <source>保存三维差值结果</source>
-            <translation>Save 3D difference result</translation>
-        </message>
-        <message>
             <source>无法写入结果，请选择尚未使用的文件名。</source>
             <translation>Could not write the result. Choose a filename that is not in use.</translation>
         </message>
@@ -642,20 +790,8 @@
             <translation>4D result saved to %1</translation>
         </message>
         <message>
-            <source>请选择两个不同的入射能量。</source>
-            <translation>Select two distinct incident energies.</translation>
-        </message>
-        <message>
-            <source>请填写线性背底拟合区间。</source>
-            <translation>Enter the linear background fitting range.</translation>
-        </message>
-        <message>
             <source>请先选择含晶体 q 的逐晶体宽谱。</source>
             <translation>Select a per-crystal wide-range spectrum that includes crystal q values.</translation>
-        </message>
-        <message>
-            <source>正在准备探测器谱与差值投影…</source>
-            <translation>Preparing detector spectra and difference projection…</translation>
         </message>
         <message>
             <source>请填写低 q 线性拟合区间。</source>
@@ -672,10 +808,6 @@
         <message>
             <source>三维差值已保存到 %1</source>
             <translation>3D difference saved to %1</translation>
-        </message>
-        <message>
-            <source>正在打开衬度结果…</source>
-            <translation>Opening contrast result…</translation>
         </message>
         <message>
             <source>已打开结果 %1</source>
@@ -700,10 +832,6 @@
         <message>
             <source>D · 分区平均谱与参考谱</source>
             <translation>D · Region-averaged spectra and references</translation>
-        </message>
-        <message>
-            <source>先谱处理的三维差值</source>
-            <translation>3D difference after spectral processing</translation>
         </message>
         <message>
             <source>能量转移 (eV)</source>
@@ -782,20 +910,24 @@
             <translation> · Display subsampled</translation>
         </message>
         <message>
-            <source>三维差值 · S(%1) − S(%2)</source>
-            <translation>3D difference · S(%1) − S(%2)</translation>
-        </message>
-        <message>
-            <source>请选择已载入的三维差值结果。</source>
-            <translation>Select a loaded 3D difference result.</translation>
-        </message>
-        <message>
             <source>请选择两个不同的能量。</source>
             <translation>Select two distinct energies.</translation>
         </message>
         <message>
             <source>双能量衬度 · S(%1) − S(%2) · %3</source>
             <translation>Two-energy contrast · S(%1) − S(%2) · %3</translation>
+        </message>
+        <message>
+            <source>区间积分强度 · %1 至 %2 · %3</source>
+            <translation>Energy-interval integral · %1 to %2 · %3</translation>
+        </message>
+        <message>
+            <source>积分面积（无量纲）</source>
+            <translation>Integrated area (dimensionless)</translation>
+        </message>
+        <message>
+            <source>积分强度（相对单位 × keV）</source>
+            <translation>Integrated intensity (relative units × keV)</translation>
         </message>
         <message>
             <source>单能量 %1 · %2%3</source>
@@ -816,10 +948,6 @@
         <message>
             <source>    灰色为无效</source>
             <translation>    Gray indicates invalid voxels</translation>
-        </message>
-        <message>
-            <source>相对密度差值</source>
-            <translation>Relative density difference</translation>
         </message>
         <message>
             <source>基体参考谱</source>
@@ -1077,10 +1205,6 @@
             <source>当前阈值没有等值面，请调整阈值。</source>
             <translation>No isosurface at this threshold. Adjust the threshold.</translation>
         </message>
-        <message>
-            <source> · </source>
-            <translation> · </translation>
-        </message>
     </context>
     <context>
         <name>ComptonProcessing</name>
@@ -1283,6 +1407,34 @@
     <context>
         <name>Imaging</name>
         <message>
+            <source>输入文件已变化，请返回「数据与 ROI」重新校验。</source>
+            <translation>An input file changed. Return to Data and ROI and validate the inputs again.</translation>
+        </message>
+        <message>
+            <source>空间标定完成</source>
+            <translation>Spatial calibration complete</translation>
+        </message>
+        <message>
+            <source>准备逐能量反投影</source>
+            <translation>Preparing per-energy back-projections</translation>
+        </message>
+        <message>
+            <source>逐能量反投影完成</source>
+            <translation>Per-energy back-projections complete</translation>
+        </message>
+        <message>
+            <source>开始四维体素求解</source>
+            <translation>Starting the 4D voxel solve</translation>
+        </message>
+        <message>
+            <source>比较光斑模型 %1/%2 · %3</source>
+            <translation>Comparing spot models %1/%2 · %3</translation>
+        </message>
+        <message>
+            <source>薄箔留出验证 %1/%2 · X = %3 mm</source>
+            <translation>Held-out foil %1/%2 · X = %3 mm</translation>
+        </message>
+        <message>
             <source>找不到输入文件：%1</source>
             <translation>Input file not found: %1</translation>
         </message>
@@ -1311,36 +1463,8 @@
             <translation>Validating scans and ROIs</translation>
         </message>
         <message>
-            <source>请至少纳入一个有效晶体。</source>
-            <translation>Include at least one valid crystal.</translation>
-        </message>
-        <message>
-            <source>差值投影缓存超过 512 MiB，请缩小 ROI 或减少参与的晶体。</source>
-            <translation>The difference projection buffer exceeds 512 MiB. Use smaller ROIs or fewer crystals.</translation>
-        </message>
-        <message>
-            <source>准备谱处理和双能量差值</source>
-            <translation>Preparing spectral processing and the two-energy difference</translation>
-        </message>
-        <message>
-            <source>谱处理参数与晶体数不匹配。</source>
-            <translation>Spectral settings do not match the number of crystals.</translation>
-        </message>
-        <message>
-            <source>谱处理权重与实测能量不匹配。</source>
-            <translation>Spectral weights do not match the measured energies.</translation>
-        </message>
-        <message>
-            <source>计算探测器差值投影 %1 / %2</source>
-            <translation>Calculating detector difference projection %1 / %2</translation>
-        </message>
-        <message>
             <source>计算期间输入文件已变化，请重新校验后计算差值投影。</source>
             <translation>An input file changed during processing. Validate the inputs and calculate the projection again.</translation>
-        </message>
-        <message>
-            <source>差值投影完成</source>
-            <translation>Difference projection complete</translation>
         </message>
         <message>
             <source>增益锚点必须是差值投影中纳入的晶体。</source>
@@ -1353,26 +1477,6 @@
         <message>
             <source>输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。</source>
             <translation>An input file has changed since projection. Return to Data and ROI to validate and calculate the projection again.</translation>
-        </message>
-        <message>
-            <source>反演带符号的三维差值</source>
-            <translation>Inverting the signed 3D difference</translation>
-        </message>
-        <message>
-            <source>无法反演三维差值：空间响应无效。</source>
-            <translation>Cannot invert the 3D difference because the spatial response is invalid.</translation>
-        </message>
-        <message>
-            <source>无法分解三维差值的空间响应。</source>
-            <translation>Could not factorize the spatial response for the 3D difference.</translation>
-        </message>
-        <message>
-            <source>三维差值反演产生了无效数值。</source>
-            <translation>The 3D difference inversion produced invalid values.</translation>
-        </message>
-        <message>
-            <source>三维差值反演完成</source>
-            <translation>3D difference inversion complete</translation>
         </message>
         <message>
             <source>校验样品、薄膜、扫描坐标和 ROI</source>
@@ -1478,6 +1582,370 @@ Settings (outer to inner): %4</translation>
     </context>
     <context>
         <name>ImagingDialog</name>
+        <message>
+            <source>已取消诊断计算。</source>
+            <translation>Diagnostic calculation canceled.</translation>
+        </message>
+        <message>
+            <source>边界复算完成，点击「查看边界对照」检查收敛状态和形貌。</source>
+            <translation>Boundary reconstructions complete. Open the comparison to inspect convergence and morphology.</translation>
+        </message>
+        <message>
+            <source>选择独立空白扫描</source>
+            <translation>Select an independent blank scan</translation>
+        </message>
+        <message>
+            <source>主输出：相对 Kapton 等效弹性散射密度 I(X,Y,Z)。能量已积分；背景来源可在重建参数中指定。</source>
+            <translation>Output: energy-integrated relative Kapton-equivalent elastic scattering density I(X,Y,Z). Set the background source in reconstruction parameters.</translation>
+        </message>
+        <message>
+            <source>计数方差与背景</source>
+            <translation>Counting variance and background</translation>
+        </message>
+        <message>
+            <source>按传播计数方差加权（NNLS、增益与 TV）</source>
+            <translation>Weight NNLS, gains and TV by propagated counting variance</translation>
+        </message>
+        <message>
+            <source>σ 下限（积分信号单位）</source>
+            <translation>Sigma floor (integrated signal units)</translation>
+        </message>
+        <message>
+            <source>自动：方差下限取各晶体正方差均值的 1%</source>
+            <translation>Automatic: 1% of mean positive variance for each crystal</translation>
+        </message>
+        <message>
+            <source>独立空白扫描</source>
+            <translation>Independent blank scan</translation>
+        </message>
+        <message>
+            <source>空白曝光 / s</source>
+            <translation>Blank exposure / s</translation>
+        </message>
+        <message>
+            <source>使用样品曝光时间</source>
+            <translation>Use sample exposure</translation>
+        </message>
+        <message>
+            <source>背景区 [Ymin,Ymax,Zmin,Zmax] / mm</source>
+            <translation>Background [Ymin,Ymax,Zmin,Zmax] / mm</translation>
+        </message>
+        <message>
+            <source>空白扫描按能量汇总整份扫描的计数与剂量。也可指定样品扫描中已知为空白的 YZ 区域，至少覆盖两个位置。</source>
+            <translation>Blank counts and dose are pooled by energy. Alternatively, specify a known background YZ region containing at least two sample positions.</translation>
+        </message>
+        <message>
+            <source>按 X 灵敏度把晶体分成两组，在共同覆盖的深度范围内独立复算。比较锚点和 TV 强度对质心、半高厚度及局部突起的影响。</source>
+            <translation>Split crystals into two groups with shared depth coverage. Compare how gain anchors and TV strength affect centroids, half-maximum widths and local features.</translation>
+        </message>
+        <message>
+            <source>运行晶体分组与边界复算</source>
+            <translation>Run crystal-group reconstructions</translation>
+        </message>
+        <message>
+            <source>查看边界对照</source>
+            <translation>View boundary comparison</translation>
+        </message>
+        <message>
+            <source>增益与边界稳定性</source>
+            <translation>Gain and boundary stability</translation>
+        </message>
+        <message>
+            <source>%1 × %2 × %3 · %4 · 相对 Kapton 等效密度 · NNLS 残差 %5 · TV %6 · %7</source>
+            <translation>%1 × %2 × %3 · %4 · Relative Kapton-equivalent density · NNLS residual %5 · TV %6 · %7</translation>
+        </message>
+        <message>
+            <source>已校正独立背景</source>
+            <translation>Independent background correction applied</translation>
+        </message>
+        <message>
+            <source>未指定样品背景</source>
+            <translation>No sample background specified</translation>
+        </message>
+        <message>
+            <source>正在读取分组重建数据…</source>
+            <translation>Loading crystal-group reconstruction data…</translation>
+        </message>
+        <message>
+            <source>晶体分组、增益与边界对照</source>
+            <translation>Crystal groups, gains and boundaries</translation>
+        </message>
+        <message>
+            <source>共同覆盖 %1/%2 个 X 位置。表中质心按强度加权，左右边界为轴向投影主峰的半高交点，单位 mm。截断的交点留空。图中显示各次复算达到体峰值 50% 的区域。</source>
+            <translation>Shared coverage: %1/%2 X positions. Centroids are intensity weighted. Boundaries are the half-maximum crossings of the main projected peak in mm. Truncated crossings are blank. The image shows voxels reaching 50% of each volume peak.</translation>
+        </message>
+        <message>
+            <source>查看分组</source>
+            <translation>Group members</translation>
+        </message>
+        <message>
+            <source>参与复算的晶体</source>
+            <translation>Crystals in each group</translation>
+        </message>
+        <message>
+            <source> 可用于对照的收敛复算：A 组 %1 次，B 组 %2 次。</source>
+            <translation> Converged runs: group A %1, group B %2.</translation>
+        </message>
+        <message>
+            <source>收敛复算出现比例（%1 次）</source>
+            <translation>Occurrence in converged runs (%1)</translation>
+        </message>
+        <message>
+            <source>全部试算出现比例（%1 次）</source>
+            <translation>Occurrence in all signal-bearing runs (%1)</translation>
+        </message>
+        <message>
+            <source>X 切片</source>
+            <translation>X slice</translation>
+        </message>
+        <message>
+            <source>组</source>
+            <translation>Group</translation>
+        </message>
+        <message>
+            <source>锚点</source>
+            <translation>Anchor</translation>
+        </message>
+        <message>
+            <source>TV 倍数</source>
+            <translation>TV multiplier</translation>
+        </message>
+        <message>
+            <source>质心</source>
+            <translation>Centroid</translation>
+        </message>
+        <message>
+            <source>左边界</source>
+            <translation>Left edge</translation>
+        </message>
+        <message>
+            <source>右边界</source>
+            <translation>Right edge</translation>
+        </message>
+        <message>
+            <source>厚度</source>
+            <translation>Thickness</translation>
+        </message>
+        <message>
+            <source>增益未收敛</source>
+            <translation>Gain fit did not converge</translation>
+        </message>
+        <message>
+            <source>NNLS 未收敛</source>
+            <translation>NNLS did not converge</translation>
+        </message>
+        <message>
+            <source>TV 未收敛</source>
+            <translation>TV did not converge</translation>
+        </message>
+        <message>
+            <source>无信号</source>
+            <translation>No signal</translation>
+        </message>
+        <message>
+            <source>首选锚点、TV ×1，B 减 A：质心差 %1 mm，厚度差 %2 mm。%3</source>
+            <translation>Primary anchors at TV ×1 (B minus A): centroid difference %1 mm, thickness difference %2 mm. %3</translation>
+        </message>
+        <message>
+            <source>该对照缺少两组均收敛的结果。</source>
+            <translation>This comparison lacks converged results in both groups.</translation>
+        </message>
+        <message>
+            <source>无共同覆盖或无可用复算</source>
+            <translation>No shared coverage or available runs</translation>
+        </message>
+        <message>
+            <source>已取消薄箔计算。</source>
+            <translation>Foil calculation canceled.</translation>
+        </message>
+        <message>
+            <source>光斑模型比较完成，已保存逐晶体报告。</source>
+            <translation>Spot model comparison complete. Per-crystal report saved.</translation>
+        </message>
+        <message>
+            <source>晶体光斑模型（PSF）</source>
+            <translation>Crystal point spread function (PSF)</translation>
+        </message>
+        <message>
+            <source>用薄箔留出误差自动选择模型</source>
+            <translation>Select models by held-out foil error</translation>
+        </message>
+        <message>
+            <source>每次留出一个薄箔位置，比较整幅 ROI 的预测误差。至少 8 个合格位置且光斑有明显不对称时，加入实测模板。关闭自动选择可使用恒定高斯。</source>
+            <translation>Hold out each foil position and compare prediction error over the whole ROI. Measured templates are considered for asymmetric spots with at least eight valid positions. Disable automatic selection to use the constant Gaussian.</translation>
+        </message>
+        <message>
+            <source>用已有标定比较模型</source>
+            <translation>Compare models on saved calibration</translation>
+        </message>
+        <message>
+            <source>光斑模型与质心轨迹</source>
+            <translation>Spot models and centroid trajectories</translation>
+        </message>
+        <message>
+            <source>恒定高斯</source>
+            <translation>Constant Gaussian</translation>
+        </message>
+        <message>
+            <source>变宽度、变幅度高斯</source>
+            <translation>Varying-width and amplitude Gaussian</translation>
+        </message>
+        <message>
+            <source>实测模板插值</source>
+            <translation>Interpolated measured template</translation>
+        </message>
+        <message>
+            <source>采用模型：%1</source>
+            <translation>Reconstruction model: %1</translation>
+        </message>
+        <message>
+            <source> · 本次标定比较推荐：%1</source>
+            <translation> · Calibration comparison selects %1</translation>
+        </message>
+        <message>
+            <source> · %1 个留出位置 · 整幅 ROI 相对误差：%2</source>
+            <translation> · %1 held-out positions · Relative whole-ROI errors: %2</translation>
+        </message>
+        <message>
+            <source> · 部分留出轮次无法标定，保留基线</source>
+            <translation> · Incomplete calibration folds, retaining the baseline</translation>
+        </message>
+        <message>
+            <source> · 本次重建使用固定基线</source>
+            <translation> · Fixed baseline used for this reconstruction</translation>
+        </message>
+        <message>
+            <source> · 模板未参评：合格位置 %1/8</source>
+            <translation> · Template excluded: %1/8 valid positions</translation>
+        </message>
+        <message>
+            <source> · 模板未参评：不对称指标 %1，门限 0.12</source>
+            <translation> · Template excluded: asymmetry %1, threshold 0.12</translation>
+        </message>
+        <message>
+            <source> · 模板未参评：区间内有效留出预测少于 3 次</source>
+            <translation> · Template excluded: fewer than three interior interpolation tests</translation>
+        </message>
+        <message>
+            <source>TV 未收敛，主结果采用 NNLS</source>
+            <translation>TV did not converge, using NNLS</translation>
+        </message>
+        <message>
+            <source>算法</source>
+            <translation>Method</translation>
+        </message>
+        <message>
+            <source>已知位置响应低于显示阈值</source>
+            <translation>Foil response below display threshold</translation>
+        </message>
+        <message>
+            <source>相对灵敏度</source>
+            <translation>Relative sensitivity</translation>
+        </message>
+        <message>
+            <source>已取消深度分辨率验证。</source>
+            <translation>Depth validation canceled.</translation>
+        </message>
+        <message>
+            <source>薄箔留出验证完成，报告已保存。</source>
+            <translation>Held-out foil validation complete. Report saved.</translation>
+        </message>
+        <message>
+            <source>验证完成，报告可在当前窗口查看。%1</source>
+            <translation>Validation complete. The report is available in this window. %1</translation>
+        </message>
+        <message>
+            <source>半透明标记低响应区</source>
+            <translation>Shade low-response depths</translation>
+        </message>
+        <message>
+            <source>以全 X 峰值的百分比定义低响应区，仅影响显示。</source>
+            <translation>Display threshold as a percentage of peak X sensitivity.</translation>
+        </message>
+        <message>
+            <source>深度分辨率验证</source>
+            <translation>Validate depth resolution</translation>
+        </message>
+        <message>
+            <source>逐个留出薄箔位置进行重建，完成后在结果目录保存 depth_validation.json。</source>
+            <translation>Reconstruct each held-out foil position and save depth_validation.json in the result directory.</translation>
+        </message>
+        <message>
+            <source>查看逐点报告</source>
+            <translation>View report</translation>
+        </message>
+        <message>
+            <source>拟合未收敛</source>
+            <translation>Fit did not converge</translation>
+        </message>
+        <message>
+            <source>未检出峰</source>
+            <translation>No peak detected</translation>
+        </message>
+        <message>
+            <source>半高处超出网格</source>
+            <translation>Half-maximum crossing outside grid</translation>
+        </message>
+        <message>
+            <source>存在多个半高峰区</source>
+            <translation>Multiple lobes above half maximum</translation>
+        </message>
+        <message>
+            <source>没有可用的 X 灵敏度数据。</source>
+            <translation>X sensitivity unavailable.</translation>
+        </message>
+        <message>
+            <source>X = %1 mm   ·   网格间距 %2 mm   ·   灵敏度 %3（峰值的 %4%）</source>
+            <translation>X = %1 mm   ·   Grid spacing %2 mm   ·   Sensitivity %3 (%4% of peak)</translation>
+        </message>
+        <message>
+            <source>尚无薄箔定位实测结果。</source>
+            <translation>No foil validation measurements yet.</translation>
+        </message>
+        <message>
+            <source>最近实测薄箔 %1 mm（相距 %2 mm） · %3 定位偏差 %4 mm · FWHM %5 mm</source>
+            <translation>Nearest foil %1 mm (distance %2 mm) · %3 position bias %4 mm · FWHM %5 mm</translation>
+        </message>
+        <message>
+            <source>正在读取薄箔标定数据…</source>
+            <translation>Reading foil calibration data…</translation>
+        </message>
+        <message>
+            <source>薄箔留出验证 · %1</source>
+            <translation>Held-out foil validation · %1</translation>
+        </message>
+        <message>
+            <source>每行留出一个薄箔位置，其余位置重新拟合标定。偏差 = 恢复峰位 − 已知位置。峰宽为单条深度剖面的半高全宽，含薄箔自身厚度（%1 mm）。</source>
+            <translation>Each row holds out one foil position and recalibrates on the others. Bias = recovered peak position − known position. FWHM describes a single depth profile and includes the finite foil thickness (%1 mm).</translation>
+        </message>
+        <message>
+            <source>薄箔 X (mm)</source>
+            <translation>Foil X (mm)</translation>
+        </message>
+        <message>
+            <source>恢复 X (mm)</source>
+            <translation>Recovered X (mm)</translation>
+        </message>
+        <message>
+            <source>偏差 (mm)</source>
+            <translation>Bias (mm)</translation>
+        </message>
+        <message>
+            <source>FWHM (mm)</source>
+            <translation>FWHM (mm)</translation>
+        </message>
+        <message>
+            <source>网格间距 (mm)</source>
+            <translation>Grid spacing (mm)</translation>
+        </message>
+        <message>
+            <source>晶体数</source>
+            <translation>Crystals</translation>
+        </message>
+        <message>
+            <source>已收敛</source>
+            <translation>Converged</translation>
+        </message>
         <message>
             <source>成像处理 — 薄膜标定与三维联合反演 — XRI</source>
             <translation>Imaging — Foil Calibration and 3D Joint Inversion — XRI</translation>
@@ -1779,6 +2247,50 @@ Settings (outer to inner): %4</translation>
             <translation>Enter a relative density. Scientific notation is accepted.</translation>
         </message>
         <message>
+            <source>保存旋转 GIF…</source>
+            <translation>Save rotating GIF…</translation>
+        </message>
+        <message>
+            <source>从当前视角绕 Z 轴旋转，只导出白底模型。</source>
+            <translation>Export the model on a white background, rotating around Z from the current view.</translation>
+        </message>
+        <message>
+            <source>保存旋转 GIF</source>
+            <translation>Save rotating GIF</translation>
+        </message>
+        <message>
+            <source>每转一圈的时间（秒）</source>
+            <translation>Seconds per revolution</translation>
+        </message>
+        <message>
+            <source>GIF 动图 (*.gif)</source>
+            <translation>Animated GIF (*.gif)</translation>
+        </message>
+        <message>
+            <source>正在导出旋转 GIF…</source>
+            <translation>Exporting rotating GIF…</translation>
+        </message>
+        <message>
+            <source>取消导出</source>
+            <translation>Cancel export</translation>
+        </message>
+        <message>
+            <source>正在取消 GIF 导出…</source>
+            <translation>Canceling GIF export…</translation>
+        </message>
+        <message>
+            <source>已取消 GIF 导出。</source>
+            <translation>GIF export canceled.</translation>
+        </message>
+        <message>
+            <source>旋转 GIF 已保存到 %1</source>
+            <translation>Rotating GIF saved to %1</translation>
+        </message>
+        <message>
+            <source>无法保存旋转 GIF（%1）。</source>
+            <translation>Could not save the rotating GIF (%1).</translation>
+        </message>
+        <message>
             <source>生成等值面</source>
             <translation>Generate isosurface</translation>
         </message>
@@ -2028,6 +2540,22 @@ Settings (outer to inner): %4</translation>
     <context>
         <name>MainWindow</name>
         <message>
+            <source>指定工作区…</source>
+            <translation>Set Workspace…</translation>
+        </message>
+        <message>
+            <source>指定工作区</source>
+            <translation>Set Workspace</translation>
+        </message>
+        <message>
+            <source>选择自动保存配置和结果的工作文件夹</source>
+            <translation>Choose a folder for saving configurations and results automatically</translation>
+        </message>
+        <message>
+            <source>当前工作区 %1</source>
+            <translation>Current workspace %1</translation>
+        </message>
+        <message>
             <source>XRI — 非共振非弹性散射成像数据处理工具</source>
             <translation>XRI — Nonresonant Inelastic Scattering Imaging and Analysis</translation>
         </message>
@@ -2097,15 +2625,15 @@ Settings (outer to inner): %4</translation>
         </message>
         <message>
             <source>ROI(&amp;R)</source>
-            <translation>ROI(&amp;R)</translation>
+            <translation>&amp;ROI</translation>
         </message>
         <message>
-            <source>选取分析晶体 ROI…</source>
-            <translation>Select Analyzer Crystal ROIs…</translation>
+            <source>手动选取 ROI</source>
+            <translation>Manual ROI</translation>
         </message>
         <message>
-            <source>自动识别光斑 ROI…</source>
-            <translation>Automatically Detect Spot ROIs…</translation>
+            <source>自动选取 ROI</source>
+            <translation>Automatic ROI</translation>
         </message>
         <message>
             <source>谱学(&amp;S)</source>
@@ -2124,8 +2652,8 @@ Settings (outer to inner): %4</translation>
             <translation>Open Imaging Workspace</translation>
         </message>
         <message>
-            <source>化学键衬度分析(&amp;O)</source>
-            <translation>Chemical B&amp;ond Contrast</translation>
+            <source>IXS衬度成像(&amp;O)</source>
+            <translation>IXS C&amp;ontrast Imaging</translation>
         </message>
         <message>
             <source>打开四维衬度工作区</source>
@@ -2264,8 +2792,8 @@ Settings (outer to inner): %4</translation>
             <translation>Imaging · grid_scan → Input checks → 3D reconstruction → Results and diagnostics</translation>
         </message>
         <message>
-            <source>化学键衬度分析 · 三维差值与四维体素谱</source>
-            <translation>Chemical Bond Contrast · 3D difference and 4D voxel spectra</translation>
+            <source>IXS衬度成像 · 三维差值与四维体素谱</source>
+            <translation>IXS Contrast Imaging · 3D difference and 4D voxel spectra</translation>
         </message>
         <message>
             <source>请先为当前处理步骤选择有效的数据文件。</source>
@@ -2509,6 +3037,8 @@ Settings (outer to inner): %4</translation>
     </context>
     <context>
         <name>RoiDetectionDialog</name>
+        <message><source>%1 · 选择探测器和帧范围后运行识别。</source><translation>%1 · Select the detector and frames, then run detection.</translation></message>
+        <message><source>请在数据浏览器中导入并选中含 LAMBDA 或 MINIPIX 数据的文件。</source><translation>Import and select a file containing LAMBDA or MINIPIX data in the data browser.</translation></message>
         <message>
             <source>自动识别光斑 ROI</source>
             <translation>Automatic Spot ROI Detection</translation>
@@ -2546,8 +3076,16 @@ Settings (outer to inner): %4</translation>
             <translation>Sum all frames</translation>
         </message>
         <message>
-            <source>帧索引</source>
-            <translation>Frame index</translation>
+            <source>全部帧叠加（原始计数）</source>
+            <translation>Sum All Frames (Raw Counts)</translation>
+        </message>
+        <message>
+            <source>单帧（原始计数）</source>
+            <translation>Single Frame (Raw Counts)</translation>
+        </message>
+        <message>
+            <source>帧</source>
+            <translation>Frame</translation>
         </message>
         <message>
             <source>置信度</source>
@@ -2560,6 +3098,18 @@ Settings (outer to inner): %4</translation>
         <message>
             <source>探测器</source>
             <translation>Detector</translation>
+        </message>
+        <message>
+            <source>识别参数</source>
+            <translation>Detection Settings</translation>
+        </message>
+        <message>
+            <source>探测器图像</source>
+            <translation>Detector Image</translation>
+        </message>
+        <message>
+            <source>识别结果</source>
+            <translation>Detection Results</translation>
         </message>
         <message>
             <source>识别后显示编号和掩膜叠加图</source>
@@ -2614,15 +3164,15 @@ Settings (outer to inner): %4</translation>
             <translation>Export Masks and Measurements…</translation>
         </message>
         <message>
-            <source>手动匹配晶体并保存 ROI…</source>
-            <translation>Manually Match Crystals and Save ROIs…</translation>
+            <source>取消识别</source>
+            <translation>Cancel Detection</translation>
         </message>
         <message>
-            <source>使用本次识别结果…</source>
-            <translation>Use Current Detection Results…</translation>
+            <source>匹配晶体</source>
+            <translation>Match Crystals</translation>
         </message>
         <message>
-            <source>载入已保存的识别结果…</source>
+            <source>载入识别结果…</source>
             <translation>Load Saved Detection Results…</translation>
         </message>
         <message>
@@ -2734,12 +3284,16 @@ Settings (outer to inner): %4</translation>
             <translation>The detection results contain an invalid spot ID, centroid, or mask.</translation>
         </message>
         <message>
-            <source>手动匹配晶体掩膜 · %1</source>
-            <translation>Manually Match Crystal Masks · %1</translation>
+            <source>返回识别结果</source>
+            <translation>Back to Detection Results</translation>
         </message>
         <message>
-            <source>先在左侧选择晶体，再点击右侧对应的光斑掩膜。滚轮缩放，拖动平移。</source>
-            <translation>Select a crystal on the left, then click its spot mask on the right. Scroll to zoom or drag to pan.</translation>
+            <source>先在右侧选择晶体，再点击左侧对应的光斑掩膜。滚轮缩放，拖动平移。</source>
+            <translation>Select a crystal on the right, then click its spot mask on the left. Scroll to zoom or drag to pan.</translation>
+        </message>
+        <message>
+            <source>选择此处的光斑</source>
+            <translation>Choose a Spot at This Pixel</translation>
         </message>
         <message>
             <source>晶体</source>
@@ -3098,6 +3652,27 @@ Settings (outer to inner): %4</translation>
     </context>
     <context>
         <name>Spectroscopy</name>
+        <message><source>I0 跌幅阈值须介于 0% 与 100% 之间。</source><translation>The I0 drop threshold must be between 0% and 100%.</translation></message>
+        <message>
+            <source>参考扫描与 ROI 探测器尺寸不一致。</source>
+            <translation>Reference detector dimensions differ from those of the ROI.</translation>
+        </message>
+        <message>
+            <source>像素谱矩阵过大，请缩小初始 ROI。</source>
+            <translation>The pixel spectra matrix is too large. Select a smaller initial ROI.</translation>
+        </message>
+        <message>
+            <source>ROI 超出参考扫描范围。</source>
+            <translation>ROI exceeds the reference detector bounds.</translation>
+        </message>
+        <message>
+            <source>请选择有效的晶体 ROI。</source>
+            <translation>Select a valid crystal ROI.</translation>
+        </message>
+        <message>
+            <source>谱分辨掩膜与初始 ROI 不匹配。</source>
+            <translation>Spectral mask does not match the initial ROI.</translation>
+        </message>
         <message>
             <source>已取消谱学计算。</source>
             <translation>Spectroscopy calculation canceled.</translation>
@@ -3297,6 +3872,44 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectroscopyDialog</name>
+        <message><source>收起参数面板</source><translation>Collapse parameters</translation></message>
+        <message><source>展开参数面板</source><translation>Expand parameters</translation></message>
+        <message><source>计算弹性峰</source><translation>Fit elastic peaks</translation></message>
+        <message><source>修复 I0 孤立低点及对应帧</source><translation>Repair isolated I0 dips and frames</translation></message>
+        <message><source>最小跌幅</source><translation>Minimum drop</translation></message>
+        <message><source>已修复点</source><translation>Repaired points</translation></message>
+        <message><source>I0 · 已修复 %1 点 · %2</source><translation>I0 · %1 points repaired · %2</translation></message>
+        <message><source>已完成确认，所有晶体均保留原 ROI。</source><translation>Review complete. All crystals retain their original ROIs.</translation></message>
+        <message><source>%1 的组分掩膜无效。</source><translation>Invalid component mask for %1.</translation></message>
+        <message><source>已更新 %1 个晶体的原始 ROI。</source><translation>Updated the original ROIs for %1 crystals.</translation></message>
+        <message><source>选择弹性扫描并载入 ROI，点击下一步计算掩膜。</source><translation>Select the elastic scan, load the ROIs and click Next to calculate masks.</translation></message>
+        <message><source>掩膜已计算。可修正像素，或点击下一步计算弹性标定。</source><translation>Masks are ready. Refine the pixels or click Next to fit the elastic peaks.</translation></message>
+        <message><source>请先计算掩膜。</source><translation>Calculate masks first.</translation></message>
+        <message><source>点击下一步计算掩膜。</source><translation>Click Next to calculate masks.</translation></message>
+        <message>
+            <source>像素谱分解…</source>
+            <translation>Pixel spectral decomposition…</translation>
+        </message>
+        <message>
+            <source>清除此晶体谱掩膜</source>
+            <translation>Clear crystal spectral mask</translation>
+        </message>
+        <message>
+            <source>请在表中选择已经应用谱掩膜的晶体。</source>
+            <translation>Select a crystal with an applied spectral mask in the table.</translation>
+        </message>
+        <message>
+            <source>像素谱分解</source>
+            <translation>Pixel spectral decomposition</translation>
+        </message>
+        <message>
+            <source>请先载入初始 ROI。</source>
+            <translation>Load an initial ROI first.</translation>
+        </message>
+        <message>
+            <source>%1 已应用谱掩膜，保留 %2 个像素。请重新标定并提取 XRS。</source>
+            <translation>Spectral mask applied to %1 with %2 retained pixels. Recalibrate and extract XRS.</translation>
+        </message>
         <message>
             <source>谱学处理 — XRI</source>
             <translation>Spectroscopy — XRI</translation>
@@ -3334,8 +3947,40 @@ Incomplete output directory: </translation>
             <translation>Use a scheme saved from the ROI menu or the draft for the current elastic file</translation>
         </message>
         <message>
-            <source>载入方案…</source>
-            <translation>Load Scheme…</translation>
+            <source>载入 ROI…</source>
+            <translation>Load ROI…</translation>
+        </message>
+        <message>
+            <source>载入已有方案…</source>
+            <translation>Load existing configuration…</translation>
+        </message>
+        <message>
+            <source>保存当前配置…</source>
+            <translation>Save current configuration…</translation>
+        </message>
+        <message>
+            <source>载入已有方案</source>
+            <translation>Load existing configuration</translation>
+        </message>
+        <message>
+            <source>保存谱学配置</source>
+            <translation>Save spectroscopy configuration</translation>
+        </message>
+        <message>
+            <source>请选择有效的 XRI 谱学配置 JSON。</source>
+            <translation>Select a valid XRI spectroscopy configuration JSON file.</translation>
+        </message>
+        <message>
+            <source>谱学配置字段无效：%1</source>
+            <translation>Invalid spectroscopy configuration field: %1</translation>
+        </message>
+        <message>
+            <source>已载入方案 %1。请核对文件路径，然后重新计算。</source>
+            <translation>Loaded %1. Check the input paths, then run the calculation again.</translation>
+        </message>
+        <message>
+            <source>配置已保存：%1</source>
+            <translation>Configuration saved: %1</translation>
         </message>
         <message>
             <source>选取 ROI…</source>
@@ -3402,8 +4047,8 @@ Incomplete output directory: </translation>
             <translation>ROIs and pixel masks</translation>
         </message>
         <message>
-            <source>使用弹性叠加图生成的强度掩膜</source>
-            <translation>Use intensity masks from the summed elastic image</translation>
+            <source>使用像素掩膜（优先采用谱分辨结果）</source>
+            <translation>Use pixel masks (spectral selections take priority)</translation>
         </message>
         <message>
             <source>在原 ROI 内寻找峰值并重定位</source>
@@ -3526,8 +4171,8 @@ Incomplete output directory: </translation>
             <translation>Expand Y</translation>
         </message>
         <message>
-            <source>2 ROI 与掩膜</source>
-            <translation>2 ROIs and Masks</translation>
+            <source>2 掩膜与谱分辨</source>
+            <translation>2 Masks and Spectral Discrimination</translation>
         </message>
         <message>
             <source>请先完成弹性标定。</source>
@@ -3790,8 +4435,8 @@ Incomplete output directory: </translation>
             <translation>Original ROI</translation>
         </message>
         <message>
-            <source>强度掩膜</source>
-            <translation>Intensity mask</translation>
+            <source>像素掩膜</source>
+            <translation>Pixel mask</translation>
         </message>
         <message>
             <source> · 弹性峰</source>
@@ -4473,6 +5118,216 @@ Incomplete output directory: </translation>
         <message>
             <source>%1 个晶体 · %2 个有效能量点 · 最大采样点 %3 eV，强度 %4</source>
             <translation>%1 crystals · %2 valid energy points · Peak sampled at %3 eV with intensity %4</translation>
+        </message>
+    </context>
+    <context>
+        <name>SpectralMaskDialog</name>
+        <message><source>全部晶体确认后，一次性更新已采用的 ROI。</source><translation>Review all crystals to apply the selected ROIs together.</translation></message>
+        <message><source>晶体</source><translation>Crystal</translation></message>
+        <message><source>采用所选组分</source><translation>Use selected component</translation></message>
+        <message><source>不采用，保留原 ROI</source><translation>Keep original ROI</translation></message>
+        <message><source>已记录此晶体的组分掩膜。可重新分解以修改选择。</source><translation>A component mask is recorded for this crystal. Decompose again to revise it.</translation></message>
+        <message><source>待确认</source><translation>Awaiting review</translation></message>
+        <message><source>未计算</source><translation>Not calculated</translation></message>
+        <message><source>保留原 ROI</source><translation>Keep original ROI</translation></message>
+        <message><source>采用组分 %1</source><translation>Use component %1</translation></message>
+        <message><source>已确认 %1 / %2</source><translation>Reviewed %1 / %2</translation></message>
+        <message><source>更新原始 ROI</source><translation>Update original ROI</translation></message>
+        <message><source>当前原始 ROI</source><translation>Current original ROI</translation></message>
+        <message><source>%1 原始 ROI 已更新，共 %2 个像素。</source><translation>Original ROI for %1 updated to %2 pixels.</translation></message>
+        <message>
+            <source>上一个晶体</source>
+            <translation>Previous crystal</translation>
+        </message>
+        <message>
+            <source>下一个晶体</source>
+            <translation>Next crystal</translation>
+        </message>
+        <message>
+            <source>关闭</source>
+            <translation>Close</translation>
+        </message>
+        <message>
+            <source>应用并下一个</source>
+            <translation>Apply and next</translation>
+        </message>
+        <message>
+            <source>%1 已应用掩膜，保留 %2 个像素。</source>
+            <translation>Mask applied to %1 with %2 retained pixels.</translation>
+        </message>
+        <message>
+            <source>掩膜与谱分辨 · %1</source>
+            <translation>Masks and Spectral Discrimination · %1</translation>
+        </message>
+        <message>
+            <source>参考 XRS 扫描</source>
+            <translation>Reference XRS scan</translation>
+        </message>
+        <message>
+            <source>浏览…</source>
+            <translation>Browse…</translation>
+        </message>
+        <message>
+            <source>分解方法</source>
+            <translation>Method</translation>
+        </message>
+        <message>
+            <source>组分数</source>
+            <translation>Components</translation>
+        </message>
+        <message>
+            <source>从初始 ROI 分解</source>
+            <translation>Decompose initial ROI</translation>
+        </message>
+        <message>
+            <source>用保留像素再分解</source>
+            <translation>Refine retained pixels</translation>
+        </message>
+        <message>
+            <source>目标组分</source>
+            <translation>Sample component</translation>
+        </message>
+        <message>
+            <source>反转组分符号</source>
+            <translation>Reverse component sign</translation>
+        </message>
+        <message>
+            <source>协方差阈值 / 正峰值</source>
+            <translation>Covariance / positive maximum</translation>
+        </message>
+        <message>
+            <source>协方差绝对阈值</source>
+            <translation>Absolute covariance cutoff</translation>
+        </message>
+        <message>
+            <source>候选与保留像素</source>
+            <translation>Candidate and retained pixels</translation>
+        </message>
+        <message>
+            <source>逐像素协方差</source>
+            <translation>Covariance by pixel</translation>
+        </message>
+        <message>
+            <source>积分谱对照</source>
+            <translation>Integrated spectra</translation>
+        </message>
+        <message>
+            <source>应用到此晶体</source>
+            <translation>Apply to crystal</translation>
+        </message>
+        <message>
+            <source>选择具有样品特征的参考扫描，分解后根据谱形选择目标组分。</source>
+            <translation>Choose a reference scan with a sample feature, then identify the sample component by its spectrum.</translation>
+        </message>
+        <message>
+            <source>正在读取像素谱并分解…</source>
+            <translation>Reading and decomposing pixel spectra…</translation>
+        </message>
+        <message>
+            <source>取消</source>
+            <translation>Cancel</translation>
+        </message>
+        <message>
+            <source>已取消。</source>
+            <translation>Cancelled.</translation>
+        </message>
+        <message>
+            <source>组分谱 · 所选组分为实线</source>
+            <translation>Component spectra · selected component shown solid</translation>
+        </message>
+        <message>
+            <source>入射能量 (keV)</source>
+            <translation>Incident energy (keV)</translation>
+        </message>
+        <message>
+            <source>单位范数组分</source>
+            <translation>Unit-norm component</translation>
+        </message>
+        <message>
+            <source>候选 = 1，保留 = 2</source>
+            <translation>Candidate = 1, retained = 2</translation>
+        </message>
+        <message>
+            <source>协方差</source>
+            <translation>Covariance</translation>
+        </message>
+        <message>
+            <source>阈值</source>
+            <translation>Cutoff</translation>
+        </message>
+        <message>
+            <source>初始 ROI 像素序号</source>
+            <translation>Pixel index in initial ROI</translation>
+        </message>
+        <message>
+            <source>本轮候选</source>
+            <translation>Current candidates</translation>
+        </message>
+        <message>
+            <source>保留像素</source>
+            <translation>Retained pixels</translation>
+        </message>
+        <message>
+            <source>第 %1 轮 · 保留 %2 / %3 像素 · 协方差阈值 %4 · 相对重构残差 %5</source>
+            <translation>Round %1 · %2 of %3 pixels retained · covariance cutoff %4 · relative residual %5</translation>
+        </message>
+        <message>
+            <source> · 达到迭代上限</source>
+            <translation> · iteration limit reached</translation>
+        </message>
+    </context>
+    <context>
+        <name>SpectralMask</name>
+        <message>
+            <source>已取消。</source>
+            <translation>Cancelled</translation>
+        </message>
+        <message>
+            <source>组分数须在有效像素数和能量点数允许的范围内。</source>
+            <translation>Component count exceeds the available pixels or energy points.</translation>
+        </message>
+        <message>
+            <source>像素谱矩阵维度不一致。</source>
+            <translation>Invalid pixel spectra dimensions.</translation>
+        </message>
+        <message>
+            <source>谱数据须为有限值，NNMF 还要求强度非负。</source>
+            <translation>NNMF requires non-negative intensities. All methods require finite data.</translation>
+        </message>
+        <message>
+            <source>候选像素在参考扫描中没有信号。</source>
+            <translation>The selected pixels contain no signal.</translation>
+        </message>
+        <message>
+            <source>中心化后可分辨的组分不足，请减少组分数。</source>
+            <translation>Too few independent spectra after centering. Reduce the component count.</translation>
+        </message>
+        <message>
+            <source>ICA 分离方向退化，请减少组分数或选择 PCA。</source>
+            <translation>ICA direction is degenerate. Reduce components or use PCA.</translation>
+        </message>
+    </context>
+    <context>
+        <name>WorkspacePaths</name>
+        <message>
+            <source>无法创建工作区目录 %1。</source>
+            <translation>Could not create workspace directory %1.</translation>
+        </message>
+        <message>
+            <source>请选择一个可用的工作文件夹。</source>
+            <translation>Select an accessible workspace folder.</translation>
+        </message>
+        <message>
+            <source>工作区路径不能包含中文，请选择其他文件夹。</source>
+            <translation>The workspace path cannot contain Chinese characters. Select another folder.</translation>
+        </message>
+        <message>
+            <source>无法保存工作区设置。</source>
+            <translation>Could not save workspace settings.</translation>
+        </message>
+        <message>
+            <source>工作文件夹不可用，请重新指定工作区。</source>
+            <translation>The workspace folder is unavailable. Set the workspace again.</translation>
         </message>
     </context>
 </TS>

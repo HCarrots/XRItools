@@ -7,9 +7,11 @@
 #include "RoiDialog.h"
 #include "ScientificPlot.h"
 #include "SpectroscopyDialog.h"
+#include "SpectralMaskDialog.h"
 #include "SpectrumFixture.h"
 #include "SpectrumPlot.h"
 #include "SpectrumProcessing.h"
+#include "WorkspacePaths.h"
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -23,20 +25,26 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QGraphicsView>
+#include <QImageReader>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -47,9 +55,51 @@
 #include <QWheelEvent>
 #include <QtTest>
 #include <cmath>
+#include <type_traits>
 
 class GuiTests : public QObject {
     Q_OBJECT
+
+    template <typename Control>
+    static void chooseWorkflowFile(Control *control, const QString &path, double seconds = 0.) {
+        const bool native = !QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        QElapsedTimer deadline;
+        deadline.start();
+        QPointer<QFileDialog> activePicker;
+        QTimer driveDialogs;
+        connect(&driveDialogs, &QTimer::timeout, control, [&] {
+            auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!modal)
+                return;
+            if (deadline.hasExpired(5000)) {
+                modal->reject();
+            } else if (auto *period = qobject_cast<QInputDialog *>(modal)) {
+                period->setDoubleValue(seconds);
+                period->accept();
+            } else if (auto *picker = qobject_cast<QFileDialog *>(modal)) {
+                if (activePicker != picker) {
+                    activePicker = picker;
+                    const QFileInfo file(path);
+                    picker->setDirectory(file.absolutePath());
+                    picker->selectFile(file.fileName());
+                    if (auto *name = picker->findChild<QLineEdit *>("fileNameEdit"))
+                        name->setText(file.fileName());
+                    return;
+                }
+                QMetaObject::invokeMethod(picker, "accept");
+            } else {
+                modal->reject();
+            }
+        });
+        driveDialogs.start(20);
+        if constexpr (std::is_same_v<Control, QAction>)
+            control->trigger();
+        else
+            control->click();
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, !native);
+    }
+
   private slots:
     void bilingualUi() {
         const QString key = "ui/language";
@@ -107,14 +157,31 @@ class GuiTests : public QObject {
             });
             QCOMPARE(english.findChild<QMenu *>("FileMenu")->title(), QStringLiteral("&File"));
             QCOMPARE(english.findChild<QMenu *>("LanguageMenu")->title(), QStringLiteral("&Language"));
+            auto *roiMenu = english.findChild<QMenu *>("RoiMenu");
+            QVERIFY(roiMenu);
+            QCOMPARE(roiMenu->title(), QStringLiteral("&ROI"));
+            QCOMPARE(english.findChild<QAction *>("SelectCrystalRois")->text(), QStringLiteral("Manual ROI"));
+            QCOMPARE(english.findChild<QAction *>("DetectSpotRois")->text(), QStringLiteral("Automatic ROI"));
             QVERIFY(english.findChild<QAction *>("Language_en")->isChecked());
             auto *spectroscopy = english.openSpectroscopy()->findChild<QTabWidget *>("SpectroscopySteps");
             auto *imaging = english.openImaging()->findChild<QTabWidget *>("ImagingSteps");
             auto *bond = english.openBondImaging()->findChild<QTabWidget *>("BondSteps");
             QVERIFY(spectroscopy && imaging && bond);
+            for (auto tabs : {spectroscopy, imaging, bond}) {
+                const auto tools = tabs->cornerWidget()->findChildren<QPushButton *>();
+                QVERIFY(tools.size() >= 2);
+                QCOMPARE(tools[0]->text(), QStringLiteral("Load existing configuration…"));
+                QCOMPARE(tools[1]->text(), QStringLiteral("Save current configuration…"));
+            }
+            QCOMPARE(spectroscopy->tabText(1), QStringLiteral("2 Masks and Spectral Discrimination"));
             QCOMPARE(spectroscopy->tabText(3), QStringLiteral("4 XRS and I0"));
             QCOMPARE(imaging->tabText(2), QStringLiteral("3 Input and Calibration Checks"));
-            QCOMPARE(bond->tabText(1), QStringLiteral("2 Spectral Processing and Spatial Reconstruction"));
+            QCOMPARE(bond->tabText(1), QStringLiteral("2 ROI Calibration"));
+            QCOMPARE(bond->tabText(2), QStringLiteral("3 Crystal Selection"));
+            QCOMPARE(bond->count(), 6);
+            QCOMPARE(bond->tabText(3), QStringLiteral("4 4D Voxel Reconstruction"));
+            QCOMPARE(bond->tabText(4), QStringLiteral("5 4D Results and Voxel Spectra"));
+            QCOMPARE(bond->tabText(5), QStringLiteral("6 3D Result Analysis"));
             RoiDetectionDialog masks({});
             QCOMPARE(masks.windowTitle(), QStringLiteral("Automatic Spot ROI Detection"));
             CrystalRois rois;
@@ -166,6 +233,19 @@ class GuiTests : public QObject {
         const auto screenshot = qEnvironmentVariable("XRI_ROI_ML_SCREENSHOT");
         if (!screenshot.isEmpty())
             QVERIFY(run->window()->grab().save(screenshot));
+        auto *match = window.findChild<QPushButton *>("MatchCurrentSpotRois");
+        QVERIFY(match && match->isEnabled());
+        match->click();
+        auto *back = window.findChild<QPushButton *>("ReturnToSpotRoiResults");
+        QVERIFY(back && back->isVisible() && !QApplication::activeModalWidget());
+        back->click();
+        QVERIFY(results->isVisible() && results->rowCount() > 0);
+        QTemporaryDir other;
+        window.openFile(SpectrumFixture::create(other.path(), true));
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        action->trigger();
+        QCOMPARE(results->rowCount(), 0);
+        QVERIFY(run->isEnabled() && !exportButton->isEnabled() && !match->isEnabled());
     }
     void matchSavedSpotRois() {
         QTemporaryDir temp;
@@ -177,95 +257,73 @@ class GuiTests : public QObject {
             {"schema", "xri.roi.maskrcnn.result.v1"}, {"source", source},
             {"detector", "D_LAMBDA"}, {"shape_yx", QJsonArray{8, 8}},
             {"spots", QJsonArray{spot(1, 1, 1, QJsonArray{QJsonArray{9, 1}, QJsonArray{18, 1}}),
-                                 spot(2, 5, 5, QJsonArray{QJsonValue(QJsonArray{45, 1})}),
+                                 spot(2, 5, 5, QJsonArray{QJsonValue(QJsonArray{45, 2})}),
                                  spot(3, 6, 5, QJsonArray{QJsonValue(QJsonArray{46, 1})})}}}).toJson();
         QFile detection(temp.filePath("detected.json"));
         QVERIFY(detection.open(QIODevice::WriteOnly));
         QCOMPARE(detection.write(report), report.size());
         detection.close();
         const auto output = temp.filePath("shared.roi.json");
-        const QStringList paths{detection.fileName(), temp.filePath("test.roi.json"), output};
         RoiDetectionDialog dialog(source);
         dialog.show();
-        auto action = dialog.findChild<QAction *>("MatchSavedSpotRois");
+        auto action = dialog.findChild<QPushButton *>("MatchSavedSpotRois");
         QVERIFY(action && action->isEnabled());
-        int pickedFiles = 0;
-        bool reviewed = false;
-        bool startedEmpty = false;
-        bool pickedManually = false;
-        bool requestedBaseline = false;
-        QPointer<QFileDialog> activePicker;
-        QTimer driveDialogs;
-        connect(&driveDialogs, &QTimer::timeout, &dialog, [&] {
-            auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-            if (auto *picker = qobject_cast<QFileDialog *>(modal)) {
-                if (activePicker != picker) {
-                    if (pickedFiles >= paths.size()) {
-                        picker->reject();
-                        return;
-                    }
-                    activePicker = picker;
-                    const QFileInfo file(paths[pickedFiles++]);
+        auto pickFile = [&](QPushButton *button, const QString &path) {
+            const bool nonNative = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+            QTimer driveDialog;
+            QElapsedTimer deadline;
+            deadline.start();
+            bool selected = false;
+            connect(&driveDialog, &QTimer::timeout, &dialog, [&] {
+                auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!modal)
+                    return;
+                auto *picker = qobject_cast<QFileDialog *>(modal);
+                if (!picker || deadline.hasExpired(5000)) {
+                    modal->reject();
+                } else if (selected) {
+                    QMetaObject::invokeMethod(picker, "accept");
+                } else {
+                    const QFileInfo file(path);
                     picker->setDirectory(file.absolutePath());
                     picker->selectFile(file.fileName());
                     if (auto *name = picker->findChild<QLineEdit *>("fileNameEdit"))
                         name->setText(file.fileName());
-                    return;
+                    selected = true;
                 }
-                QMetaObject::invokeMethod(picker, "accept");
-            } else if (modal && !reviewed) {
-                auto *table = modal->findChild<QTableWidget *>("SpotRoiCrystalMatches");
-                auto *save = modal->findChild<QPushButton *>("SaveMatchedSpotRois");
-                auto *load = modal->findChild<QPushButton *>("LoadSpotRoiBaseline");
-                auto *view = modal->findChild<QGraphicsView *>("SpotRoiMaskView");
-                if (!table || !save || !load || !view) {
-                    modal->reject();
-                    return;
-                }
-                if (!requestedBaseline) {
-                    startedEmpty = table->item(0, 2)->text().isEmpty() && !save->isEnabled();
-                    requestedBaseline = true;
-                    QTimer::singleShot(0, load, &QPushButton::click);
-                    return;
-                }
-                reviewed = true;
-                if (!startedEmpty || pickedFiles != 2 || save->isEnabled() ||
-                    !table->item(0, 2)->text().isEmpty() || !table->item(1, 2)->text().isEmpty()) {
-                    modal->reject();
-                    return;
-                }
-                table->selectRow(0);
-                QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(6.5, 5.5));
-                table->selectRow(1);
-                QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(1.5, 1.5));
-                pickedManually = table->item(0, 2)->text() == "3" && table->item(1, 2)->text() == "1";
-                if (!pickedManually || !save->isEnabled()) {
-                    modal->reject();
-                    return;
-                }
-                QTimer::singleShot(0, save, &QPushButton::click);
-            } else if (modal && !modal->findChild<QTableWidget *>("SpotRoiCrystalMatches")) {
-                modal->reject();
-            }
-        });
-        QTimer deadline;
-        connect(&deadline, &QTimer::timeout, &dialog, [] {
-            if (auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget()))
-                modal->reject();
-        });
-        const bool native = !QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
-        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
-        deadline.start(5000);
-        driveDialogs.start(20);
-        action->trigger();
-        driveDialogs.stop();
-        deadline.stop();
-        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, !native);
-        const auto *status = dialog.findChild<QLabel *>("SpotRoiStatus");
-        QVERIFY2(reviewed && pickedManually,
-                 qPrintable(QString("pickedFiles=%1, reviewed=%2, status=%3")
-                                .arg(pickedFiles).arg(reviewed).arg(status ? status->text() : QString())));
-        QCOMPARE(pickedFiles, paths.size());
+            });
+            driveDialog.start(20);
+            button->click();
+            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nonNative);
+            return selected;
+        };
+        QVERIFY(pickFile(action, detection.fileName()));
+        auto *table = dialog.findChild<QTableWidget *>("SpotRoiCrystalMatches");
+        auto *save = dialog.findChild<QPushButton *>("SaveMatchedSpotRois");
+        auto *load = dialog.findChild<QPushButton *>("LoadSpotRoiBaseline");
+        auto *view = dialog.findChild<QGraphicsView *>("SpotRoiMaskView");
+        auto *candidates = dialog.findChild<QComboBox *>("OverlappingSpotCandidates");
+        QVERIFY(table && save && load && view && candidates);
+        QVERIFY(table->isVisible() && !QApplication::activeModalWidget());
+        QVERIFY(table->item(0, 2)->text().isEmpty() && !save->isEnabled());
+        QVERIFY(pickFile(load, temp.filePath("test.roi.json")));
+        QVERIFY(!save->isEnabled() && table->item(1, 2)->text().isEmpty());
+        table->selectRow(0);
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(6.5, 5.5));
+        QVERIFY(candidates->isVisible());
+        QCOMPARE(candidates->count(), 2);
+        const int candidateIndex = candidates->findText(QStringLiteral("光斑 3"));
+        QVERIFY(candidateIndex >= 0);
+        candidates->setCurrentIndex(candidateIndex);
+        QVERIFY(QMetaObject::invokeMethod(candidates, "activated", Q_ARG(int, candidateIndex)));
+        QVERIFY(!candidates->isVisible());
+        table->selectRow(1);
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, view->mapFromScene(1.5, 1.5));
+        QCOMPARE(table->item(0, 2)->text(), QStringLiteral("3"));
+        QCOMPARE(table->item(1, 2)->text(), QStringLiteral("1"));
+        QVERIFY(save->isEnabled() && pickFile(save, output));
+        QVERIFY(action->isVisible());
         QFile saved(output);
         QVERIFY(saved.open(QIODevice::ReadOnly));
         CrystalRois scheme;
@@ -276,6 +334,150 @@ class GuiTests : public QObject {
         QCOMPARE(scheme.items()[60].rect, QRect(1, 1, 2, 2));
         QVERIFY(scheme.items()[60].mask.isEmpty());
     }
+    void workflowConfigurationTools() {
+        QTemporaryDir temp;
+        const auto elastic = SpectrumFixture::create(temp.path(), true);
+        const auto scan = SpectrumFixture::create(temp.path(), false);
+        const auto reverse = SpectrumFixture::create(temp.path(), false, true);
+        const auto roiPath = temp.filePath("test.roi.json");
+        const auto configPath = temp.filePath("spectroscopy.config.json");
+        SpectroscopyDialog spectrum(elastic);
+        spectrum.show();
+        QVERIFY(spectrum.loadRois(roiPath));
+        spectrum.addScans({scan, reverse});
+        auto scans = spectrum.findChild<QListWidget *>("XrsFiles");
+        QCOMPARE(scans->count(), 2);
+        scans->item(1)->setCheckState(Qt::Unchecked);
+        spectrum.findChild<QComboBox *>("ElasticEnergy")->setEditText("/entry/energy_custom");
+        spectrum.findChild<QDoubleSpinBox *>("GlitchDropPercent")->setValue(7.5);
+        spectrum.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->setText("2");
+        spectrum.findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1,9:10");
+        spectrum.findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->setValue(2);
+        auto tabs = spectrum.findChild<QTabWidget *>("SpectroscopySteps");
+        auto save = tabs->cornerWidget()->findChild<QPushButton *>("SaveSpectrumConfig");
+        QVERIFY(save && save->isVisible() && !save->icon().isNull());
+        chooseWorkflowFile(save, configPath);
+        QVERIFY2(QFileInfo::exists(configPath), qPrintable(spectrum.statusText()));
+        spectrum.selectStep(1);
+        QVERIFY(!save->isVisible());
+
+        SpectroscopyDialog restored;
+        restored.show();
+        auto import = restored.findChild<QPushButton *>("ImportSpectrumConfig");
+        QVERIFY(import && import->isVisible() && !import->icon().isNull());
+        chooseWorkflowFile(import, configPath);
+        QCOMPARE(restored.findChild<QLineEdit *>("ElasticFile")->text(), elastic);
+        QCOMPARE(restored.findChild<QLineEdit *>("SpectrumRoiScheme")->text(), roiPath);
+        auto restoredScans = restored.findChild<QListWidget *>("XrsFiles");
+        QCOMPARE(restoredScans->count(), 2);
+        QCOMPARE(restoredScans->item(0)->data(Qt::UserRole).toString(), scan);
+        QCOMPARE(restoredScans->item(1)->data(Qt::UserRole).toString(), reverse);
+        QCOMPARE(restoredScans->item(0)->checkState(), Qt::Checked);
+        QCOMPARE(restoredScans->item(1)->checkState(), Qt::Unchecked);
+        QCOMPARE(restored.findChild<QComboBox *>("ElasticEnergy")->currentText(), QStringLiteral("/entry/energy_custom"));
+        QCOMPARE(restored.findChild<QDoubleSpinBox *>("GlitchDropPercent")->value(), 7.5);
+        QCOMPARE(restored.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->text(), QStringLiteral("2"));
+        QCOMPARE(restored.findChild<QLineEdit *>("LowMomentumFitWindows")->text(), QStringLiteral("0:1,9:10"));
+        QCOMPARE(restored.findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->value(), 2.);
+        QVERIFY(!restored.importConfiguration(roiPath));
+        QCOMPARE(restoredScans->count(), 2);
+    }
+
+    void workspaceSaving() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString key = "workspace/root";
+        QSettings settings;
+        const auto previous = settings.value(key);
+        const auto restore = qScopeGuard([&] {
+            if (previous.isValid())
+                settings.setValue(key, previous);
+            else
+                settings.remove(key);
+            settings.sync();
+        });
+        settings.remove(key);
+        settings.sync();
+
+        MainWindow window;
+        window.show();
+        const auto config = ImagingFixture::create(temp.filePath("data"), false, false, false, true);
+        auto imaging = window.openImaging();
+        imaging->applyConfiguration(config);
+        auto ixs = window.openBondImaging();
+        ixs->applyConfiguration(config);
+        auto select = window.findChild<QAction *>("SpecifyWorkspace");
+        QVERIFY(select && QDir(temp.path()).mkdir("Work"));
+        chooseWorkflowFile(select, temp.filePath("Work"));
+        const QDir workspace(temp.filePath("Work"));
+        QCOMPARE(WorkspacePaths::root(), workspace.canonicalPath());
+        QVERIFY(QDir(temp.path()).mkdir(QStringLiteral("中文")));
+        QVERIFY_EXCEPTION_THROWN(WorkspacePaths::setRoot(temp.filePath(QStringLiteral("中文"))), std::exception);
+        QCOMPARE(WorkspacePaths::root(), workspace.canonicalPath());
+        QCOMPARE(imaging->findChild<QLabel *>("ImagingWorkspaceOutput")->text(),
+                 QDir::toNativeSeparators(workspace.filePath("imaging/results")));
+
+        const auto elastic = SpectrumFixture::create(temp.path(), true);
+        const auto scan = SpectrumFixture::create(temp.path(), false);
+        RoiDialog editor(elastic, "Workspace test", &window, false);
+        QTRY_VERIFY_WITH_TIMEOUT(!editor.isLoading(), 10000);
+        QVERIFY(editor.loadFrom(temp.filePath("test.roi.json")));
+        auto saveRoi = editor.findChild<QPushButton *>("SaveCrystalRois");
+        QVERIFY(saveRoi);
+        saveRoi->click();
+        const auto savedRoi = editor.currentSchemePath();
+        QVERIFY(QFileInfo(savedRoi).isFile());
+        saveRoi->click();
+        QCOMPARE(QDir(workspace.filePath("ROI/config")).entryList({"*.roi.json"}, QDir::Files).size(), 2);
+        QVERIFY(QDir(workspace.filePath("ROI/results")).exists());
+        const auto name = WorkspacePaths::newPath(WorkspacePaths::Workflow::Roi, WorkspacePaths::Kind::Result,
+                                                    QStringLiteral("中文/样品 A 42.nxs"), "spots.json");
+        QVERIFY(QFileInfo(name).fileName().startsWith("A_42_spots_"));
+
+        window.openFile(elastic);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        auto spectrum = window.openSpectroscopy();
+        QVERIFY(spectrum->loadRois(savedRoi));
+        spectrum->addScans({scan});
+        spectrum->findChild<QPushButton *>("SaveSpectrumConfig")->click();
+        QCOMPARE(QDir(workspace.filePath("spectroscopy/config")).entryList({"*.config.json"}, QDir::Files).size(), 1);
+        for (int step : {0, 1, 2}) {
+            spectrum->runStep(step);
+            QTRY_VERIFY_WITH_TIMEOUT(!spectrum->isBusy(), 10000);
+        }
+        QVERIFY2(spectrum->hasResult(), qPrintable(spectrum->statusText()));
+        spectrum->findChild<QPushButton *>("SaveSpectrum")->click();
+        const QDir spectra(workspace.filePath("spectroscopy/results"));
+        const auto spectraRuns = spectra.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        QCOMPARE(spectraRuns.size(), 1);
+        QVERIFY(QFileInfo(spectra.filePath(spectraRuns.first() + "/spectrum_data.txt")).isFile());
+
+        window.openImaging(0);
+        imaging->findChild<QPushButton *>("SaveImagingConfig")->click();
+        QCOMPARE(QDir(workspace.filePath("imaging/config")).entryList({"*.config.json"}, QDir::Files).size(), 1);
+        imaging->start();
+        QTRY_VERIFY_WITH_TIMEOUT(!imaging->isBusy(), 15000);
+        QVERIFY2(imaging->hasResult(), qPrintable(imaging->statusText()));
+        QCOMPARE(QFileInfo(imaging->result().directory).absolutePath(), workspace.filePath("imaging/results"));
+        QVERIFY(QFileInfo(QDir(imaging->result().directory).filePath("reconstruction.h5")).isFile());
+        QVERIFY(!QFileInfo::exists(temp.filePath("data/output")));
+
+        window.openBondImaging();
+        ixs->findChild<QPushButton *>("SaveBondConfig")->click();
+        QCOMPARE(QDir(workspace.filePath("ixs/config")).entryList({"*.config.json"}, QDir::Files).size(), 1);
+        for (const auto *button : {"CheckBondInputs", "PrepareBondSpatial", "ContinueBondSpatial",
+                                  "ConfirmBondCrystals", "PrepareBondChannels", "RunBondVolume", "SaveBondVolume"}) {
+            auto control = ixs->findChild<QPushButton *>(button);
+            QVERIFY(control && control->isVisible() && control->isEnabled());
+            control->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!ixs->isBusy(), 10000);
+        }
+        const QDir volumes(workspace.filePath("ixs/results"));
+        const auto files = volumes.entryList({"*.h5"}, QDir::Files);
+        QCOMPARE(files.size(), 1);
+        QCOMPARE(BondImaging::load(volumes.filePath(files.first())).axes[0].size(), 2);
+    }
+
     void bondWorkflow() {
         QTemporaryDir temp;
         MainWindow window;
@@ -287,7 +489,19 @@ class GuiTests : public QObject {
         auto work = window.findChild<BondWorkspace *>("BondWorkspace");
         QVERIFY(work && work->isVisible());
         auto tabs = work->findChild<QTabWidget *>("BondSteps");
-        QVERIFY(tabs && !tabs->isTabEnabled(BondWorkspace::Spectra));
+        auto stepHint = work->findChild<QLabel *>("BondStepHint");
+        QVERIFY(tabs && stepHint);
+        for (int stage = 1; stage < tabs->count(); ++stage) {
+            QVERIFY(tabs->isTabEnabled(stage));
+            QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
+                              tabs->tabBar()->tabRect(stage).center());
+            QCOMPARE(tabs->currentIndex(), stage);
+            QVERIFY(stepHint->isVisible());
+        }
+        work->selectStage(BondWorkspace::Inputs);
+        auto import = tabs->cornerWidget()->findChild<QPushButton *>("ImportBondConfig");
+        auto save = tabs->cornerWidget()->findChild<QPushButton *>("SaveBondConfig");
+        QVERIFY(import && save && import->isVisible() && save->isVisible());
         const auto dir = qEnvironmentVariable("XRI_BOND_SCREENSHOTS");
         const auto external = qEnvironmentVariable("XRI_BOND_TEST_VOLUME");
         if (external.isEmpty()) {
@@ -305,6 +519,15 @@ class GuiTests : public QObject {
             output->setText(temp.filePath("result.h5"));
             const auto configPath = temp.filePath("bond-config.json");
             QVERIFY(work->saveConfiguration(configPath));
+            {
+                QFile legacy(configPath);
+                QVERIFY(legacy.open(QIODevice::ReadWrite));
+                auto object = QJsonDocument::fromJson(legacy.readAll()).object();
+                object["bond_contrast_output_file"] = "previous-result.h5";
+                const auto bytes = QJsonDocument(object).toJson();
+                QVERIFY(legacy.resize(0) && legacy.seek(0));
+                QCOMPARE(legacy.write(bytes), bytes.size());
+            }
             sampleOrder->setCurrentIndex(0);
             sampleY->setValue(1);
             diagnosticPng->setChecked(false);
@@ -320,14 +543,76 @@ class GuiTests : public QObject {
             }
             auto validate = work->findChild<QPushButton *>("CheckBondInputs");
             auto run = work->findChild<QPushButton *>("RunBondVolume");
-            QVERIFY(validate && run && !run->isVisible());
+            auto confirm = work->findChild<QPushButton *>("ConfirmBondCrystals");
+            auto calibrate = work->findChild<QPushButton *>("PrepareBondSpatial");
+            auto next = work->findChild<QPushButton *>("ContinueBondSpatial");
+            auto channels = work->findChild<QPushButton *>("PrepareBondChannels");
+            auto channelTable = work->findChild<QTableWidget *>("BondChannelInputs");
+            auto saveVolume = work->findChild<QPushButton *>("SaveBondVolume");
+            QVERIFY(validate && run && confirm && calibrate && next && channels && channelTable && saveVolume);
+            QVERIFY(!run->isVisible());
+            QCOMPARE(validate->text(), QStringLiteral("校验数据"));
+            work->selectStage(BondWorkspace::Spatial);
+            QVERIFY(!calibrate->isEnabled());
+            work->selectStage(BondWorkspace::Inputs);
             validate->click();
+            QVERIFY(work->isBusy() && tabs->tabBar()->isEnabled() && tabs->isTabEnabled(BondWorkspace::Results));
+            work->selectStage(BondWorkspace::Results);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spatial);
+            QVERIFY(!import->isVisible() && !save->isVisible());
+            QVERIFY(calibrate->isEnabled() && !confirm->isEnabled() && !channels->isEnabled());
+            QVERIFY(!next->isEnabled());
+            calibrate->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QVERIFY2(next->isEnabled(), qPrintable(work->findChild<QLabel *>("BondStatus")->text()));
+            work->selectStage(BondWorkspace::VolumeBuild);
+            QVERIFY(!channels->isEnabled() && stepHint->text().contains(QStringLiteral("第 3 步")));
+            work->selectStage(BondWorkspace::Spatial);
+            if (!dir.isEmpty())
+                QVERIFY(window.grab().save(QDir(dir).filePath("spatial-calibration.png")));
+            next->click();
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Crystals);
+            auto crystalTable = work->findChild<QTableWidget *>("BondCrystalSelection");
+            auto backToSpatial = work->findChild<QPushButton *>("UpdateBondSpatial");
+            QVERIFY(crystalTable && crystalTable->rowCount() && backToSpatial);
+            auto crystal = crystalTable->item(0, 0);
+            QVERIFY(crystal && crystal->checkState() == Qt::Checked);
+            crystal->setCheckState(Qt::Unchecked);
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Crystals);
+            QVERIFY(!confirm->isEnabled() && backToSpatial->isVisible());
+            crystal->setCheckState(Qt::Checked);
+            QVERIFY(!confirm->isEnabled());
+            backToSpatial->click();
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spatial);
+            QVERIFY(!next->isEnabled());
+            calibrate->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            next->click();
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Crystals);
+            confirm->click();
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::VolumeBuild);
+            work->selectStage(BondWorkspace::Volume);
+            QVERIFY(stepHint->text().contains(QStringLiteral("第 4 步")));
+            work->selectStage(BondWorkspace::VolumeBuild);
+            QVERIFY(run->isVisible() && !run->isEnabled() && channelTable->rowCount() == 0);
+            channels->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QCOMPARE(channelTable->rowCount(), 2);
+            if (!dir.isEmpty())
+                QVERIFY(window.grab().save(QDir(dir).filePath("channel-projections.png")));
             QVERIFY(run->isVisible() && run->isEnabled());
             run->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
+            QVERIFY(work->hasResult() && !QFile::exists(output->text()));
+            QCOMPARE(tabs->currentIndex(), BondWorkspace::Volume);
+            QVERIFY(!stepHint->isVisible());
+            QVERIFY(saveVolume->isVisible() && saveVolume->isEnabled());
+            saveVolume->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QVERIFY(work->hasResult() && QFile::exists(output->text()));
+            QVERIFY(!saveVolume->isVisible());
             QVERIFY(QFile::exists(BondImaging::diagnosticPngPath(output->text())));
             QVERIFY(!HdfFile::inspect(output->text(), "/entry/bond/band_diagnostics/1_test/residual_pyz")
                          .dims.isEmpty());
@@ -446,13 +731,19 @@ class GuiTests : public QObject {
             QTest::mouseDClick(figure, Qt::LeftButton, Qt::NoModifier, origin);
             QVERIFY(figure->grab().toImage() == initial);
         }
-        work->selectStage(BondWorkspace::Results);
+        auto analyze = work->findChild<QPushButton *>("AnalyzeBondVolume");
+        QVERIFY(analyze && analyze->isVisible());
+        analyze->click();
+        QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
         auto mode = work->findChild<QComboBox *>("BondContrastMode");
         auto map = work->findChild<QLabel *>("BondMapInfo");
         auto montage = work->findChild<QWidget *>("BondMontage");
         auto ea = work->findChild<QDoubleSpinBox *>("BondEa");
-        QVERIFY(mode && map && montage && ea);
-        QVERIFY(channel->isVisible() && !ea->isVisible());
+        auto integralLo = work->findChild<QDoubleSpinBox *>("BondIntegralLo");
+        auto integralHi = work->findChild<QDoubleSpinBox *>("BondIntegralHi");
+        QVERIFY(mode && map && montage && ea && integralLo && integralHi);
+        QCOMPARE(mode->count(), 3);
+        QVERIFY(channel->isVisible() && !ea->isVisible() && !integralLo->isVisible());
         const int previousChannel = channel->value();
         channel->setValue(0);
         QVERIFY(map->text().contains(QString::number(spectrum->curves().first().x.first(), 'g', 9)));
@@ -462,6 +753,28 @@ class GuiTests : public QObject {
         QVERIFY(map->text().contains(QStringLiteral("有效体素")));
         if (!dir.isEmpty())
             QVERIFY(window.grab().save(QDir(dir).filePath("contrast-sections.png")));
+        mode->setCurrentIndex(2);
+        QCOMPARE(mode->currentText(), QStringLiteral("区间积分强度"));
+        QVERIFY(integralLo->isVisible() && integralHi->isVisible() && !ea->isVisible() && !channel->isVisible());
+        QVERIFY2(map->text().contains(QStringLiteral("有效体素")), qPrintable(map->text()));
+        const double loKev = integralLo->value(), hiKev = integralHi->value();
+        integralLo->setValue(hiKev);
+        QVERIFY(map->text().contains(QStringLiteral("积分区间必须递增")));
+        integralLo->setValue(loKev);
+        QVERIFY(map->text().contains(QStringLiteral("有效体素")));
+        auto showTransfer = work->findChild<QCheckBox *>("BondShowEnergyTransfer");
+        auto analyzer = work->findChild<QDoubleSpinBox *>("BondAnalyzerReference");
+        QVERIFY(showTransfer && analyzer);
+        if (!showTransfer->isChecked()) {
+            analyzer->setValue(loKev);
+            showTransfer->setChecked(true);
+            QVERIFY(std::abs(integralLo->value() - 1000 * (loKev - analyzer->value())) < 1e-7);
+            QVERIFY(std::abs(integralHi->value() - 1000 * (hiKev - analyzer->value())) < 1e-7);
+            QVERIFY(map->text().contains(QStringLiteral("有效体素")));
+            showTransfer->setChecked(false);
+        }
+        if (!dir.isEmpty())
+            QVERIFY(window.grab().save(QDir(dir).filePath("integral-sections.png")));
         auto surface = work->findChild<QWidget *>("BondIsosurface");
         QVERIFY(surface);
         auto figureTabs = qobject_cast<QTabWidget *>(surface->parentWidget()->parentWidget()->parentWidget());
@@ -474,67 +787,7 @@ class GuiTests : public QObject {
         auto status = work->findChild<QLabel *>("BondStatus");
         QVERIFY(status->text().contains(QStringLiteral("三角形")));
         if (!dir.isEmpty())
-            QVERIFY(window.grab().save(QDir(dir).filePath("contrast-isosurface.png")));
-        if (external.isEmpty()) {
-            work->selectStage(BondWorkspace::Spectra);
-            auto prepare = work->findChild<QPushButton *>("PrepareBondProjection");
-            auto run = work->findChild<QPushButton *>("RunBondContrast");
-            auto contrastEa = work->findChild<QDoubleSpinBox *>("BondContrastEa");
-            auto contrastEb = work->findChild<QDoubleSpinBox *>("BondContrastEb");
-            auto output = work->findChild<QLineEdit *>("BondOutput");
-            auto projection = work->findChild<ScientificPlot *>("BondProjectionPlot");
-            auto xStep = work->findChild<QLineEdit *>("BondXStep");
-            QVERIFY(prepare && run && contrastEa && contrastEb && output && projection && xStep);
-            QVERIFY(run->isVisible() && !run->isEnabled());
-            const auto path = temp.filePath("direct-contrast.h5");
-            contrastEa->setValue(2);
-            contrastEb->setValue(1);
-            prepare->click();
-            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
-            QVERIFY(projection->isVisible() && projection->data().finiteCount == 4);
-            QVERIFY(projection->data().maximum < 0.);
-            if (!dir.isEmpty()) {
-                QVERIFY(window.grab().save(QDir(dir).filePath("detector-spectra-settings.png")));
-            }
-            work->selectStage(BondWorkspace::Spectra);
-            contrastEb->setValue(1.25);
-            QVERIFY(!run->isEnabled() && !projection->isVisible());
-            QVERIFY(!QFile::exists(path));
-            contrastEb->setValue(1);
-            prepare->click();
-            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QCOMPARE(tabs->currentIndex(), BondWorkspace::Spectra);
-            QVERIFY(run->isVisible() && run->isEnabled() && projection->isVisible());
-            output->setText(path);
-            xStep->setText("0.125");
-            QVERIFY(run->isEnabled() && projection->data().finiteCount == 4);
-            run->click();
-            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QVERIFY2(QFile::exists(path), qPrintable(status->text()));
-            const auto contrast = BondImaging::loadContrast(path);
-            QVERIFY(contrast);
-            QCOMPARE(HdfFile::inspect(path, "/entry/bond/contrast").dims, (QVector<quint64>{17, 2, 2}));
-            QCOMPARE(contrast->diagnostics.value("ea_kev").toDouble(), 2.);
-            QCOMPARE(contrast->diagnostics.value("eb_kev").toDouble(), 1.);
-            QVERIFY(contrast->values[32] < 0);
-            QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
-            QCOMPARE(mode->currentIndex(), 2);
-            QCOMPARE(figureTabs->currentIndex(), 1);
-            QVERIFY(map->text().contains(QStringLiteral("S(1) − S(2)")));
-            QVERIFY2(status->text().contains(QStringLiteral("三角形")), qPrintable(status->text()));
-            if (!dir.isEmpty())
-                QVERIFY(window.grab().save(QDir(dir).filePath("direct-contrast.png")));
-            work->selectStage(BondWorkspace::Volume);
-            plotTabs->setCurrentIndex(1);
-            style->setCurrentIndex(1);
-            QVERIFY(figure->isVisible() && style->isVisible());
-            work->openVolume(path);
-            QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
-            QCOMPARE(tabs->currentIndex(), BondWorkspace::Results);
-            QCOMPARE(mode->currentIndex(), 2);
-            QVERIFY(tabs->isTabEnabled(BondWorkspace::Volume));
-        }
+            QVERIFY(window.grab().save(QDir(dir).filePath("integral-isosurface.png")));
     }
     void bondReferenceMaps() {
         QTemporaryDir temp;
@@ -638,11 +891,68 @@ class GuiTests : public QObject {
         QTemporaryDir temp;
         auto file = SpectrumFixture::create(temp.path(), true);
         MainWindow window;
-        window.openFile(file);
-        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        window.show();
         auto stack = window.findChild<QStackedWidget *>("ProcessingWorkspaces");
         QVERIFY(stack);
         auto browser = stack->currentWidget();
+        auto *automaticAction = window.findChild<QAction *>("DetectSpotRois");
+        auto *manualAction = window.findChild<QAction *>("SelectCrystalRois");
+        auto *backToBrowser = window.findChild<QToolButton *>("BackToBrowser");
+        auto *menuBar = window.menuBar();
+        auto *roiMenu = window.findChild<QMenu *>("RoiMenu");
+        QVERIFY(automaticAction && manualAction && backToBrowser && roiMenu);
+        QCOMPARE(roiMenu->title(), QStringLiteral("ROI(&R)"));
+        QCOMPARE(manualAction->text(), QStringLiteral("手动选取 ROI"));
+        QCOMPARE(automaticAction->text(), QStringLiteral("自动选取 ROI"));
+        QVERIFY(menuBar->actions().contains(roiMenu->menuAction()));
+        QVERIFY(!menuBar->actions().contains(manualAction) && !menuBar->actions().contains(automaticAction));
+        QCOMPARE(roiMenu->actions(), (QList<QAction *>{manualAction, automaticAction}));
+        QVERIFY(!manualAction->menu() && !automaticAction->menu());
+        auto chooseRoi = [&](QAction *action) {
+            QTest::mouseClick(menuBar, Qt::LeftButton, Qt::NoModifier,
+                              menuBar->actionGeometry(roiMenu->menuAction()).center());
+            QTRY_VERIFY(roiMenu->isVisible());
+            QTest::mouseClick(roiMenu, Qt::LeftButton, Qt::NoModifier, roiMenu->actionGeometry(action).center());
+            QTRY_VERIFY(!roiMenu->isVisible());
+        };
+        QVERIFY(!automaticAction->isEnabled());
+        automaticAction->trigger();
+        QCOMPARE(stack->currentWidget(), browser);
+        window.openFile(file);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        QVERIFY(automaticAction->isEnabled());
+        chooseRoi(automaticAction);
+        auto *automatic = qobject_cast<RoiDetectionDialog *>(stack->currentWidget());
+        QVERIFY(automatic && !automatic->isWindow() && !QApplication::activeModalWidget());
+        QVERIFY(!automatic->findChild<QLineEdit *>("SpotRoiSource"));
+        auto *sourceStatus = automatic->findChild<QLabel *>("SpotRoiStatus");
+        QVERIFY(sourceStatus->text().contains(QFileInfo(file).fileName()));
+        QVERIFY(automatic->findChild<QPushButton *>("RunSpotRoiDetection")->isEnabled());
+        const auto second = SpectrumFixture::create(temp.path(), false);
+        window.openFile(second);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        QVERIFY(sourceStatus->text().contains(QFileInfo(second).fileName()));
+        auto *files = window.findChild<QComboBox *>("BrowserFiles");
+        const int selectedFile = files->currentIndex();
+        files->setCurrentIndex(-1);
+        QVERIFY(window.currentFile().isEmpty() && !automaticAction->isEnabled());
+        files->setCurrentIndex(selectedFile);
+        QVERIFY(!window.currentFile().isEmpty() && automaticAction->isEnabled());
+        window.closeCurrentFile();
+        QVERIFY(automaticAction->isEnabled());
+        window.closeCurrentFile();
+        QVERIFY(!automaticAction->isEnabled());
+        QVERIFY(!automatic->findChild<QPushButton *>("RunSpotRoiDetection")->isEnabled());
+        window.openFile(file);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        QVERIFY(automaticAction->isEnabled());
+        chooseRoi(manualAction);
+        auto *manual = qobject_cast<RoiDialog *>(stack->currentWidget());
+        QVERIFY(manual && !manual->isWindow());
+        automaticAction->trigger();
+        QCOMPARE(stack->currentWidget(), automatic);
+        backToBrowser->click();
+        QCOMPARE(stack->currentWidget(), browser);
         auto spectrum = window.openSpectroscopy(2);
         QVERIFY(!spectrum->isWindow() && stack->currentWidget() == spectrum);
         QVERIFY(window.findChild<QPushButton *>("CloseWorkflow")->isHidden());
@@ -728,6 +1038,8 @@ class GuiTests : public QObject {
             image->selectStep(i);
             capture(QString("imaging%1").arg(i));
         }
+        window.openBondImaging();
+        capture("ixs-contrast");
     }
     void multipleBrowserFiles() {
         auto grid = QFileInfo(qEnvironmentVariable("XRI_TEST_FILE")).canonicalFilePath();
@@ -744,7 +1056,7 @@ class GuiTests : public QObject {
         }
         QCOMPARE(labels, QStringList({QString::fromUtf8("文件"), QString::fromUtf8("数据浏览器"), "ROI",
                                       QString::fromUtf8("谱学"), QString::fromUtf8("成像"),
-                                      QString::fromUtf8("化学键衬度分析"), QString::fromUtf8("语言"),
+                                      QString::fromUtf8("IXS衬度成像"), QString::fromUtf8("语言"),
                                       QString::fromUtf8("帮助")}));
         auto browser = window.findChild<QMenu *>("DataBrowserMenu");
         auto fileMenu = window.findChild<QMenu *>("FileMenu");
@@ -862,7 +1174,8 @@ class GuiTests : public QObject {
         QCOMPARE(steps->tabText(4), QStringLiteral("5 三维模型"));
         QCOMPARE(steps->tabText(5), QStringLiteral("6 诊断与日志"));
         auto buildModel = dialog->findChild<QPushButton *>("BuildImagingModel");
-        QVERIFY(buildModel && !buildModel->isEnabled());
+        auto saveGif = dialog->findChild<QPushButton *>("SaveImagingModelGif");
+        QVERIFY(buildModel && !buildModel->isEnabled() && saveGif && !saveGif->isEnabled());
         avizo->setChecked(true);
         auto order = dialog->findChild<QComboBox *>("scan_loops.sample_order");
         auto points = dialog->findChild<QSpinBox *>("scan_loops.sample_dcm_points");
@@ -935,6 +1248,24 @@ class GuiTests : public QObject {
         QVERIFY(model && modelSource && threshold && model->isVisible() && buildModel->isEnabled());
         QCOMPARE(modelSource->count(), 3);
         const auto validThreshold = threshold->text();
+        auto depth = dialog->findChild<QLabel *>("ImagingDepthReadout");
+        auto validateDepth = dialog->findChild<QPushButton *>("ValidateImagingDepth");
+        auto depthReport = dialog->findChild<QPushButton *>("ImagingDepthReport");
+        QVERIFY(depth && validateDepth && depthReport && validateDepth->isEnabled());
+        const QString initialDepth = depth->text();
+        QTest::mouseClick(model, Qt::LeftButton, Qt::NoModifier, QPoint(86, model->height() - 64));
+        QVERIFY(depth->text() != initialDepth && depth->text().contains("X = -1 mm"));
+        validateDepth->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 30000);
+        QVERIFY(depthReport->isEnabled() && depth->text().contains("FWHM"));
+        auto comparePsf = dialog->findChild<QPushButton *>("CompareImagingPsf");
+        auto psfSelection = dialog->findChild<QLabel *>("ImagingPsfSelection");
+        QVERIFY(comparePsf && comparePsf->isEnabled() && psfSelection);
+        comparePsf->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 30000);
+        QVERIFY(psfSelection->text().contains(QStringLiteral("本次标定比较推荐")));
+        QVERIFY(QFileInfo::exists(temp.path() + "/output/psf_model_comparison.json"));
+        QVERIFY(QFileInfo::exists(temp.path() + "/output/depth_validation.json"));
         threshold->setText("-1");
         buildModel->click();
         QVERIFY(!dialog->isBusy() && dialog->statusText().contains(QStringLiteral("阈值须介于")));
@@ -952,6 +1283,60 @@ class GuiTests : public QObject {
         QVERIFY(model->grab().toImage() != initial);
         QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, origin);
         QCOMPARE(model->grab().toImage(), initial);
+
+        QVERIFY(saveGif->isEnabled());
+        const auto gifBase = temp.filePath(QStringLiteral("模型旋转"));
+        chooseWorkflowFile(saveGif, gifBase, 2.5);
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 15000);
+        QVERIFY2(dialog->statusText().contains(QStringLiteral("旋转 GIF 已保存")), qPrintable(dialog->statusText()));
+        const auto viewAfterExport = model->grab().toImage();
+        QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, model->rect().center());
+        QCOMPARE(model->grab().toImage(), viewAfterExport);
+        const auto gifPath = gifBase + ".gif";
+        QVERIFY2(QFileInfo::exists(gifPath), qPrintable(dialog->statusText()));
+        QImageReader gif(gifPath);
+        QVERIFY2(gif.canRead(), qPrintable(gif.errorString()));
+        const int frames = gif.imageCount();
+        QCOMPARE(frames, 60);
+        QCOMPARE(gif.loopCount(), -1);
+        QImage firstFrame;
+        bool moved = false;
+        int duration = 0;
+        for (int i = 0; i < frames; ++i) {
+            const auto frame = gif.read().convertToFormat(QImage::Format_RGB32);
+            QVERIFY2(!frame.isNull(), qPrintable(gif.errorString()));
+            duration += gif.nextImageDelay();
+            if (i == 0) {
+                QCOMPARE(frame.size(), QSize(720, 720));
+                firstFrame = frame;
+                int surfacePixels = 0;
+                for (int y = 0; y < frame.height(); ++y) {
+                    const auto *line = reinterpret_cast<const QRgb *>(frame.constScanLine(y));
+                    for (int x = 0; x < frame.width(); ++x) {
+                        const QRgb pixel = line[x];
+                        if (pixel == qRgb(255, 255, 255))
+                            continue;
+                        QVERIFY(qRed(pixel) < qGreen(pixel) && qGreen(pixel) < qBlue(pixel));
+                        ++surfacePixels;
+                    }
+                }
+                QVERIFY(surfacePixels > 0);
+            } else {
+                moved = moved || frame != firstFrame;
+            }
+        }
+        QVERIFY(moved);
+        QCOMPARE(duration, 2500);
+
+        const auto canceledGif = temp.filePath("canceled.gif");
+        chooseWorkflowFile(saveGif, canceledGif, 6.);
+        auto cancel = dialog->findChild<QPushButton *>("CancelImaging");
+        QVERIFY(dialog->isBusy() && cancel && cancel->isEnabled());
+        cancel->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 15000);
+        QVERIFY2(dialog->statusText().contains(QStringLiteral("已取消 GIF 导出")), qPrintable(dialog->statusText()));
+        QVERIFY(!QFileInfo::exists(canceledGif) && saveGif->isEnabled());
+
         dialog->hide();
         window.openImaging(3);
         QCOMPARE(window.findChild<ImagingDialog *>(), dialog);
@@ -962,6 +1347,7 @@ class GuiTests : public QObject {
         QVERIFY(!dialog->hasResult() && image->data().values.isEmpty());
         QVERIFY(dialog->loadResult(temp.path() + "/output"));
         QVERIFY(dialog->hasResult());
+        QVERIFY(depthReport->isEnabled() && depth->text().contains("FWHM"));
         QVERIFY(avizo->isChecked());
         dialog->selectStep(4);
         modelSource->setCurrentIndex(modelSource->findData(1));
@@ -976,6 +1362,49 @@ class GuiTests : public QObject {
         QCOMPARE(window.currentData().path, QString("/reinterp_insect_ck"));
         QCOMPARE(window.currentData().dims, QVector<quint64>({21, 2, 2}));
     }
+    void imagingWeightedBoundaryWorkflow() {
+        QTemporaryDir tmp;
+        auto c = ImagingFixture::create(tmp.path(), false, false, false, false, true, true);
+        auto stats = c["statistics"].toObject();
+        stats["variance_weighted"] = true;
+        stats["sigma_floor"] = 1.;
+        stats["background_yz_mm"] = QJsonArray{0, 0, -1, 0};
+        c["statistics"] = stats;
+        auto output = c["output"].toObject();
+        output["save_diagnostics"] = false;
+        c["output"] = output;
+        ImagingDialog dialog;
+        dialog.show();
+        dialog.applyConfiguration(c);
+        auto w = dialog.findChild<QCheckBox *>("statistics.variance_weighted");
+        QVERIFY(w && w->isChecked());
+        QCOMPARE(dialog.configuration()["statistics"].toObject(), stats);
+        dialog.start();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 30000);
+        QVERIFY2(dialog.hasResult(), qPrintable(dialog.statusText()));
+        QVERIFY(dialog.result().summary["sample_background_subtracted"].toBool());
+        auto run = dialog.findChild<QPushButton *>("ValidateImagingBoundaries");
+        auto view = dialog.findChild<QPushButton *>("ShowImagingBoundaries");
+        QVERIFY(run && run->isEnabled() && view && !view->isEnabled());
+        run->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 30000);
+        QVERIFY2(view->isEnabled(), qPrintable(dialog.statusText()));
+        const QString savedDirectory = dialog.result().directory;
+        QVERIFY(dialog.loadResult(savedDirectory));
+        QVERIFY(view->isEnabled());
+        bool inspected = false;
+        QTimer::singleShot(0, &dialog, [&] {
+            auto report = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!report)
+                return;
+            auto table = report->findChild<QTableWidget *>();
+            auto plot = report->findChild<ScientificPlot *>();
+            inspected = table && table->rowCount() == 8 && plot && !plot->data().values.isEmpty();
+            report->accept();
+        });
+        view->click();
+        QVERIFY(inspected);
+    }
     void imagingRealResult() {
         auto path = qEnvironmentVariable("XRI_IMAGING_RESULT");
         if (path.isEmpty())
@@ -989,6 +1418,30 @@ class GuiTests : public QObject {
             QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 15000);
         }
         QVERIFY2(dialog.loadResult(path), qPrintable(dialog.statusText()));
+        if(QFileInfo::exists(path+"/boundary_stability.json")) {
+            auto show=dialog.findChild<QPushButton *>("ShowImagingBoundaries");
+            QVERIFY(show && show->isEnabled());
+            bool inspected=false;
+            QTimer::singleShot(0, &dialog, [&] {
+                auto report = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+                if (!report)
+                    return;
+                auto table = report->findChild<QTableWidget *>();
+                auto slice = report->findChild<QSpinBox *>();
+                auto plot = report->findChild<ScientificPlot *>();
+                if (table && table->rowCount() > 0 && slice && plot) {
+                    for (int i = 0; i <= slice->maximum() && plot->data().values.isEmpty(); ++i)
+                        slice->setValue(i);
+                    inspected = !plot->data().values.isEmpty();
+                    const auto snapshots = qEnvironmentVariable("XRI_IMAGING_SCREENSHOTS");
+                    if (!snapshots.isEmpty() && QDir().mkpath(snapshots))
+                        report->grab().save(snapshots + "/boundaries.png");
+                }
+                report->accept();
+            });
+            show->click();
+            QVERIFY(inspected);
+        }
         auto directory = qEnvironmentVariable("XRI_IMAGING_SCREENSHOTS");
         if (!directory.isEmpty()) {
             QVERIFY(QDir().mkpath(directory));
@@ -998,7 +1451,8 @@ class GuiTests : public QObject {
             dialog.selectStep(4);
             buildModel->click();
             QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 15000);
-            QVERIFY2(dialog.statusText().contains(QStringLiteral("等值面已生成")), qPrintable(dialog.statusText()));
+            QVERIFY2(dialog.statusText().contains(QStringLiteral("等值面已生成")),
+                     qPrintable(dialog.statusText()));
             for (int tab = 0; tab < steps->count(); ++tab) {
                 dialog.selectStep(tab);
                 QTest::qWait(50);
@@ -1016,12 +1470,23 @@ class GuiTests : public QObject {
         SpectroscopyDialog dialog(file);
         dialog.show();
         QVERIFY(dialog.loadRois(roi));
-        dialog.runStep(0);
+        auto *advance = dialog.findChild<QPushButton *>("NextSpectrumStep");
+        auto *pages = dialog.findChild<QTabWidget *>("SpectroscopySteps");
+        advance->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 30000);
+        QVERIFY2(pages->currentIndex() == 1, qPrintable(dialog.statusText()));
+        QVERIFY(!dialog.hasCalibration());
+        QVERIFY(dialog.findChild<ScientificPlot *>("LambdaMaskPreview")->data().sum > 0);
+        advance->click();
         QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 15000);
         QVERIFY2(dialog.hasCalibration(), qPrintable(dialog.statusText()));
         auto fits = dialog.findChild<QTableWidget *>("ElasticFits");
         QVERIFY(fits);
-        fits->setCurrentCell(45, 0);
+        // Calibration already selects the first accepted crystal.
+        const auto elasticPlot = pages->widget(2)->findChild<SpectrumPlot *>();
+        QVERIFY(elasticPlot && !elasticPlot->curves().first().x.isEmpty());
+        QCOMPARE(elasticPlot->curves().first().draw, SpectrumCurve::Draw::Samples);
+        QCOMPARE(elasticPlot->curves().last().draw, SpectrumCurve::Draw::Line);
         auto directory = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
         if (!directory.isEmpty()) {
             QVERIFY(QDir().mkpath(directory));
@@ -1032,6 +1497,221 @@ class GuiTests : public QObject {
             QTest::qWait(50);
             QVERIFY(dialog.grab().save(directory + "/real-masks.png"));
         }
+        const auto dir = QFileInfo(file).dir();
+        const auto files = dir.entryList({"14517_scan_*.nxs", "14524_scan_*.nxs"}, QDir::Files, QDir::Name);
+        if (files.size() == 2) {
+            dialog.addScans({dir.filePath(files[0]), dir.filePath(files[1])});
+            dialog.selectStep(3);
+            dialog.findChild<QPushButton *>("ExtractSpectrum")->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog.isBusy(), 30000);
+            QVERIFY2(dialog.hasScans(), qPrintable(dialog.statusText()));
+            auto *scan = dialog.findChild<QComboBox *>("ExtractedXrsScan");
+            auto *plot = dialog.findChild<SpectrumPlot *>("I0Spectrum");
+            const int badPoint[] = {120, 36};
+            for (int i = 0; i < 2; ++i) {
+                scan->setCurrentIndex(i);
+                const auto &curves = plot->curves();
+                QCOMPARE(curves.size(), 3);
+                const int p = badPoint[i];
+                QCOMPARE(curves[2].x, QVector<double>{curves[0].x[p]});
+                QVERIFY(curves[1].y[p] > curves[0].y[p]);
+                qInfo() << files[i] << "point" << p + 1 << curves[0].y[p] << "->" << curves[1].y[p];
+            }
+            if (!directory.isEmpty())
+                QVERIFY(dialog.grab().save(directory + "/real-i0.png"));
+        }
+    }
+    void spectralMaskRealScan() {
+        const QString elastic = qEnvironmentVariable("XRI_MASK_ELASTIC");
+        const QString reference = qEnvironmentVariable("XRI_MASK_REFERENCE");
+        if (elastic.isEmpty() || reference.isEmpty())
+            QSKIP("Optional real spectral-mask scans");
+        std::atomic_bool cancel{false};
+        for (const QString &detector : {QStringLiteral("D_LAMBDA"), QStringLiteral("D_MINIPIX")}) {
+            const auto projection = HdfFile::sumFrames(elastic, "/entry/data/" + detector, cancel);
+            QVERIFY2(projection.error.isEmpty(), qPrintable(projection.error));
+            QVERIFY(!projection.values.isEmpty());
+            const int peak = int(std::max_element(projection.values.cbegin(), projection.values.cend()) -
+                                 projection.values.cbegin());
+            const QSize size(projection.width, projection.height);
+            const QRect box = QRect(peak % size.width() - 6, peak / size.width() - 6, 13, 13)
+                                  .intersected(QRect(QPoint(), size));
+            CrystalRoi roi{detector, detector, box, RoiState::Valid, {}};
+            SpectrumSettings settings;
+            settings.normalizeXrs = !qEnvironmentVariableIsSet("XRI_MASK_COUNTS_ONLY");
+            SpectralMaskDialog dialog(settings, {roi}, {{detector, size}}, 0, {reference}, nullptr);
+            dialog.show();
+            dialog.findChild<QPushButton *>("DecomposePixels")->click();
+            const auto *components = dialog.findChild<QComboBox *>("SampleComponent");
+            const auto counts = HdfFile::sumFrames(reference, "/entry/data/" + detector, cancel);
+            QVERIFY2(counts.error.isEmpty(), qPrintable(counts.error));
+            const auto pixels = roi.pixels();
+            const bool hasCounts = std::any_of(pixels.cbegin(), pixels.cend(), [&](const QPoint &p) {
+                return counts.values[p.y() * size.width() + p.x()] > 0;
+            });
+            if (!hasCounts) {
+                QCOMPARE(components->count(), 0);
+                QVERIFY(!dialog.findChild<QPushButton *>("ApplySpectralMask")->isEnabled());
+                QVERIFY(dialog.findChild<QPushButton *>("KeepOriginalRoi")->isEnabled());
+                QVERIFY(!dialog.findChild<QPushButton *>("UpdateOriginalRoi")->isEnabled());
+                QCOMPARE(dialog.findChild<QLabel *>("SpectralMaskStatus")->text(),
+                         QStringLiteral("候选像素在参考扫描中没有信号。"));
+                continue;
+            }
+            QVERIFY2(components->count() == 2,
+                     qPrintable(dialog.findChild<QLabel *>("SpectralMaskStatus")->text()));
+            const auto selection = dialog.selection();
+            QVERIFY(!selection.pixels.isEmpty());
+            qInfo() << detector << box << selection.provenance;
+            const auto directory = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
+            if (!directory.isEmpty()) {
+                QDir().mkpath(directory);
+                QVERIFY(dialog.grab().save(directory + "/spectral-" + detector + ".png"));
+            }
+        }
+    }
+    void spectralMaskWorkflow() {
+        QTemporaryDir temp;
+        const auto elastic = SpectrumFixture::create(temp.path(), true);
+        const auto reference = SpectrumFixture::create(temp.path(), false);
+        SpectroscopyDialog workbench(elastic);
+        QVERIFY(workbench.loadRois(temp.filePath("test.roi.json")));
+        workbench.addScans({reference});
+        auto *advance = workbench.findChild<QPushButton *>("NextSpectrumStep");
+        auto *pages = workbench.findChild<QTabWidget *>("SpectroscopySteps");
+        auto *source = workbench.findChild<QComboBox *>("MaskPreviewSource");
+        QVERIFY(advance && pages && source);
+        advance->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QCOMPARE(pages->currentIndex(), 1);
+        QVERIFY(!workbench.hasCalibration());
+        QCOMPARE(source->currentIndex(), 1);
+        auto *lambda = pages->widget(1)->findChild<ScientificPlot *>("LambdaMaskPreview");
+        auto *mini = pages->widget(1)->findChild<ScientificPlot *>("MiniPixMaskPreview");
+        QVERIFY(lambda && mini);
+        QCOMPARE(lambda->data().sum, 4.);
+        QCOMPARE(mini->data().sum, 2.);
+        auto *corrections = workbench.findChild<QTableWidget *>("RoiCorrections");
+        QVERIFY(corrections);
+        corrections->setCurrentCell(5, 0); // Invalid row falls back directly to first valid crystal.
+        auto *open = workbench.findChild<QPushButton *>("OpenSpectralMask");
+        QVERIFY(open);
+        bool finished = false;
+        int revisedCount = 0;
+        QTimer::singleShot(0, [&] {
+            auto *dialog = workbench.findChild<SpectralMaskDialog *>("SpectralMaskDialog");
+            if (!dialog) {
+                if (auto *other = qobject_cast<QDialog *>(QApplication::activeModalWidget()))
+                    other->reject();
+                return;
+            }
+            auto close = qScopeGuard([dialog] { if (dialog->isVisible()) dialog->close(); });
+            auto *previous = dialog->findChild<QPushButton *>("PreviousSpectralCrystal");
+            auto *next = dialog->findChild<QPushButton *>("NextSpectralCrystal");
+            auto *apply = dialog->findChild<QPushButton *>("ApplySpectralMask");
+            auto *threshold = dialog->findChild<QDoubleSpinBox *>("CovarianceThreshold");
+            auto *picker = dialog->findChild<QListWidget *>("SpectralCrystal");
+            auto *update = dialog->findChild<QPushButton *>("UpdateOriginalRoi");
+            auto *keep = dialog->findChild<QPushButton *>("KeepOriginalRoi");
+            QVERIFY(picker && update && keep);
+            QVERIFY(!update->isEnabled() && !keep->isEnabled() && !apply->isEnabled());
+            QCOMPARE(picker->count(), 3);
+            QVERIFY(!previous->isEnabled());
+            QCOMPARE(dialog->currentRow(), 0);
+            dialog->findChild<QPushButton *>("DecomposePixels")->click();
+            auto *iterate = dialog->findChild<QPushButton *>("IterateSpectralMask");
+            if (iterate->isEnabled())
+                iterate->click();
+            threshold->setValue(.15);
+            const auto draft = dialog->selection();
+            QVERIFY(!draft.pixels.isEmpty());
+            dialog->activateWindow();
+            QTRY_VERIFY(dialog->isActiveWindow());
+            QTest::keyClick(dialog, Qt::Key_Right, Qt::AltModifier);
+            QTRY_COMPARE(dialog->currentRow(), 1);
+            QCOMPARE(dialog->findChild<QComboBox *>("SpectralReference")->currentText(), reference);
+            QVERIFY(apply->isEnabled());
+            threshold->setValue(.3);
+            QTest::keyClick(dialog, Qt::Key_Left, Qt::AltModifier);
+            QTRY_COMPARE(dialog->currentRow(), 0);
+            QCOMPARE(threshold->value(), .15);
+            QCOMPARE(dialog->selection().pixels, draft.pixels);
+            QCOMPARE(dialog->selection().provenance, draft.provenance);
+            apply->click();
+            QCOMPARE(dialog->currentRow(), 1);
+            QCOMPARE(threshold->value(), .3);
+            QVERIFY(!update->isEnabled());
+            QVERIFY(!corrections->item(0, 0)->text().endsWith(QStringLiteral("✓")));
+            const auto directory = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
+            if (!directory.isEmpty()) {
+                QDir().mkpath(directory);
+                QVERIFY(dialog->grab().save(directory + "/crystal-navigation.png"));
+            }
+            keep->click();
+            QCOMPARE(dialog->currentRow(), 60); // Cross from LAMBDA to MINIPIX, skipping invalid ROIs.
+            QVERIFY(!next->isEnabled());
+            QVERIFY(apply->isEnabled());
+            QVERIFY(!update->isEnabled());
+            apply->click();
+            QCOMPARE(dialog->currentRow(), 60);
+            const auto retained = dialog->selection().pixels;
+            revisedCount = retained.size();
+            QVERIFY(update->isEnabled());
+            picker->setCurrentRow(0);
+            QVERIFY(update->isEnabled());
+            threshold->setValue(.16);
+            QVERIFY(!update->isEnabled());
+            auto *component = dialog->findChild<QComboBox *>("SampleComponent");
+            component->setCurrentIndex(1);
+            dialog->findChild<QComboBox *>("CovarianceThresholdMode")->setCurrentIndex(1);
+            threshold->setValue(-1e20);
+            QVERIFY(apply->isEnabled());
+            apply->click();
+            QVERIFY(update->isEnabled());
+            QCOMPARE(dialog->acceptedMasks().size(), 2);
+            QCOMPARE(dialog->acceptedMasks()[0].provenance["rounds"].toArray().last().toObject()
+                         .value("target_component_1based").toInt(), 2);
+            QCOMPARE(dialog->acceptedMasks()[60].pixels, retained);
+            update->click();
+            finished = true;
+        });
+        open->click();
+        QVERIFY(finished);
+        QCOMPARE(mini->data().sum, double(revisedCount));
+        QVERIFY(!corrections->item(1, 0)->text().endsWith(QStringLiteral("✓")));
+        for (const int row : {0, 60})
+            QVERIFY(corrections->item(row, 0)->text().endsWith(QStringLiteral("✓")));
+        advance->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY2(workbench.hasCalibration(), qPrintable(workbench.statusText()));
+        QCOMPARE(pages->currentIndex(), 2);
+        auto *fits = pages->widget(2)->findChild<QTableWidget *>();
+        QCOMPARE(fits->item(60, 1)->text(), QString("%1 / %1").arg(revisedCount));
+        QCOMPARE(fits->item(1, 1)->text(), QString("4 / 2"));
+        workbench.selectStep(1);
+        bool reviewedAgain = false;
+        QTimer::singleShot(0, [&] {
+            auto *dialog = workbench.findChild<SpectralMaskDialog *>();
+            auto close = qScopeGuard([dialog] { dialog->reject(); });
+            auto *run = dialog->findChild<QPushButton *>("DecomposePixels");
+            auto *keep = dialog->findChild<QPushButton *>("KeepOriginalRoi");
+            auto *update = dialog->findChild<QPushButton *>("UpdateOriginalRoi");
+            auto *referenceBox = dialog->findChild<QComboBox *>("SpectralReference");
+            QVERIFY(!update->isEnabled());
+            run->click();
+            for (int i = 0; i < 3; ++i) {
+                QVERIFY(keep->isEnabled());
+                keep->click();
+            }
+            QVERIFY(update->isEnabled());
+            QVERIFY(dialog->acceptedMasks().isEmpty());
+            referenceBox->setCurrentText(temp.filePath("missing.nxs"));
+            run->click();
+            QVERIFY(!keep->isEnabled() && !update->isEnabled());
+            reviewedAgain = true;
+        });
+        open->click();
+        QVERIFY(reviewedAgain && workbench.hasCalibration());
     }
     void spectroscopyWorkflow() {
         QTemporaryDir temp;
@@ -1048,34 +1728,76 @@ class GuiTests : public QObject {
         QVERIFY(dialog);
         QVERIFY(dialog->loadRois(temp.path() + "/test.roi.json"));
         dialog->addScans({xrs, reverse});
-        auto calibrate = dialog->findChild<QPushButton *>("CalibrateSpectrum");
+        auto next = dialog->findChild<QPushButton *>("NextSpectrumStep");
+        auto fitPeak = dialog->findChild<QPushButton *>("FitElasticPeaks");
         auto extract = dialog->findChild<QPushButton *>("ExtractSpectrum");
         auto combine = dialog->findChild<QPushButton *>("CombineSpectrum");
         auto save = dialog->findChild<QPushButton *>("SaveSpectrum");
-        QVERIFY(calibrate && extract && combine && save);
+        QVERIFY(next && fitPeak && extract && combine && save);
+        QVERIFY(!dialog->findChild<QPushButton *>("CalibrateSpectrum"));
         QVERIFY(!extract->isEnabled() && !combine->isEnabled() && !save->isEnabled());
         dialog->selectStep(1);
-        QVERIFY(calibrate->isVisible() && !extract->isVisible());
-        QTest::mouseClick(calibrate, Qt::LeftButton);
+        QVERIFY(next->isVisible() && !fitPeak->isVisible() && !extract->isVisible());
+        QTest::mouseClick(next, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
         QVERIFY2(dialog->hasCalibration(), qPrintable(dialog->statusText()));
+        auto *tabs = dialog->findChild<QTabWidget *>("SpectroscopySteps");
+        auto *elasticSplit = dialog->findChild<QSplitter *>("ElasticResultsSplitter");
+        QVERIFY(elasticSplit && elasticSplit->orientation() == Qt::Horizontal);
+        QVERIFY(fitPeak->isVisible() && fitPeak->x() < next->x());
+        fitPeak->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY(dialog->hasCalibration() && fitPeak->isVisible());
         QVERIFY(extract->isEnabled());
         auto editor = window.openRoi(elastic, temp.path() + "/test.roi.json");
         QTRY_VERIFY_WITH_TIMEOUT(!editor->isLoading(), 10000);
         QVERIFY(editor->imagesReady());
         editor->findChild<QPushButton *>("ReturnFromRoi")->click();
         QVERIFY(dialog->hasCalibration());
-        dialog->selectStep(3);
-        QVERIFY(extract->isVisible() && !calibrate->isVisible());
-        QTest::mouseClick(extract, Qt::LeftButton);
+        dialog->selectStep(2);
+        QTest::mouseClick(next, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
         QVERIFY2(dialog->hasScans(), qPrintable(dialog->statusText()));
-        QTest::mouseClick(combine, Qt::LeftButton);
+        QCOMPARE(tabs->currentIndex(), 3);
+        auto *plot = dialog->findChild<SpectrumPlot *>("I0Spectrum");
+        auto *repair = dialog->findChild<QCheckBox *>("RepairXrsGlitches");
+        auto *drop = dialog->findChild<QDoubleSpinBox *>("GlitchDropPercent");
+        QVERIFY(repair->isVisible() && drop->value() == 5. && !fitPeak->isVisible());
+        QCOMPARE(plot->curves().size(), 3);
+        repair->click();
+        QVERIFY(!dialog->hasScans() && !drop->isEnabled());
+        extract->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QCOMPARE(plot->curves().size(), 2);
+        QCOMPARE(plot->curves()[0].y, plot->curves()[1].y);
+        repair->click();
+        QVERIFY(!dialog->hasScans());
+        QTest::mouseClick(next, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
         QVERIFY2(dialog->hasResult(), qPrintable(dialog->statusText()));
+        QCOMPARE(tabs->currentIndex(), 4);
+        QCOMPARE(plot->curves().size(), 3);
         QVERIFY(save->isEnabled());
         auto curve = dialog->findChild<SpectrumPlot *>("CombinedSpectrum");
         QVERIFY(curve && !curve->curves().isEmpty());
+        auto *splitter = dialog->findChild<QSplitter *>("SpectrumResultsSplitter");
+        auto *toggle = dialog->findChild<QToolButton *>("ToggleSpectrumParameters");
+        auto *parameters = dialog->findChild<QWidget *>("SpectrumResultParameters");
+        QVERIFY(splitter && toggle && parameters && parameters->isVisible());
+        QCOMPARE(toggle->iconSize(), QSize(12, 12));
+        QVERIFY(!toggle->icon().isNull() && toggle->autoRaise());
+        QCOMPARE(splitter->orientation(), Qt::Horizontal);
+        const int expandedWidth = splitter->width();
+        toggle->click();
+        QTRY_VERIFY(!parameters->isVisible() && splitter->width() > expandedWidth);
+        QVERIFY(dialog->hasResult());
+        const auto resultImages = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
+        if (!resultImages.isEmpty())
+            QVERIFY(dialog->grab().save(resultImages + "/result-collapsed.png"));
+        toggle->click();
+        QTRY_VERIFY(parameters->isVisible());
+        if (!resultImages.isEmpty())
+            QVERIFY(dialog->grab().save(resultImages + "/result-expanded.png"));
         QVERIFY(std::abs(dialog->result().total[10] -
                          15 * (10 + .5 * dialog->result().energyTransferEv[10])) < 1e-5);
         auto loadCurrent = dialog->findChild<QPushButton *>("LoadCurrentSpectrumForProcessing");
@@ -1085,13 +1807,19 @@ class GuiTests : public QObject {
         auto mode = dialog->findChild<QComboBox *>("BackgroundMode");
         auto qMin = dialog->findChild<QDoubleSpinBox *>("HighMomentumMinimum");
         QVERIFY(loadCurrent && fitBackground && corrected && source && mode && qMin);
-        dialog->selectStep(6);
-        QVERIFY(fitBackground->isEnabled() && !qMin->isVisible());
+        next->click();
+        QCOMPARE(tabs->currentIndex(), 5);
+        QVERIFY(!dialog->findChild<SpectrumPlot *>("StitchedSpectrum")->curves().isEmpty());
         dialog->findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1.5,8.5:10");
-        fitBackground->click();
-        QTRY_VERIFY_WITH_TIMEOUT(!corrected->curves().isEmpty(), 10000);
+        next->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QCOMPARE(tabs->currentIndex(), 6);
+        QVERIFY(fitBackground->isEnabled() && !qMin->isVisible() && !corrected->curves().isEmpty());
         QCOMPARE(corrected->curves().first().x, dialog->result().energyTransferEv);
-        dialog->selectStep(7);
+        dialog->findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1,9:10");
+        next->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QCOMPARE(tabs->currentIndex(), 7);
         dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->setValue(2);
         dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMaximum")->setValue(4);
         QCOMPARE(corrected->curves().first().x.first(), 2.);

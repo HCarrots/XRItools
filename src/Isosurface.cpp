@@ -32,9 +32,11 @@ QVector<SurfaceTriangle> Isosurface::extract(const QVector<QVector<double>> &axe
                     const qsizetype ix = x + (i & 1), iy = y + ((i >> 1) & 1), iz = z + (i >> 2);
                     values[i] = field[(ix * ny + iy) * nz + iz];
                 }
+                // A masked voxel can be NaN, which does not satisfy the ordering required by minmax_element.
+                if (!std::all_of(values.cbegin(), values.cend(), [](double f) { return std::isfinite(f); }))
+                    continue;
                 const auto [min, max] = std::minmax_element(values.cbegin(), values.cend());
-                if (*min >= level || *max < level ||
-                    !std::all_of(values.cbegin(), values.cend(), [](double f) { return std::isfinite(f); }))
+                if (*min >= level || *max < level)
                     continue;
                 std::array<QVector3D, 8> points;
                 for (int i = 0; i < 8; ++i)

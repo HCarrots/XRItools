@@ -293,7 +293,8 @@ QVector<ImagingRoi> roiTable(const QString &file, const QString &detector, const
                            detector,
                            r.rect,
                            r.state == RoiState::Invalid || excluded.contains(id),
-                           r.mask});
+                           r.mask,
+                           r.state == RoiState::Invalid});
         }
     } else {
         auto lines = QString::fromUtf8(bytes).split('\n');
@@ -403,7 +404,13 @@ QJsonObject Imaging::defaults() {
                                    {"sample_dcm_points", QJsonValue()}}},
         {"roi", QJsonObject{{"excluded_ids", QJsonArray()}, {"label_overrides", QJsonObject()}}},
         {"grid", QJsonObject{{"x_step_mm", QJsonValue()}}},
-        {"psf", QJsonObject{{"min_peak_fraction", .3},
+        {"statistics", QJsonObject{{"variance_weighted", false},
+                                   {"sigma_floor", QJsonValue()},
+                                   {"blank_nxs", ""},
+                                   {"blank_exposure_s", QJsonValue()},
+                                   {"background_yz_mm", QJsonArray{}}}},
+        {"psf", QJsonObject{{"auto_select_model", true},
+                            {"min_peak_fraction", .3},
                             {"min_r_squared", .8},
                             {"edge_margin_pixels", 1.2},
                             {"min_observations", 3},
@@ -427,6 +434,25 @@ QJsonObject Imaging::defaults() {
 }
 QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) {
     auto c = merge(defaults(), input);
+    auto statistics = c["statistics"].toObject();
+    if (!statistics["variance_weighted"].isBool() || !statistics["blank_nxs"].isString() ||
+        !statistics["background_yz_mm"].isArray())
+        fail("Invalid counting statistics configuration");
+    const auto blank = statistics["blank_nxs"].toString().trimmed();
+    statistics["blank_nxs"] =
+        blank.isEmpty() ? QString() : QFileInfo(QDir(directory), blank).absoluteFilePath();
+    for (const auto &key : {"sigma_floor", "blank_exposure_s"})
+        if (!statistics[key].isNull() &&
+            !(statistics[key].toDouble() > 0 && std::isfinite(statistics[key].toDouble())))
+            fail("The variance floor standard deviation and blank exposure must be positive");
+    auto rect = statistics["background_yz_mm"].toArray();
+    if (!rect.isEmpty() &&
+        (!blank.isEmpty() || rect.size() != 4 ||
+         !std::all_of(rect.begin(), rect.end(),
+                      [](QJsonValue v) { return v.isDouble() && std::isfinite(v.toDouble()); }) ||
+         rect[0].toDouble() > rect[1].toDouble() || rect[2].toDouble() > rect[3].toDouble()))
+        fail("Choose one background source: blank scan or [Ymin,Ymax,Zmin,Zmax] in mm");
+    c["statistics"] = statistics;
     for (const auto &section : {"input", "runtime"}) {
         auto group = c[section].toObject();
         auto keys = QString(section) == "input" ? QStringList{"calibration_nxs", "sample_nxs", "roi_table"}
@@ -519,6 +545,7 @@ QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) 
             fail("Invalid TV coefficient");
     }
     for (const auto &pair : {qMakePair(QString("reconstruction"), QString("fit_gains")),
+                             qMakePair(QString("psf"), QString("auto_select_model")),
                              qMakePair(QString("tv"), QString("enabled")),
                              qMakePair(QString("output"), QString("save_diagnostics")),
                              qMakePair(QString("output"), QString("plots")),
@@ -553,12 +580,18 @@ QJsonObject Imaging::loadConfig(const QString &file, QString *bondOutputFile) {
     if (error.error != QJsonParseError::NoError || !doc.isObject())
         fail("Invalid imaging JSON: " + error.errorString());
     auto object = doc.object();
-    const auto output = object.take("bond_output_file");
-    if (bondOutputFile) {
-        const auto path = output.toString().trimmed();
-        *bondOutputFile =
-            path.isEmpty() ? QString{} : QFileInfo(QFileInfo(file).absoluteDir(), path).absoluteFilePath();
+    // A resolved result records the actual forward model used, including pre-selection releases.
+    if (QFileInfo(file).fileName() == "config.resolved.json") {
+        auto psf = object["psf"].toObject();
+        if (!psf.contains("auto_select_model")) {
+            psf["auto_select_model"] = false;
+            object["psf"] = psf;
+        }
     }
+    const auto output = object.take("bond_output_file").toString().trimmed();
+    object.remove("bond_contrast_output_file"); // Accept configurations saved by older XRI versions.
+    if (bondOutputFile)
+        *bondOutputFile = output.isEmpty() ? QString{} : QFileInfo(QFileInfo(file).absoluteDir(), output).absoluteFilePath();
     return config(object, QFileInfo(file).absolutePath());
 }
 ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool &stop,
@@ -574,25 +607,28 @@ ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool
                            acq["calibration_exposure_s"].toDouble(), acq, loops, stop);
     out.sample = grid(inputs["sample_nxs"].toString(), "sample", sampleMotors,
                       acq["sample_exposure_s"].toDouble(), acq, loops, stop);
+    if (requireMatchedBand) {
+        const auto stats = validated["statistics"].toObject();
+        const auto path = stats["blank_nxs"].toString();
+        if (!path.isEmpty() &&
+            (!QFileInfo(path).isFile() ||
+             QFileInfo(path).canonicalFilePath() == QFileInfo(out.sample.file).canonicalFilePath()))
+            fail("Select an existing blank scan independent of the sample");
+        const auto rect = stats["background_yz_mm"].toArray();
+        if (!rect.isEmpty()) {
+            auto count = [&](int d) {
+                return std::count_if(out.sample.axes[d].begin(), out.sample.axes[d].end(), [&](double t) {
+                    return t >= rect[d * 2].toDouble() && t <= rect[d * 2 + 1].toDouble();
+                });
+            };
+            if (count(0) * count(1) < 2)
+                fail("Background YZ rectangle must include at least two scan positions");
+        }
+    }
     if (out.calibration.imageSize != out.sample.imageSize)
         fail("Calibration/sample detector dimensions differ");
     if (requireMatchedBand)
         matchedWeights(out.calibration.axes[1], out.sample.axes[2]);
-    out.rois = roiTable(inputs["roi_table"].toString(), acq["detector"].toString(), out.calibration.imageSize,
-                        validated["roi"].toObject());
-    QStringList keys, excluded;
-    int pixels = 0;
-    for (const auto &r : out.rois) {
-        if (r.excluded)
-            excluded.append(r.id);
-        else {
-            keys.append(r.key);
-            pixels += int(r.pixels.size());
-        }
-    }
-    auto rec = validated["reconstruction"].toObject();
-    if (rec["fit_gains"].toBool() && !keys.contains(rec["anchor_roi"].toString()))
-        fail("Gain anchor is not included: " + rec["anchor_roi"].toString());
     auto report = [](const ImagingGrid &g, const QStringList &motors, double exposure) {
         QJsonObject axes;
         QMap<QString, qsizetype> counts;
@@ -617,11 +653,31 @@ ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool
     };
     out.report = {
         {"calibration", report(out.calibration, calibrationMotors, acq["calibration_exposure_s"].toDouble())},
-        {"sample", report(out.sample, sampleMotors, acq["sample_exposure_s"].toDouble())},
-        {"roi_keys", json(keys)},
-        {"excluded_roi_ids", json(excluded)},
-        {"roi_pixels", pixels}};
+        {"sample", report(out.sample, sampleMotors, acq["sample_exposure_s"].toDouble())}};
+    validateRois(out, validated);
     return out;
+}
+void Imaging::validateRois(ImagingValidation &data, const QJsonObject &settings) {
+    auto rois = roiTable(settings["input"].toObject()["roi_table"].toString(),
+                         settings["acquisition"].toObject()["detector"].toString(),
+                         data.calibration.imageSize, settings["roi"].toObject());
+    QStringList keys, excluded;
+    qsizetype pixels = 0;
+    for (const auto &r : rois) {
+        if (r.excluded)
+            excluded.append(r.id);
+        else {
+            keys.append(r.key);
+            pixels += r.pixels.size();
+        }
+    }
+    const auto rec = settings["reconstruction"].toObject();
+    if (rec["fit_gains"].toBool() && !keys.contains(rec["anchor_roi"].toString()))
+        fail("Gain anchor is not included: " + rec["anchor_roi"].toString());
+    data.rois = std::move(rois);
+    data.report["roi_keys"] = json(keys);
+    data.report["excluded_roi_ids"] = json(excluded);
+    data.report["roi_pixels"] = pixels;
 }
 QVector<double> Imaging::energyWeights(const QVector<double> &axis) {
     if (axis.isEmpty())

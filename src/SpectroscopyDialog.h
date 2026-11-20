@@ -35,6 +35,8 @@ class SpectroscopyDialog : public QDialog {
         return m_haveResult;
     }
     QString statusText() const;
+    bool importConfiguration(const QString &path);
+    bool saveConfiguration(const QString &path);
     bool loadRois(const QString &path);
     void addScans(const QStringList &files);
     void runStep(int step);
@@ -51,17 +53,21 @@ class SpectroscopyDialog : public QDialog {
 
   private:
     struct Work {
-        ElasticCalibration calibration;
+        ElasticCalibration masks, calibration;
         QVector<SpectrumScan> scans;
         SpectrumResult result;
         QString error;
     };
     SpectrumSettings settings() const;
+    QMap<QString, QWidget *> configurationFields() const;
     void buildUi();
     void invalidate(int stage);
     void refreshState();
     void refreshActions();
+    void advanceToPage(int target);
     void refreshCalibration();
+    void editSpectralMask();
+    void updateMasks();
     void refreshImages();
     void refreshElasticCurve();
     void refreshScanCurves();
@@ -71,7 +77,11 @@ class SpectroscopyDialog : public QDialog {
     void save();
     void message(const QString &text, bool error = false);
     CrystalRois m_rois;
-    ElasticCalibration m_calibration;
+    QVector<QSize> m_roiSizes;
+    QSet<int> m_configExclusions;
+    QMap<int, SpectralSelection> m_spectralMasks;
+    ElasticCalibration m_masks, m_calibration;
+    QVector<DataSlice> m_projection;
     QVector<SpectrumScan> m_scans;
     SpectrumResult m_result;
     SpectrumSettings m_calibrationSettings, m_extractionSettings, m_resultSettings;
@@ -80,9 +90,12 @@ class SpectroscopyDialog : public QDialog {
     bool m_busy = false, m_updating = false, m_haveCalibration = false, m_haveScans = false,
          m_haveResult = false;
     int m_job = 0;
+    int m_nextPage = -1;
     QStringList m_availableFiles;
     QPair<QString, QString> m_pendingRoi;
     QPushButton *m_nextButton = nullptr, *m_previousButton = nullptr;
+    QPushButton *m_fitElasticButton = nullptr;
+    QDoubleSpinBox *m_glitchDrop = nullptr;
     QTabWidget *m_tabs = nullptr;
     QLineEdit *m_elasticFile = nullptr, *m_roiPath = nullptr;
     QComboBox *m_elasticEnergy = nullptr, *m_xrsEnergy = nullptr, *m_elasticI0 = nullptr, *m_xrsI0 = nullptr,
@@ -107,6 +120,6 @@ class SpectroscopyDialog : public QDialog {
                    *m_qMax = nullptr, *m_step = nullptr;
     QLabel *m_status = nullptr, *m_roiStatus = nullptr;
     QProgressBar *m_progress = nullptr;
-    QPushButton *m_calibrateButton = nullptr, *m_extractButton = nullptr, *m_combineButton = nullptr,
+    QPushButton *m_extractButton = nullptr, *m_combineButton = nullptr,
                 *m_saveButton = nullptr, *m_cancelButton = nullptr;
 };

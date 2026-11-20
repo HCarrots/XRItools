@@ -2,7 +2,7 @@
 #include "Imaging.h"
 #include "Isosurface.h"
 #include <QImage>
-#include <map>
+#include <memory>
 #include <optional>
 
 struct BondBandDiagnostic {
@@ -33,20 +33,14 @@ struct BondSpectralSettings {
     std::optional<BondSpectralReference> compton;
 };
 
-struct BondContrast {
-    QVector<QVector<double>> axes; // X, Y, Z in mm
-    QVector<double> values;
-    QJsonObject diagnostics;
-};
-
-struct BondProjection {
+struct BondInputs {
     QJsonObject config;
     ImagingValidation validation;
     QJsonObject sourceRevision;
-    std::map<QString, ImageMatrix> differenceByCrystal; // detector pixel by Y/Z
-    double ea = 0., eb = 0.;
-    QJsonObject spectralProcessing;
 };
+
+struct BondSpatialModel;
+struct BondChannelProjections;
 
 struct BondReferenceSpectrum {
     QVector<double> energyEv, intensity;
@@ -63,21 +57,22 @@ struct BondReferenceSlice {
 using BondTriangle = SurfaceTriangle;
 
 namespace BondImaging {
-using ContrastSpectra = std::function<QVector<BondSpectralSettings>(const QVector<double> &, const QStringList &)>;
 ImagingValidation validate(const QJsonObject &, const std::atomic_bool &);
+std::shared_ptr<const BondInputs> prepareInputs(const QJsonObject &, const std::atomic_bool &);
+std::shared_ptr<const BondSpatialModel> prepareSpatial(std::shared_ptr<const BondInputs>,
+                                                       const QJsonObject &spatialSettings,
+                                                       const std::atomic_bool &, Imaging::Progress = {});
+QJsonObject spatialSummary(const BondSpatialModel &);
+std::shared_ptr<const BondChannelProjections> prepareChannels(std::shared_ptr<const BondSpatialModel>,
+                                                              const std::atomic_bool &, Imaging::Progress = {});
+QVector<double> channelNorms(const BondChannelProjections &);
+BondVolume reconstructVolume(const BondChannelProjections &, const QJsonObject &outputOptions,
+                             const std::atomic_bool &, Imaging::Progress = {});
 BondVolume run(const QJsonObject &, const std::atomic_bool &, Imaging::Progress = {});
-BondProjection prepareContrast(const QJsonObject &, double ea, double eb, const ContrastSpectra &,
-                               const std::atomic_bool &, Imaging::Progress = {});
-BondContrast reconstructContrast(const BondProjection &, const QJsonObject &spatialSettings,
-                                 const std::atomic_bool &, Imaging::Progress = {});
 BondReferenceSlice fitReferenceSlice(const BondVolume &, int z, double analyzerKev,
                                      const BondReferenceSpectrum &matrix, const BondReferenceSpectrum &target,
                                      std::optional<QPair<double, double>> window, double threshold,
                                      const std::atomic_bool &);
-QVector<double> contrastWeights(const QVector<double> &energy, double ea, double eb,
-                               const BondSpectralSettings &settings);
-void saveContrast(const QString &, const BondContrast &, const std::atomic_bool &);
-std::optional<BondContrast> loadContrast(const QString &);
 void save(const QString &, const BondVolume &, const std::atomic_bool &);
 QString diagnosticPngPath(const QString &);
 BondVolume load(const QString &);
@@ -85,6 +80,7 @@ QVector<double> process(const BondVolume &, const QVector<double> &energy, const
                         const std::atomic_bool &);
 QVector<double> energySlice(const BondVolume &, const QVector<double> &values, const QVector<double> &energy,
                             double at, bool requireConvergence);
+QVector<double> energyIntegral(const BondVolume &, const QVector<double> &values, QPair<double, double> boundsKev);
 QVector<BondTriangle> surface(const BondVolume &, const QVector<double> &field, double level,
                               const std::atomic_bool &);
 } // namespace BondImaging

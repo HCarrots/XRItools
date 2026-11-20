@@ -9,7 +9,30 @@ struct Resolved {
     Eigen::VectorXd spectrum;
     double lipschitz;
     bool reduced;
+    QVector<std::array<int, 3>> pairs;
     Resolved(const ImageMatrix &h, const ImageMatrix &b) {
+        // Weighted data have a distinct symmetric Hessian at each YZ position.
+        if (b.rows() > 1 && h.rows() == b.rows() * (b.rows() + 1) / 2 && h.cols() == b.cols()) {
+            if (!h.allFinite() || !b.allFinite())
+                fail("Nonfinite weighted normal equations");
+            ImageMatrix sums = ImageMatrix::Zero(b.rows(), b.cols());
+            for (int i = 0, k = 0; i < b.rows(); ++i)
+                for (int j = i; j < b.rows(); ++j, ++k) {
+                    if (h.row(k).isZero(0.))
+                        continue;
+                    pairs.append({i, j, k});
+                    sums.row(i) += h.row(k).cwiseAbs();
+                    if (i != j)
+                        sums.row(j) += h.row(k).cwiseAbs();
+                }
+            lipschitz = sums.maxCoeff(); // row-sum upper bound on every block's spectral radius
+            if (!(lipschitz > 0.))
+                fail("Zero weighted response operator");
+            reduced = false;
+            matrix = h / lipschitz;
+            target = b / lipschitz;
+            return;
+        }
         if (h.rows() != h.cols() || h.rows() != b.rows() || !h.allFinite() || !b.allFinite())
             fail("Invalid finite NNLS sufficient statistics");
         Eigen::SelfAdjointEigenSolver<ImageMatrix> eigen(h);
@@ -36,6 +59,15 @@ struct Resolved {
         reduced = count * 2 < h.rows();
     }
     ImageMatrix product(const ImageMatrix &value) const {
+        if (!pairs.isEmpty()) {
+            ImageMatrix out=ImageMatrix::Zero(value.rows(),value.cols());
+            for (const auto &[i,j,k] : pairs) {
+                out.row(i).array() += matrix.row(k).array()*value.row(j).array();
+                if (i!=j)
+                    out.row(j).array() += matrix.row(k).array()*value.row(i).array();
+            }
+            return out;
+        }
         if (reduced) {
             ImageMatrix small = basis.transpose() * value;
             small.array().colwise() *= spectrum.array();

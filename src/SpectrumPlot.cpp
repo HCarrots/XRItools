@@ -10,13 +10,27 @@
 #include <algorithm>
 #include <cmath>
 
-SpectrumPlot::SpectrumPlot(QWidget *parent) : QWidget(parent) {
+namespace {
+void appendPlus(QPainterPath &path, QPointF center) {
+    constexpr qreal radius = 2.7;
+    path.moveTo(center - QPointF(radius, 0));
+    path.lineTo(center + QPointF(radius, 0));
+    path.moveTo(center - QPointF(0, radius));
+    path.lineTo(center + QPointF(0, radius));
+}
+} // namespace
+
+SpectrumPlot::SpectrumPlot(QWidget *parent, Style style) : QWidget(parent), m_style(style) {
     setMinimumSize(300, 220);
     setMouseTracking(true);
+    if (style == Style::Spectroscopy) {
+        m_grid = false;
+        m_minorTicks = false;
+    }
 }
 QRectF SpectrumPlot::area() const {
     int legendRows = std::min(3, (int(m_curves.size()) + 1) / 2);
-    int top = 40 + legendRows * 19;
+    int top = m_style == Style::Spectroscopy ? 35 : 40 + legendRows * 19;
     return QRectF(82, top, std::max(1, width() - 108), std::max(1, height() - top - 65));
 }
 void SpectrumPlot::setCurves(const QVector<SpectrumCurve> &curves, const QString &title,
@@ -59,7 +73,8 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
     p.fillRect(rect(), Qt::white);
     p.setRenderHint(QPainter::Antialiasing);
     auto a = area();
-    QFont f("Arial", 9);
+    const bool spectroscopy = m_style == Style::Spectroscopy;
+    QFont f("Arial", spectroscopy ? 10 : 9);
     p.setFont(f);
     p.setPen(Qt::black);
     p.drawText(QRectF(5, 8, width() - 10, 24), Qt::AlignCenter, m_title);
@@ -73,20 +88,27 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
         return QPointF(a.left() + (x - m_view.left()) / m_view.width() * a.width(),
                        a.bottom() - (y - m_view.top()) / m_view.height() * a.height());
     };
+    auto curveColor = [&](int k) {
+        if (m_curves[k].color.isValid())
+            return m_curves[k].color;
+        static const QColor colors[]{"#19539b", "#df482f", "#65aa4d", "#8658a3", "#c58b22", "#198586"};
+        return spectroscopy ? colors[k % 6] : PlotStyle::curveColor(k);
+    };
     int xTicks = std::clamp(int(a.width() / (m_fineGrid ? 55 : 100)), 2, m_fineGrid ? 20 : 10);
     int yTicks = std::clamp(int(a.height() / (m_fineGrid ? 34 : 60)), 2, m_fineGrid ? 20 : 10);
     PlotStyle::axis(p, a, PlotStyle::ticks(m_view.left(), m_view.right(), xTicks), m_view.left(),
-                    m_view.right(), true, false, m_grid, m_minorTicks, 9, m_fineGrid);
+                    m_view.right(), true, false, m_grid, m_minorTicks, f.pointSize(), m_fineGrid);
     PlotStyle::axis(p, a, PlotStyle::ticks(m_view.top(), m_view.bottom(), yTicks), m_view.top(),
-                    m_view.bottom(), false, false, m_grid, m_minorTicks, 9, m_fineGrid);
+                    m_view.bottom(), false, false, m_grid, m_minorTicks, f.pointSize(), m_fineGrid);
     p.save();
     p.setClipRect(a);
     for (int k = 0; k < m_curves.size(); ++k) {
         const auto &c = m_curves[k];
-        QColor color = c.color.isValid() ? c.color : PlotStyle::curveColor(k);
+        QColor color = curveColor(k);
         QPen pen(color, 1.4, c.dashed ? Qt::DashLine : Qt::SolidLine);
         p.setPen(pen);
         QPainterPath path;
+        QPainterPath marks;
         bool begin = true;
         for (qsizetype i = 0; i < std::min(c.x.size(), c.y.size()); ++i) {
             if (!std::isfinite(c.x[i]) || !std::isfinite(c.y[i])) {
@@ -94,6 +116,12 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
                 continue;
             }
             auto pos = point(c.x[i], c.y[i]);
+            if (c.draw == SpectrumCurve::Draw::Circles) {
+                p.drawEllipse(pos, 3.5, 3.5);
+                continue;
+            }
+            if (spectroscopy && c.draw == SpectrumCurve::Draw::Samples && a.contains(pos))
+                appendPlus(marks, pos);
             if (begin) {
                 path.moveTo(pos);
                 begin = false;
@@ -101,9 +129,13 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
                 path.lineTo(pos);
         }
         p.drawPath(path);
+        if (!marks.isEmpty()) {
+            p.setPen(QPen(color, 1.15));
+            p.drawPath(marks);
+        }
     }
     p.restore();
-    p.setPen(Qt::black);
+    p.setPen(QPen(Qt::black, spectroscopy ? 1.5 : 1.0));
     p.drawRect(a);
     p.drawText(QRectF(a.left(), height() - 28, a.width(), 22), Qt::AlignCenter, m_xLabel);
     p.save();
@@ -112,13 +144,63 @@ void SpectrumPlot::paintEvent(QPaintEvent *) {
     p.drawText(QRectF(-a.height() / 2, -12, a.height(), 24), Qt::AlignCenter, m_yLabel);
     p.restore();
     int visible = std::min(6, int(m_curves.size()));
+    if (spectroscopy) {
+        QStringList names;
+        int widest = 0;
+        for (int k = 0; k < visible; ++k) {
+            const auto text = k == visible - 1 && visible < m_curves.size()
+                ? tr("另有 %1 条曲线").arg(m_curves.size() - k) : m_curves[k].name;
+            names << p.fontMetrics().elidedText(text, Qt::ElideMiddle, int(a.width() * .45));
+            widest = std::max(widest, p.fontMetrics().horizontalAdvance(names.last()));
+        }
+        const int lineHeight = p.fontMetrics().height() + 2;
+        QRectF box(a.right() - widest - 47, a.top() + 5, widest + 42, lineHeight * visible + 4);
+        QRectF leftBox = box;
+        leftBox.moveLeft(a.left() + 5);
+        qsizetype underRight = 0, underLeft = 0;
+        for (const auto &curve : m_curves) {
+            for (qsizetype i = 0; i < std::min(curve.x.size(), curve.y.size()); ++i) {
+                const auto pos = point(curve.x[i], curve.y[i]);
+                underRight += box.contains(pos);
+                underLeft += leftBox.contains(pos);
+            }
+        }
+        if (underLeft < underRight)
+            box = leftBox;
+        p.fillRect(box, QColor(255, 255, 255, 218));
+        for (int k = 0; k < visible; ++k) {
+            QRectF label(box.left() + 4, box.top() + 2 + k * lineHeight, widest, lineHeight);
+            p.setPen(Qt::black);
+            p.drawText(label, Qt::AlignRight | Qt::AlignVCenter, names[k]);
+            if (visible < m_curves.size() && k == visible - 1)
+                continue;
+            const auto &c = m_curves[k];
+            const QPointF center(box.right() - 16, label.center().y());
+            p.setPen(QPen(curveColor(k), 1.5, c.dashed ? Qt::DashLine : Qt::SolidLine));
+            if (c.draw == SpectrumCurve::Draw::Circles)
+                p.drawEllipse(center, 3.5, 3.5);
+            else {
+                p.drawLine(center - QPointF(12, 0), center + QPointF(12, 0));
+                if (c.draw == SpectrumCurve::Draw::Samples) {
+                    p.setPen(QPen(curveColor(k), 1.15));
+                    QPainterPath mark;
+                    appendPlus(mark, center);
+                    p.drawPath(mark);
+                }
+            }
+        }
+        return;
+    }
     for (int k = 0; k < visible; ++k) {
         const auto &c = m_curves[k];
         QColor color = c.color.isValid() ? c.color : PlotStyle::curveColor(k);
         double x = a.left() + (k % 2) * a.width() / 2;
         double y = 39 + (k / 2) * 19;
         p.setPen(QPen(color, 1.5, c.dashed ? Qt::DashLine : Qt::SolidLine));
-        p.drawLine(QPointF(x, y), QPointF(x + 23, y));
+        if (c.draw == SpectrumCurve::Draw::Circles)
+            p.drawEllipse(QPointF(x + 12, y), 3.5, 3.5);
+        else
+            p.drawLine(QPointF(x, y), QPointF(x + 23, y));
         p.setPen(Qt::black);
         if (m_curves.size() > visible && k == visible - 1) {
             p.drawText(QRectF(x, y - 9, a.width() / 2 - 5, 18), Qt::AlignVCenter,

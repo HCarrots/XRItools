@@ -1,19 +1,28 @@
 #pragma once
 #include "CrystalRoi.h"
 #include "HdfFile.h"
+#include "SpectralMask.h"
+#include <QJsonObject>
 #include <QMap>
 #include <QSet>
 #include <cmath>
 #include <functional>
 #include <limits>
 
+struct SpectralSelection {
+    QVector<QPoint> pixels;
+    QJsonObject provenance;
+};
+
 struct SpectrumSettings {
     QString elasticFile, elasticEnergy = "auto", xrsEnergy = "auto";
     QString elasticI0 = "/entry/data/D_SiC_Current1", xrsI0 = "/entry/data/D_SiC_Current1";
     bool normalizeElastic = true, normalizeXrs = true, repairGlitches = true;
+    double glitchDropFraction = 0.05;
     bool useFilter = true, autoRoi = false, removeOverlap = true;
     double filterFraction = 0.15;
     int roiSize = 20;
+    QMap<int, SpectralSelection> spectralMasks;
     QVector<QPoint> shifts = QVector<QPoint>(75), expansions = QVector<QPoint>(75);
     int fitModel = 0; // 0: Lorentzian (HWHM), 1: Gaussian (sigma)
     double centerMin = 9.67, centerMax = 9.69, maxFwhmEv = 2, minRSquared = 0.8;
@@ -62,8 +71,15 @@ struct SpectrumResult {
 class Spectroscopy {
   public:
     using Progress = std::function<void(const QString &, int)>;
+    static PixelSpectra pixelSpectra(const QString &reference, const SpectrumSettings &, const CrystalRoi &,
+                                     const QSize &detectorSize, const std::atomic_bool &);
     static ElasticCalibration calibrate(const SpectrumSettings &, const CrystalRois &,
                                         const std::atomic_bool &, Progress = {});
+    static ElasticCalibration prepareMasks(const SpectrumSettings &, const CrystalRois &,
+                                          const std::atomic_bool &, Progress = {},
+                                          const QVector<DataSlice> &projection = {});
+    static ElasticCalibration fitElastic(const SpectrumSettings &, ElasticCalibration masks,
+                                         const std::atomic_bool &, Progress = {});
     static QVector<SpectrumScan> extract(const SpectrumSettings &, const ElasticCalibration &,
                                          const QStringList &, const std::atomic_bool &, Progress = {});
     static SpectrumResult combine(const SpectrumSettings &, const ElasticCalibration &,

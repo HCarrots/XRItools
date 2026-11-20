@@ -1,8 +1,9 @@
 #include "BondVolume.h"
 #include <QCoreApplication>
 #include "ImagingIO.h"
+#include "ImagingFit.h"
+#include <QJsonDocument>
 #include "PlotStyle.h"
-#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -25,10 +26,10 @@ using namespace ImageUtil;
 namespace {
 struct RoiData {
     ImagingRoi roi;
-    ImageMatrix response, referenceVariance, measured, variance;
+    ImageMatrix response, referenceVariance, measured, variance, background, backgroundVariance;
 };
 
-QJsonObject contrastSourceRevision(const QJsonObject &config) {
+QJsonObject bondSourceRevision(const QJsonObject &config) {
     QJsonObject revision;
     const auto input = config["input"].toObject();
     for (const auto &key : {QStringLiteral("sample_nxs"), QStringLiteral("calibration_nxs"),
@@ -198,6 +199,101 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
     }
     return selected;
 }
+void estimateBackground(const QJsonObject &c, const ImagingGrid &g, QVector<RoiData> &data,
+                        const std::atomic_bool &stop) {
+    const auto stats = c["statistics"].toObject(), acq = c["acquisition"].toObject();
+    const auto region = stats["background_yz_mm"].toArray();
+    if (!region.isEmpty()) {
+        QVector<int> cells;
+        for (int y = 0; y < g.axes[0].size(); ++y)
+            for (int z = 0; z < g.axes[1].size(); ++z)
+                if (g.axes[0][y] >= region[0].toDouble() && g.axes[0][y] <= region[1].toDouble() &&
+                    g.axes[1][z] >= region[2].toDouble() && g.axes[1][z] <= region[3].toDouble())
+                    cells.append(int(y * g.axes[1].size() + z));
+        if (cells.size() < 2)
+            fail("Background YZ rectangle must contain at least two independently measured positions");
+        for (auto &r : data) {
+            cancel(stop);
+            Eigen::VectorXd sum = Eigen::VectorXd::Zero(r.measured.rows()), variance = sum;
+            for (int col : cells) {
+                sum += r.measured.col(col);
+                variance += r.variance.col(col);
+            }
+            const double n = cells.size();
+            r.background = (sum / n).replicate(1, r.measured.cols());
+            r.backgroundVariance = (variance / (n * n)).replicate(1, r.measured.cols());
+            for (int col : cells) {
+                r.background.col(col) = (sum - r.measured.col(col)) / (n - 1.);
+                r.backgroundVariance.col(col) =
+                    (variance - r.variance.col(col)).cwiseMax(0.) / ((n - 1.) * (n - 1.));
+            }
+        }
+        return;
+    }
+    const auto path = stats["blank_nxs"].toString();
+    if (path.isEmpty())
+        return;
+    if (QFileInfo(path).canonicalFilePath() == QFileInfo(g.file).canonicalFilePath())
+        fail("The blank must be an independent scan");
+    ImagingH5 blank(path);
+    const auto energy = blank.read("/entry/instrument/M_DCM_B5Energy_setpoint");
+    const auto monitor = blank.read("/entry/data/" + acq["monitor"].toString());
+    const auto detector = "/entry/data/" + acq["detector"].toString();
+    const auto node = HdfFile::inspect(path, detector);
+    if (energy.isEmpty() || energy.size() != monitor.size() || !node.type.startsWith("uint") ||
+        node.dims != QVector<quint64>{quint64(energy.size()), quint64(g.imageSize.height()),
+                                      quint64(g.imageSize.width())})
+        fail("Blank detector geometry, monitor and energy records must match the acquired frames");
+    QVector<double> axis = energy;
+    for (double e : axis)
+        if (!std::isfinite(e))
+            fail("Nonfinite blank energy");
+    std::sort(axis.begin(), axis.end());
+    axis.erase(
+        std::unique(axis.begin(), axis.end(), [](double a, double b) { return std::abs(a - b) <= 1e-10; }),
+        axis.end());
+    if (axis.size() < 2)
+        fail("Blank requires an energy scan spanning the sample band");
+    const auto weights = Imaging::matchedWeights(axis, g.axes[2]).first;
+    QVector<int> bins;
+    QVector<double> dose(axis.size(), 0.);
+    const double exposure = stats["blank_exposure_s"].toDouble(acq["sample_exposure_s"].toDouble());
+    for (int f = 0; f < energy.size(); ++f) {
+        if (!(monitor[f] > 0. && std::isfinite(monitor[f])))
+            fail("Invalid blank monitor");
+        const int e = int(std::lower_bound(axis.begin(), axis.end(), energy[f] - 1e-10) - axis.begin());
+        if (e >= axis.size())
+            fail("Cannot match blank energy");
+        bins.append(e);
+        dose[e] += monitor[f] * exposure;
+    }
+    for (auto &r : data) {
+        r.background = ImageMatrix::Zero(r.measured.rows(), 1);
+        r.backgroundVariance = r.background;
+    }
+    blank.frames(detector, c["runtime"].toObject()["chunk_frames"].toInt(), stop,
+                 [&](int f, const quint64 *counts, int width, int) {
+                     const double factor = weights[bins[f]] / dose[bins[f]];
+                     for (auto &r : data)
+                         for (int p = 0; p < r.roi.pixels.size(); ++p) {
+                             const auto pt = r.roi.pixels[p];
+                             const double value = counts[pt.y() * width + pt.x()];
+                             r.background(p, 0) += factor * value;
+                             r.backgroundVariance(p, 0) += factor * factor * value;
+                         }
+                 });
+}
+void applyBackground(RoiData &r) {
+    if (!r.background.size())
+        return;
+    if (r.background.cols() == 1) {
+        r.measured.colwise() -= r.background.col(0);
+        r.variance.colwise() += r.backgroundVariance.col(0);
+    } else {
+        r.measured -= r.background;
+        r.variance += r.backgroundVariance;
+    }
+}
 void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &selected,
             const QString &directory, const std::atomic_bool &stop, Imaging::Progress progress) {
     const auto &g = v.sample;
@@ -235,6 +331,7 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                   });
     if (directory.isEmpty())
         return;
+    estimateBackground(c,g,selected,stop);
     ImagingH5 out(directory + "/tomography_inputs.h5", true);
     bool canonical = true;
     for (int f = 0; f < g.monitor.size(); ++f)
@@ -269,7 +366,7 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
     for (const auto &r : selected)
         keys.append(r.roi.key);
     out.writeStrings("roi_keys", keys);
-    for (const auto &r : selected) {
+    for (auto &r : selected) {
         auto base = "rois/" + r.roi.key;
         writeMatrix(out, base + "/R_matched_px", r.response);
         writeMatrix(out, base + "/R_matched_variance_px", r.referenceVariance);
@@ -278,6 +375,11 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
         out.write(base + "/D_variance_pyz", {quint64(r.variance.rows()), quint64(ny), quint64(nz)},
                   r.variance.data());
         writeGeometry(out, base, r.roi);
+        if (r.background.size()) {
+            writeMatrix(out, base + "/B_band", r.background);
+            writeMatrix(out, base + "/B_variance", r.backgroundVariance);
+            applyBackground(r);
+        }
     }
 }
 
@@ -291,11 +393,16 @@ struct SpatialSolution {
     bool gainConverged;
     int gainIteration;
     double dx;
+    ImageMatrix weightedH;
+    QVector<double> varianceFloors;
+    const ImageMatrix &normal() const { return weightedH.size() ? weightedH : h; }
 };
 
 SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &validation,
                              QVector<RoiData> &selected, ImagingResult &result, const std::atomic_bool &stop,
-                             const Imaging::Progress &log, qsizetype energyChannels = 1) {
+                             const Imaging::Progress &log,
+                             const QVector<double> &trainingX = {},
+                             QVector<QHash<double, ImagingSpotFit>> *spotCaches = nullptr) {
     const auto &progress = log;
     QVector<RoiData> accepted;
     QVector<ImagingPsf> models;
@@ -305,7 +412,8 @@ SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &vali
         cancel(stop);
         try {
             auto model = Imaging::fitPsf(selected[i].response, selected[i].roi.pixels,
-                                         validation.calibration.axes[0], c["psf"].toObject(), stop);
+                                         trainingX.isEmpty() ? validation.calibration.axes[0] : trainingX,
+                                         c["psf"].toObject(), stop, spotCaches ? &(*spotCaches)[i] : nullptr);
             result.models[selected[i].roi.key] = model.json(pitch);
             models.append(model);
             accepted.append(std::move(selected[i]));
@@ -342,9 +450,8 @@ SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &vali
         fail("Sample-space X grid requires 2..4096 cells; adjust x_step_mm");
     int nx = int(cells), ny = int(validation.sample.axes[0].size()),
         nz = int(validation.sample.axes[1].size());
-    if (qsizetype(nx) * ny * nz > 16000000 / energyChannels)
-        fail(energyChannels > 1 ? QCoreApplication::translate("Imaging", "四维体素超过 1600 万。请增大 X 步长或减少扫描范围。")
-                                : QStringLiteral("Reconstructed volume exceeds memory limit"));
+    if (qsizetype(nx) * ny * nz > 16000000)
+        fail(QStringLiteral("Reconstructed volume exceeds memory limit"));
     QVector<double> x;
     for (int i = 0; i < nx; ++i)
         x.append((originalX.first() + originalX.last()) / 2 + dx * (i - (nx - 1) / 2.));
@@ -357,82 +464,34 @@ SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &vali
             .arg(accepted.size()),
         60);
     double scale = dx / acq["foil_thickness_mm"].toDouble();
-    QVector<ImageMatrix> response, operators, grams, backs;
+    QVector<ImageMatrix> response, operators;
     for (int i = 0; i < accepted.size(); ++i) {
         response.append(Imaging::evaluatePsf(models[i], accepted[i].roi.pixels, x));
         operators.append(response.last() * scale);
-        grams.append(operators.last().transpose() * operators.last());
-        backs.append(operators.last().transpose() * accepted[i].measured);
     }
-    QVector<double> gains(accepted.size(), 1), history;
-    ImageMatrix h, b, rho;
-    auto terms = [&] {
-        h = ImageMatrix::Zero(nx, nx);
-        b = ImageMatrix::Zero(nx, ny * nz);
-        for (int i = 0; i < gains.size(); ++i) {
-            h.noalias() += gains[i] * gains[i] * grams[i];
-            b.noalias() += gains[i] * backs[i];
-        }
-    };
-    ImagingSolverInfo nnlsInfo;
-    bool gainConverged = false;
-    int gainIteration = 0;
-    log("4/6 Joint NNLS and anchored relative crystal gains", 62);
-    if (rec["fit_gains"].toBool()) {
-        auto bounds = rec["gain_bounds"].toArray();
-        for (int iteration = 1; iteration <= rec["max_gain_iterations"].toInt(); ++iteration) {
-            cancel(stop);
-            terms();
-            rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(),
-                                stop, &nnlsInfo, rho);
-            double difference = 0, norm = 0;
-            auto next = gains;
-            for (int i = 0; i < gains.size(); ++i) {
-                double numerator = (backs[i].array() * rho.array()).sum(),
-                       denominator = (rho.array() * (grams[i] * rho).array()).sum();
-                if (denominator > 0)
-                    next[i] = numerator / denominator;
-                next[i] = std::clamp(next[i], bounds[0].toDouble(), bounds[1].toDouble());
-                if (i == anchor)
-                    next[i] = 1;
-                difference += std::pow(next[i] - gains[i], 2);
-                norm += gains[i] * gains[i];
-            }
-            double change = std::sqrt(difference) / std::max(std::sqrt(norm), 1e-15);
-            history.append(change);
-            gains = std::move(next);
-            gainIteration = iteration;
-            if (iteration % 20 == 0 || iteration == 1)
-                log(QString("Gain iteration %1: relative change %2").arg(iteration).arg(change, 0, 'g', 7),
-                    65);
-            if (change < rec["gain_tolerance"].toDouble()) {
-                gainConverged = true;
-                break;
-            }
-        }
-        terms();
-        rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
-                            &nnlsInfo, rho);
-        gainConverged = gainConverged && nnlsInfo.converged;
-    } else {
-        terms();
-        rho = Imaging::nnls(h, b, rec["nnls_max_iterations"].toInt(), rec["nnls_tolerance"].toDouble(), stop,
-                            &nnlsInfo);
-        gainConverged = nnlsInfo.converged;
-    }
+    QVector<FitObservation> observations;
+    for (int i=0; i<accepted.size(); ++i)
+        observations.append({keys[i], &operators[i], &accepted[i].measured, &accepted[i].variance});
+    // Energy-resolved bond reconstruction has separate, per-energy statistics.
+    const auto stats =
+        (!result.directory.isEmpty() || !trainingX.isEmpty()) ? c["statistics"].toObject() : QJsonObject{};
+    auto fit = fitOperators(observations, rec, stats, stop, log);
+    const int iterations = int(fit.history.size());
     return {std::move(accepted),
             std::move(keys),
             std::move(response),
             std::move(operators),
-            std::move(gains),
-            std::move(history),
-            std::move(h),
-            std::move(b),
-            std::move(rho),
-            nnlsInfo,
-            gainConverged,
-            gainIteration,
-            dx};
+            std::move(fit.gains),
+            std::move(fit.history),
+            std::move(fit.h),
+            std::move(fit.b),
+            std::move(fit.rho),
+            fit.nnls,
+            fit.gainConverged,
+            iterations,
+            dx,
+            std::move(fit.weightedH),
+            std::move(fit.varianceFloors)};
 }
 void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVector<double>> &axes,
                   const QString &directory, const QString &method, const QJsonObject &metadata,
@@ -445,7 +504,7 @@ void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVe
                    {{"axes", "X,Y,Z"},
                     {"quantity", "relative Kapton-equivalent elastic scattering density"},
                     {"units", "relative"},
-                    {"background_subtracted", false},
+                    {"background_subtracted", metadata["sample_background_subtracted"].toBool()},
                     {"energy_integrated", true},
                     {"absolute_density_calibrated", false}});
     const QStringList names{"x_mm", "y_mm", "z_mm"};
@@ -680,14 +739,256 @@ QImage diagnosticImage(const ImagingResult &result, bool bondBand = false) {
                bondBand
                    ? "Integrated-band fit used to determine shared crystal gains. Inspect individual "
                      "energy channels in the four-dimensional HDF5 result."
-                   : "Provisional relative Kapton-equivalent density. No sample background subtraction or "
-                     "geometric postprocessing. Inspect PSF, sensitivity, rank and residuals together.");
+                   : "Provisional relative Kapton-equivalent density. Inspect background settings, PSF, "
+                     "sensitivity, rank and residuals together.");
     p.end();
     canvas.setDotsPerMeterX(11811);
     canvas.setDotsPerMeterY(11811);
     return canvas;
 }
+double tvLambda(const QJsonObject &settings, const ImageMatrix &b, const std::array<double, 3> &spacing) {
+    if (!settings["lambda"].isNull())
+        return settings["lambda"].toDouble();
+    return settings["relative_fraction"].toDouble() * percentile(vector(b.cwiseAbs()), 95) *
+           *std::min_element(spacing.begin(), spacing.end());
+}
+
+QJsonObject depthPeak(const QVector<double> &x, const ImageMatrix &profile, double truth) {
+    QJsonObject out;
+    Eigen::Index peak;
+    const double top = profile.col(0).maxCoeff(&peak);
+    if (!(top > 0.) || !profile.allFinite() || profile.minCoeff() >= top * (1. - 1e-12)) {
+        out["no_peak"] = true;
+        return out;
+    }
+    const double half = .5 * top;
+    int left = int(peak), right = int(peak);
+    while (left > 0 && profile(left - 1, 0) >= half)
+        --left;
+    while (right + 1 < x.size() && profile(right + 1, 0) >= half)
+        ++right;
+    // Report the midpoint of a flat maximum (TV can generate plateaus).
+    int last = int(peak);
+    while (last < right && profile(last + 1, 0) == top)
+        ++last;
+    const double recovered = .5 * (x[peak] + x[last]);
+    out["peak_x_mm"] = recovered;
+    out["bias_mm"] = recovered - truth;
+    out["multiple_lobes"] =
+        (left > 0 && profile.topRows(left).maxCoeff() >= half) ||
+        (right + 1 < x.size() && profile.bottomRows(x.size() - right - 1).maxCoeff() >= half);
+    if (left > 0 && right + 1 < x.size()) {
+        auto crossing = [&](int a, int b) {
+            return x[a] + (half - profile(a, 0)) * (x[b] - x[a]) / (profile(b, 0) - profile(a, 0));
+        };
+        out["fwhm_mm"] = crossing(right, right + 1) - crossing(left, left - 1);
+    }
+    return out;
+}
+QVector<RoiData> readFoilResponses(const ImagingH5 &inputs, const QVector<double> &foil,
+                                   const std::atomic_bool &stop) {
+    const auto keys = inputs.strings("roi_keys", 10000);
+    QVector<RoiData> originals;
+    for (const auto &key : keys) {
+        cancel(stop);
+        const QString base = "rois/" + key;
+        QVector<quint64> shape;
+        const auto rc = inputs.read(base + "/pixels_rc", &shape);
+        if (shape.size() != 2 || shape[1] != 2)
+            fail("Invalid ROI pixel coordinates");
+        RoiData r;
+        r.roi.key = key;
+        for (qsizetype p = 0; p < rc.size(); p += 2)
+            r.roi.pixels.append(QPoint(int(rc[p + 1]), int(rc[p])));
+        const auto values = inputs.read(base + "/R_matched_px", &shape);
+        if (shape != QVector<quint64>{quint64(r.roi.pixels.size()), quint64(foil.size())} || values.isEmpty())
+            fail("Invalid matched foil response");
+        r.response = Eigen::Map<const ImageMatrix>(values.data(), r.roi.pixels.size(), foil.size());
+        originals.append(std::move(r));
+    }
+    return originals;
+}
 } // namespace
+
+QJsonObject Imaging::comparePsfModels(const QString &dir, const std::atomic_bool &stop, Progress progress) {
+    cancel(stop);
+    const auto c = loadConfig(dir + "/config.resolved.json");
+    auto settings = c["psf"].toObject();
+    settings["auto_select_model"] = true;
+    const double pitch = c["acquisition"].toObject()["detector_pixel_pitch_mm"].toDouble();
+    ImagingH5 inputs(dir + "/tomography_inputs.h5");
+    const auto foil = inputs.read("x_mm");
+    const auto data = readFoilResponses(inputs, foil, stop);
+    QJsonObject models, rejected;
+    for (int i = 0; i < data.size(); ++i) {
+        cancel(stop);
+        const auto &r = data[i];
+        if (progress)
+            progress(QCoreApplication::translate("Imaging", "比较光斑模型 %1/%2 · %3")
+                         .arg(i + 1)
+                         .arg(data.size())
+                         .arg(r.roi.key),
+                     int(100 * i / data.size()));
+        try {
+            models[r.roi.key] = fitPsf(r.response, r.roi.pixels, foil, settings, stop).json(pitch);
+        } catch (const std::exception &e) {
+            cancel(stop);
+            rejected[r.roi.key] = QString::fromUtf8(e.what());
+        }
+    }
+    cancel(stop);
+    return {{"schema", "XRI.psf-comparison.v1"}, {"models", models}, {"rejected", rejected}};
+}
+
+QJsonObject Imaging::validateBoundaries(const QString &dir, const std::atomic_bool &stop, Progress progress) {
+    const auto c = loadConfig(dir + "/config.resolved.json");
+    ImagingH5 input(dir + "/tomography_inputs.h5"), volume(dir + "/reconstruction.h5");
+    QVector<QVector<double>> axes{volume.read("x_mm"), volume.read("y_mm"), volume.read("z_mm")};
+    for (const auto &axis : axes)
+        if (axis.size() < 2)
+            fail("Invalid boundary-validation axes");
+    const auto foil = input.read("x_mm");
+    auto data = readFoilResponses(input, foil, stop);
+    QFile summaryFile(dir + "/summary.json");
+    if (!summaryFile.open(QIODevice::ReadOnly))
+        fail("Cannot read reconstruction summary");
+    const auto summary = QJsonDocument::fromJson(summaryFile.readAll()).object();
+    const auto used = summary["roi_keys"].toArray();
+    if (used.size() < 2)
+        fail("Boundary validation requires at least two accepted crystals");
+    std::unique_ptr<ImagingH5> diagnostics;
+    if (QFileInfo::exists(dir + "/solver_diagnostics.h5"))
+        diagnostics = std::make_unique<ImagingH5>(dir + "/solver_diagnostics.h5");
+    const double scale =
+        (axes[0][1] - axes[0][0]) / c["acquisition"].toObject()["foil_thickness_mm"].toDouble();
+    QVector<ImageMatrix> ops;
+    ops.reserve(data.size());
+    QVector<FitObservation> obs;
+    for (auto &r : data) {
+        cancel(stop);
+        if (!used.contains(r.roi.key))
+            continue;
+        const auto base = "rois/" + r.roi.key + "/";
+        const auto pixels = r.roi.pixels.size(), sites = axes[1].size() * axes[2].size();
+        auto read = [&](const ImagingH5 &f, const QString &name, QVector<quint64> shape) {
+            QVector<quint64> dims;
+            const auto v = f.read(base + name, &dims);
+            if (dims != shape || v.isEmpty())
+                fail("Invalid cached dimensions: " + base + name);
+            ImageMatrix result = Eigen::Map<const ImageMatrix>(v.data(), dims[0], v.size() / dims[0]);
+            if (!result.allFinite())
+                fail("Nonfinite cached imaging measurements");
+            return result;
+        };
+        const QVector<quint64> shape{quint64(pixels), quint64(axes[1].size()), quint64(axes[2].size())};
+        r.measured = read(input, "D_band_pyz", shape);
+        r.variance = read(input, "D_variance_pyz", shape);
+        if (summary["sample_background_subtracted"].toBool()) {
+            const bool region = !c["statistics"].toObject()["background_yz_mm"].toArray().isEmpty();
+            const QVector<quint64> bs{quint64(pixels), quint64(region ? sites : 1)};
+            r.background = read(input, "B_band", bs);
+            r.backgroundVariance = read(input, "B_variance", bs);
+            applyBackground(r);
+            r.background.resize(0, 0);
+            r.backgroundVariance.resize(0, 0);
+        }
+        if (diagnostics && diagnostics->contains(base + "response_px"))
+            ops.append(scale * read(*diagnostics, "response_px", {quint64(pixels), quint64(axes[0].size())}));
+        else {
+            auto model = fitPsf(r.response, r.roi.pixels, foil, c["psf"].toObject(), stop);
+            ops.append(scale * evaluatePsf(model, r.roi.pixels, axes[0]));
+        }
+        obs.append({r.roi.key, &ops.last(), &r.measured, &r.variance,
+                    summary["variance_floors_by_roi"].toObject()[r.roi.key].toDouble()});
+    }
+    if (obs.size() != used.size())
+        fail("Missing accepted crystal inputs for boundary validation");
+    return compareCrystalGroups(obs, axes, c, summary["tv_lambda"].toDouble(), stop, progress);
+}
+
+QJsonObject Imaging::validateDepth(const QString &dir, const std::atomic_bool &stop, Progress progress) {
+    cancel(stop);
+    const auto c = loadConfig(dir + "/config.resolved.json");
+    ImagingH5 inputs(dir + "/tomography_inputs.h5");
+    ImagingValidation grid;
+    const auto foil = inputs.read("x_mm");
+    if (foil.size() < 3)
+        fail("Depth validation requires at least three foil positions");
+    grid.calibration.axes = {foil};
+    // Each held measurement is a single Y,Z scan position, with no transverse neighbours.
+    grid.sample.axes = {{0.}, {0.}};
+    const auto y = inputs.read("y_mm"), z = inputs.read("z_mm");
+    if (y.size() < 2 || z.size() < 2)
+        fail("Invalid sample spacing");
+    auto originals = readFoilResponses(inputs, foil, stop);
+    if (c["statistics"].toObject()["variance_weighted"].toBool())
+        for (auto &r : originals) {
+            QVector<quint64> shape;
+            const auto v=inputs.read("rois/"+r.roi.key+"/R_matched_variance_px",&shape);
+            if (shape != QVector<quint64>{quint64(r.response.rows()),quint64(foil.size())})
+                fail("Invalid foil variance dimensions");
+            r.referenceVariance=Eigen::Map<const ImageMatrix>(v.data(),r.response.rows(),foil.size());
+        }
+    const auto tvSettings = c["tv"].toObject();
+    QVector<QHash<double, ImagingSpotFit>> spotCaches(originals.size());
+    QJsonArray folds;
+    for (int held = 0; held < foil.size(); ++held) {
+        cancel(stop);
+        if (progress)
+            progress(QCoreApplication::translate("Imaging", "薄箔留出验证 %1/%2 · X = %3 mm")
+                         .arg(held + 1)
+                         .arg(foil.size())
+                         .arg(foil[held]),
+                     int(100 * held / foil.size()));
+        QJsonObject row{{"foil_x_mm", foil[held]}};
+        try {
+            QVector<double> training = foil;
+            training.removeAt(held);
+            QVector<RoiData> selected;
+            for (const auto &r : originals) {
+                RoiData fold;
+                fold.roi = r.roi;
+                fold.measured = r.response.col(held);
+                if(r.referenceVariance.size()) fold.variance = r.referenceVariance.col(held);
+                fold.response.resize(r.response.rows(), training.size());
+                fold.response.leftCols(held) = r.response.leftCols(held);
+                const auto tail = training.size() - held;
+                fold.response.rightCols(tail) = r.response.rightCols(tail);
+                selected.append(std::move(fold));
+            }
+            ImagingResult model;
+            auto fit = solveSpatial(
+                c, grid, selected, model, stop, [](const QString &, int) {}, training, &spotCaches);
+            const auto &x = model.axes[0];
+            row["dx_mm"] = fit.dx;
+            const auto nearest = std::clamp(qRound((foil[held] - x.first()) / fit.dx), 0, int(x.size() - 1));
+            const auto energy = fit.h.diagonal();
+            if (energy.maxCoeff() > 0)
+                row["relative_sensitivity"] = std::sqrt(std::max(0., energy[nearest]) / energy.maxCoeff());
+            row["roi_count"] = fit.accepted.size();
+            row["gain_converged"] = fit.gainConverged;
+            row["nnls_converged"] = fit.nnlsInfo.converged;
+            row["nnls"] = depthPeak(x, fit.rho, foil[held]);
+            if (tvSettings["enabled"].toBool()) {
+                const std::array<double, 3> spacing{fit.dx, y[1] - y[0], z[1] - z[0]};
+                ImagingSolverInfo info;
+                auto profile = tv(fit.normal(), fit.b, 1, 1, spacing, tvLambda(tvSettings, fit.b, spacing),
+                                  tvSettings["max_iterations"].toInt(), tvSettings["tolerance"].toDouble(),
+                                  fit.rho, stop, &info);
+                row["tv"] = depthPeak(x, profile, foil[held]);
+                row["tv_converged"] = info.converged;
+            }
+        } catch (const std::exception &e) {
+            cancel(stop);
+            row["error"] = QString::fromUtf8(e.what());
+        }
+        folds.append(row);
+    }
+    cancel(stop);
+    return {{"schema", "XRI.foil-loo.v1"},
+            {"foil_thickness_mm", c["acquisition"].toObject()["foil_thickness_mm"]},
+            {"folds", folds}};
+}
 
 ImagingValidation BondImaging::validate(const QJsonObject &c, const std::atomic_bool &stop) {
     auto out = Imaging::validate(c, stop, false);
@@ -697,113 +998,75 @@ ImagingValidation BondImaging::validate(const QJsonObject &c, const std::atomic_
     return out;
 }
 
-BondProjection BondImaging::prepareContrast(const QJsonObject &supplied, double ea, double eb,
-                                                const ContrastSpectra &prepareSpectra, const std::atomic_bool &stop,
-                                                Imaging::Progress progress) {
-    const auto c = Imaging::config(supplied, QDir::currentPath());
-    const auto log = [&](const QString &message, int percent) {
+struct BondSpatialModel {
+    std::shared_ptr<const BondInputs> inputs;
+    QJsonObject config, diagnostics;
+    QVector<QVector<double>> axes;
+    QStringList keys;
+    QVector<QVector<QPoint>> pixels;
+    QVector<ImageMatrix> operators, integratedMeasurements;
+    QVector<double> gains;
+    ImageMatrix h, integratedSolution;
+    double integratedRhsNorm = 0.;
+};
+
+struct BondChannelProjections {
+    std::shared_ptr<const BondSpatialModel> spatial;
+    std::vector<ImageMatrix> rhs;
+    QVector<double> normSquared;
+};
+
+namespace {
+void checkBondSources(const BondInputs &inputs) {
+    if (bondSourceRevision(inputs.config) != inputs.sourceRevision)
+        fail(QCoreApplication::translate("Imaging", "输入文件已变化，请返回「数据与 ROI」重新校验。"));
+}
+
+Imaging::Progress bondProgress(const std::atomic_bool &stop, const Imaging::Progress &progress) {
+    return [&stop, progress](const QString &message, int percent) {
         cancel(stop);
         if (progress)
             progress(message, percent);
     };
-    log(QCoreApplication::translate("Imaging", "校验扫描与 ROI"), 0);
-    const auto revision = contrastSourceRevision(c);
-    auto inputs = c;
+}
+} // namespace
+
+std::shared_ptr<const BondInputs> BondImaging::prepareInputs(const QJsonObject &supplied,
+                                                            const std::atomic_bool &stop) {
+    auto out = std::make_shared<BondInputs>();
+    out->config = Imaging::config(supplied, QDir::currentPath());
+    out->sourceRevision = bondSourceRevision(out->config);
+    auto inputs = out->config;
     auto reconstruction = inputs["reconstruction"].toObject();
     reconstruction["fit_gains"] = false;
     inputs["reconstruction"] = reconstruction;
-    auto validation = validate(inputs, stop);
-    const auto &g = validation.sample;
-    const auto &energy = g.axes[2];
-    const auto difference = contrastWeights(energy, ea, eb, {});
-    QStringList labels;
-    QVector<const ImagingRoi *> rois;
-    quint64 elements = 0;
-    const qsizetype ny = g.axes[0].size(), nz = g.axes[1].size(), ne = energy.size();
-    for (const auto &roi : std::as_const(validation.rois)) {
-        if (roi.excluded)
-            continue;
-        labels.append(roi.label);
-        rois.append(&roi);
-        elements += quint64(roi.pixels.size()) * ny * nz;
-    }
-    if (rois.isEmpty())
-        fail(QCoreApplication::translate("Imaging", "请至少纳入一个有效晶体。"));
-    if (elements > 67108864)
-        fail(QCoreApplication::translate("Imaging", "差值投影缓存超过 512 MiB，请缩小 ROI 或减少参与的晶体。"));
-    log(QCoreApplication::translate("Imaging", "准备谱处理和双能量差值"), 5);
-    const auto spectra = prepareSpectra ? prepareSpectra(energy, labels)
-                                        : QVector<BondSpectralSettings>(labels.size());
-    if (spectra.size() != labels.size())
-        fail(QCoreApplication::translate("Imaging", "谱处理参数与晶体数不匹配。"));
-    QVector<QVector<double>> coefficients;
-    BondProjection out;
-    QVector<ImageMatrix *> projections;
-    for (qsizetype i = 0; i < spectra.size(); ++i) {
-        const auto &settings = spectra[i];
-        auto weights = settings.background.isEmpty() && !settings.compton && !settings.normalization
-                           ? difference
-                           : contrastWeights(energy, ea, eb, settings);
-        if (std::any_of(weights.cbegin(), weights.cend(), [](double v) { return !std::isfinite(v); }))
-            fail(QCoreApplication::translate("Imaging", "谱处理权重与实测能量不匹配。"));
-        coefficients.append(std::move(weights));
-        auto stored = out.differenceByCrystal.try_emplace(rois[i]->key, rois[i]->pixels.size(), ny * nz).first;
-        stored->second.setZero();
-        projections.append(&stored->second);
-    }
-    const auto acq = c["acquisition"].toObject();
-    ImagingH5 source(g.file);
-    source.frames("/entry/data/" + acq["detector"].toString(),
-                  c["runtime"].toObject()["chunk_frames"].toInt(), stop,
-                  [&](int frame, const quint64 *pixels, int, int) {
-                      const qsizetype yz = g.indices[0][frame] * nz + g.indices[1][frame];
-                      const int e = g.indices[2][frame];
-                      const double dose = g.dose[yz * ne + e];
-                      for (qsizetype i = 0; i < rois.size(); ++i) {
-                          const double factor = coefficients[i][e] / dose;
-                          if (factor == 0.)
-                              continue;
-                          const auto &points = rois[i]->pixels;
-                          auto &projection = *projections[i];
-                          for (qsizetype p = 0; p < points.size(); ++p) {
-                              const auto pixel = points[p];
-                              projection(p, yz) += factor * double(pixels[pixel.y() * g.imageSize.width() + pixel.x()]);
-                          }
-                      }
-                      if (frame % 128 == 0)
-                          log(QCoreApplication::translate("Imaging", "计算探测器差值投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
-                              10 + 89 * frame / int(g.monitor.size()));
-                  });
-    out.config = c;
-    out.ea = ea;
-    out.eb = eb;
-    if (contrastSourceRevision(c) != revision)
-        fail(QCoreApplication::translate("Imaging", "计算期间输入文件已变化，请重新校验后计算差值投影。"));
-    out.sourceRevision = revision;
-    out.validation = std::move(validation);
-    log(QCoreApplication::translate("Imaging", "差值投影完成"), 100);
+    out->validation = validate(inputs, stop);
+    checkBondSources(*out);
     return out;
 }
 
-BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
-                                              const QJsonObject &spatialSettings, const std::atomic_bool &stop,
-                                              Imaging::Progress progress) {
-    auto settings = projection.config;
-    for (const auto &group : {QStringLiteral("grid"), QStringLiteral("reconstruction")})
-        settings[group] = spatialSettings.value(group);
-    const auto c = Imaging::config(settings, QDir::currentPath());
-    const auto rec = c["reconstruction"].toObject();
-    if (rec["fit_gains"].toBool() && projection.differenceByCrystal.count(rec["anchor_roi"].toString()) == 0)
-        fail(QCoreApplication::translate("Imaging", "增益锚点必须是差值投影中纳入的晶体。"));
-    const auto log = [&](const QString &message, int percent) {
-        cancel(stop);
-        if (progress)
-            progress(message, percent);
-    };
+std::shared_ptr<const BondSpatialModel> BondImaging::prepareSpatial(
+    std::shared_ptr<const BondInputs> inputs, const QJsonObject &spatialSettings, const std::atomic_bool &stop,
+    Imaging::Progress progress) {
+    const auto log = bondProgress(stop, progress);
     log(QCoreApplication::translate("Imaging", "准备薄膜空间标定"), 0);
-    if (contrastSourceRevision(c) != projection.sourceRevision)
-        fail(QCoreApplication::translate("Imaging", "输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。"));
-    const auto &validation = projection.validation;
+    checkBondSources(*inputs);
+    auto config = inputs->config;
+    for (const auto &group : {QStringLiteral("roi"), QStringLiteral("grid"), QStringLiteral("reconstruction")})
+        config[group] = spatialSettings.value(group);
+    const auto c = Imaging::config(config, QDir::currentPath());
+    if (c.value("roi") != inputs->config.value("roi")) {
+        auto revised = std::make_shared<BondInputs>(*inputs);
+        revised->config["roi"] = c.value("roi");
+        Imaging::validateRois(revised->validation, c);
+        inputs = std::move(revised);
+    } else {
+        const auto rec = c["reconstruction"].toObject();
+        if (rec["fit_gains"].toBool() &&
+            !inputs->validation.report["roi_keys"].toArray().contains(rec["anchor_roi"]))
+            fail("Gain anchor is not included: " + rec["anchor_roi"].toString());
+    }
+    const auto &validation = inputs->validation;
     const auto &energy = validation.sample.axes[2], &foil = validation.calibration.axes[1];
     const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
     const auto band = matched ? Imaging::matchedWeights(foil, energy).first : Imaging::energyWeights(foil);
@@ -811,112 +1074,81 @@ BondContrast BondImaging::reconstructContrast(const BondProjection &projection,
     sample(c, validation, selected, {}, stop, log);
     ImagingResult spatial;
     auto fit = solveSpatial(c, validation, selected, spatial, stop, log);
-    selected.clear();
-    fit.accepted.clear();
-    fit.response.clear();
-    fit.rho.resize(0, 0);
 
-    log(QCoreApplication::translate("Imaging", "反演带符号的三维差值"), 80);
-    ImageMatrix rhs = std::move(fit.b);
-    rhs.setZero();
-    for (qsizetype i = 0; i < fit.keys.size(); ++i) {
-        cancel(stop);
-        const auto &difference = projection.differenceByCrystal.at(fit.keys[i]);
-        rhs.noalias() += fit.gains[i] * fit.operators[i].transpose() * difference;
+    auto model = std::make_shared<BondSpatialModel>();
+    model->config = c;
+    model->axes = std::move(spatial.axes);
+    model->keys = std::move(fit.keys);
+    model->operators = std::move(fit.operators);
+    model->gains = std::move(fit.gains);
+    model->h = std::move(fit.h);
+    model->integratedSolution = std::move(fit.rho);
+    model->integratedRhsNorm = fit.b.norm();
+    QStringList labels;
+    for (auto &item : fit.accepted) {
+        labels.append(item.roi.label);
+        model->pixels.append(std::move(item.roi.pixels));
+        model->integratedMeasurements.append(std::move(item.measured));
     }
-    const auto sensitivity = fit.h.diagonal().eval();
-    const double scale = fit.h.cwiseAbs().rowwise().sum().maxCoeff();
-    if (!(std::isfinite(scale) && scale > 0.))
-        fail(QCoreApplication::translate("Imaging", "无法反演三维差值：空间响应无效。"));
-    constexpr double relativeRidge = 1e-6;
-    const double ridge = scale * relativeRidge;
-    fit.h.diagonal().array() += ridge;
-    Eigen::LLT<ImageMatrix> solver(fit.h);
-    if (solver.info() != Eigen::Success)
-        fail(QCoreApplication::translate("Imaging", "无法分解三维差值的空间响应。"));
-    cancel(stop);
-    solver.solveInPlace(rhs);
-    if (!rhs.allFinite())
-        fail(QCoreApplication::translate("Imaging", "三维差值反演产生了无效数值。"));
-    const double sensitivityFloor = sensitivity.maxCoeff() * 1e-14;
-    for (qsizetype x = 0; x < rhs.rows(); ++x)
-        if (sensitivity[x] <= sensitivityFloor)
-            rhs.row(x).setConstant(NAN);
-
-    BondContrast out;
-    out.axes = std::move(spatial.axes);
-    out.values = vector(rhs);
-    out.diagnostics = {{"schema", "XRI.bond.contrast.v1"},
-                       {"difference", "S(Eb)-S(Ea) before spatial reconstruction"},
-                       {"ea_kev", projection.ea},
-                       {"eb_kev", projection.eb},
-                       {"spectral_processing", projection.spectralProcessing},
-                       {"source_revision", projection.sourceRevision},
-                       {"solver", "signed ridge least squares"},
-                       {"relative_ridge", relativeRidge},
-                       {"ridge", ridge},
-                       {"crystal_keys", json(fit.keys)},
-                       {"relative_gains", json(fit.gains)},
-                       {"gain_fit_converged", fit.gainConverged},
-                       {"input_validation", validation.report},
-                       {"config", c}};
-    log(QCoreApplication::translate("Imaging", "三维差值反演完成"), 100);
-    return out;
+    model->diagnostics = {{"input_validation", validation.report},
+                          {"psf_band_kev", QJsonArray{matched ? energy.first() : foil.first(),
+                                                      matched ? energy.last() : foil.last()}},
+                          {"psf_models", spatial.models},
+                          {"psf_rejected", spatial.rejected},
+                          {"crystal_keys", json(model->keys)},
+                          {"crystal_labels", json(labels)},
+                          {"relative_gains", json(model->gains)},
+                          {"gain_fit_converged", fit.gainConverged},
+                          {"gain_fit_iterations", fit.gainIteration},
+                          {"integrated_nnls_converged", fit.nnlsInfo.converged},
+                          {"grid_xyz", QJsonArray{model->axes[0].size(), model->axes[1].size(), model->axes[2].size()}},
+                          {"x_step_mm", fit.dx}};
+    checkBondSources(*inputs);
+    model->inputs = std::move(inputs);
+    log(QCoreApplication::translate("Imaging", "空间标定完成"), 100);
+    return model;
 }
 
-BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool &stop,
-                            Imaging::Progress progress) {
-    const auto c = Imaging::config(supplied, QDir::currentPath());
-    const auto log = [&](const QString &message, int percent) {
-        cancel(stop);
-        if (progress)
-            progress(message, percent);
-    };
-    log(QCoreApplication::translate("Imaging", "校验样品、薄膜、扫描坐标和 ROI"), 0);
-    const auto validation = validate(c, stop);
-    const auto &g = validation.sample;
-    const auto &energy = g.axes[2], &foil = validation.calibration.axes[1];
-    const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
-    const auto weights = matched ? Imaging::matchedWeights(foil, energy).first : Imaging::energyWeights(foil);
-    auto selected = calibration(c, validation, {}, stop, log, weights);
-    sample(c, validation, selected, {}, stop, log);
-    ImagingResult spatial;
-    auto fit = solveSpatial(c, validation, selected, spatial, stop, log, energy.size());
-    const int nx = int(spatial.axes[0].size()), ny = int(g.axes[0].size()), nz = int(g.axes[1].size());
+QJsonObject BondImaging::spatialSummary(const BondSpatialModel &spatial) {
+    return spatial.diagnostics;
+}
+
+std::shared_ptr<const BondChannelProjections> BondImaging::prepareChannels(
+    std::shared_ptr<const BondSpatialModel> spatial, const std::atomic_bool &stop, Imaging::Progress progress) {
+    const auto log = bondProgress(stop, progress);
+    log(QCoreApplication::translate("Imaging", "准备逐能量反投影"), 0);
+    checkBondSources(*spatial->inputs);
+    const auto &c = spatial->config;
+    const auto &g = spatial->inputs->validation.sample;
+    const auto &energy = g.axes[2];
+    const int nx = int(spatial->axes[0].size()), ny = int(g.axes[0].size()), nz = int(g.axes[1].size());
     const int ne = int(energy.size()), nYZ = ny * nz;
-    const qsizetype total = qsizetype(nx) * nYZ * ne;
-    BondVolume out;
-    out.axes = {energy, spatial.axes[0], g.axes[0], g.axes[1]};
-    out.intensity.resize(total);
-    for (int x = 0; x < nx; ++x)
-        out.sensitivity.append(std::sqrt(std::max(0., fit.h(x, x))));
-    const double sensitivityFloor =
-        *std::max_element(out.sensitivity.cbegin(), out.sensitivity.cend()) * 1e-7;
+    if (qsizetype(nx) * nYZ > 16000000 / ne)
+        fail(QCoreApplication::translate("Imaging", "四维体素超过 1600 万。请增大 X 步长或减少扫描范围。"));
 
     // Stack the calibrated detector pixels once. A small batch allows a matrix product
     // even when consecutive frames belong to different energies or spatial cells.
     QVector<qsizetype> offsets;
-    for (const auto &item : fit.accepted)
-        for (auto pixel : item.roi.pixels)
+    for (const auto &pixels : spatial->pixels)
+        for (auto pixel : pixels)
             offsets.append(qsizetype(pixel.y()) * g.imageSize.width() + pixel.x());
     const qsizetype nPixels = offsets.size();
-    const auto output = c["output"].toObject();
-    const bool saveBandDiagnostics = output["save_diagnostics"].toBool();
     constexpr int batchSize = 16;
     const qsizetype repeated = g.occupancy.size() - std::count(g.occupancy.cbegin(), g.occupancy.cend(), 1);
     if (nPixels * (qsizetype(nx) + batchSize + repeated) > 32000000)
         fail(QCoreApplication::translate("Imaging", "四维反投影缓冲区过大，请缩小 ROI 或减少重复帧。"));
     ImageMatrix forward(nPixels, nx);
     qsizetype row = 0;
-    for (int i = 0; i < fit.accepted.size(); ++i) {
-        const auto &op = fit.operators[i];
-        forward.middleRows(row, op.rows()) = fit.gains[i] * op;
+    for (int i = 0; i < spatial->operators.size(); ++i) {
+        const auto &op = spatial->operators[i];
+        forward.middleRows(row, op.rows()) = spatial->gains[i] * op;
         row += op.rows();
     }
-    std::vector<ImageMatrix> backs(ne, ImageMatrix::Zero(nx, nYZ));
+    auto out = std::make_shared<BondChannelProjections>();
+    out->rhs.assign(ne, ImageMatrix::Zero(nx, nYZ));
+    out->normSquared.fill(0., ne);
     Eigen::MatrixXd batch(nPixels, batchSize);
     QVector<int> cells;
-    QVector<double> norm(ne, 0.);
     QHash<int, Eigen::VectorXd> pooled;
     auto remaining = g.occupancy;
     auto flush = [&] {
@@ -925,8 +1157,8 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
         Eigen::MatrixXd projected = forward.transpose() * batch.leftCols(cells.size());
         for (int j = 0; j < cells.size(); ++j) {
             int e = cells[j] % ne;
-            backs[e].col(cells[j] / ne) = projected.col(j);
-            norm[e] += batch.col(j).squaredNorm();
+            out->rhs[e].col(cells[j] / ne) = projected.col(j);
+            out->normSquared[e] += batch.col(j).squaredNorm();
         }
         cells.clear();
     };
@@ -958,71 +1190,104 @@ BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool 
                     flush();
                 if (frame % 128 == 0)
                     log(QCoreApplication::translate("Imaging", "按能量累积反投影 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
-                        66 + 12 * frame / int(g.monitor.size()));
+                        99 * frame / int(g.monitor.size()));
             });
     }
     flush();
+    checkBondSources(*spatial->inputs);
+    out->spatial = std::move(spatial);
+    log(QCoreApplication::translate("Imaging", "逐能量反投影完成"), 100);
+    return out;
+}
+
+QVector<double> BondImaging::channelNorms(const BondChannelProjections &channels) {
+    auto out = channels.normSquared;
+    for (auto &norm : out)
+        norm = std::sqrt(norm);
+    return out;
+}
+
+BondVolume BondImaging::reconstructVolume(const BondChannelProjections &prepared, const QJsonObject &outputOptions,
+                                         const std::atomic_bool &stop, Imaging::Progress progress) {
+    const auto log = bondProgress(stop, progress);
+    log(QCoreApplication::translate("Imaging", "开始四维体素求解"), 0);
+    const auto &spatial = *prepared.spatial;
+    checkBondSources(*spatial.inputs);
+    const auto &energy = spatial.inputs->validation.sample.axes[2];
+    const auto &x = spatial.axes[0], &y = spatial.axes[1], &z = spatial.axes[2];
+    const int ne = int(energy.size());
+    auto c = spatial.config;
+    c["output"] = outputOptions;
+    BondVolume out;
+    out.axes = {energy, x, y, z};
+    out.intensity.resize(x.size() * y.size() * z.size() * ne);
+    for (qsizetype i = 0; i < x.size(); ++i)
+        out.sensitivity.append(std::sqrt(std::max(0., spatial.h(i, i))));
+    const double sensitivityFloor =
+        *std::max_element(out.sensitivity.cbegin(), out.sensitivity.cend()) * 1e-7;
     QJsonArray channels;
     const auto rec = c["reconstruction"].toObject();
-    const double bandNorm = fit.b.norm();
+    const double bandNorm = spatial.integratedRhsNorm;
     for (int e = 0; e < ne; ++e) {
-        log(QCoreApplication::translate("Imaging", "独立求解能量通道 %1 / %2").arg(e + 1).arg(ne), 78 + 21 * e / ne);
+        log(QCoreApplication::translate("Imaging", "独立求解能量通道 %1 / %2").arg(e + 1).arg(ne), 98 * e / ne);
         ImagingSolverInfo info;
+        const auto &rhs = prepared.rhs[e];
+        const double normSquared = prepared.normSquared[e];
         ImageMatrix initial =
-            bandNorm > 0 ? ImageMatrix(fit.rho * (backs[e].norm() / bandNorm)) : ImageMatrix{};
-        auto rho = Imaging::nnls(fit.h, backs[e], rec["nnls_max_iterations"].toInt(),
+            bandNorm > 0 ? ImageMatrix(spatial.integratedSolution * (rhs.norm() / bandNorm)) : ImageMatrix{};
+        auto rho = Imaging::nnls(spatial.h, rhs, rec["nnls_max_iterations"].toInt(),
                                  rec["nnls_tolerance"].toDouble(), stop, &info, initial);
-        const double error = norm[e] - 2 * (rho.array() * backs[e].array()).sum() +
-                             (rho.array() * (fit.h * rho).array()).sum();
+        const double error = normSquared - 2 * (rho.array() * rhs.array()).sum() +
+                             (rho.array() * (spatial.h * rho).array()).sum();
         channels.append(
             QJsonObject{{"incident_kev", energy[e]},
                         {"converged", info.converged},
                         {"iterations", info.iterations},
                         {"projected_kkt_relative", info.kkt},
                         {"relative_l2_residual",
-                         norm[e] > 0 ? QJsonValue(std::sqrt(std::max(0., error) / norm[e])) : QJsonValue()}});
+                         normSquared > 0 ? QJsonValue(std::sqrt(std::max(0., error) / normSquared)) : QJsonValue()}});
         out.converged.append(info.converged);
         std::copy_n(rho.data(), rho.size(), out.intensity.data() + qsizetype(e) * rho.size());
     }
-    QStringList crystalLabels;
-    for (const auto &item : std::as_const(fit.accepted))
-        crystalLabels.append(item.roi.label);
-    out.diagnostics = {{"schema", "XRI.bond.v1"},
-                       {"config", c},
-                       {"input_validation", validation.report},
-                       {"psf_band_kev", QJsonArray{matched ? energy.first() : foil.first(),
-                                                   matched ? energy.last() : foil.last()}},
-                       {"psf_models", spatial.models},
-                       {"psf_rejected", spatial.rejected},
-                       {"crystal_keys", json(fit.keys)},
-                       {"crystal_labels", json(crystalLabels)},
-                       {"relative_gains", json(fit.gains)},
-                       {"gain_fit_converged", fit.gainConverged},
-                       {"gain_fit_iterations", fit.gainIteration},
-                       {"x_sensitivity_floor", sensitivityFloor},
-                       {"channel_diagnostics", channels}};
-    if (saveBandDiagnostics) {
-        for (int i = 0; i < fit.accepted.size(); ++i) {
+    out.diagnostics = spatial.diagnostics;
+    out.diagnostics["schema"] = "XRI.bond.v1";
+    out.diagnostics["config"] = c;
+    out.diagnostics["source_revision"] = spatial.inputs->sourceRevision;
+    out.diagnostics["x_sensitivity_floor"] = sensitivityFloor;
+    out.diagnostics["channel_diagnostics"] = channels;
+    if (outputOptions["save_diagnostics"].toBool()) {
+        for (int i = 0; i < spatial.operators.size(); ++i) {
             cancel(stop);
-            // Reuse the integrated sample buffers once the spatial fit and channel solves are done.
-            auto &op = fit.operators[i];
-            auto &predicted = fit.accepted[i].variance;
-            auto &residual = fit.accepted[i].measured;
-            op *= fit.gains[i];
-            predicted.noalias() = op * fit.rho;
-            residual = predicted - residual;
-            out.bandDiagnostics.append(
-                {fit.keys[i], std::move(op), std::move(predicted), std::move(residual)});
+            ImageMatrix op = spatial.gains[i] * spatial.operators[i];
+            ImageMatrix predicted = op * spatial.integratedSolution;
+            ImageMatrix residual = predicted - spatial.integratedMeasurements[i];
+            out.bandDiagnostics.append({spatial.keys[i], std::move(op), std::move(predicted), std::move(residual)});
         }
     }
-    if (output["plots"].toBool()) {
+    if (outputOptions["plots"].toBool()) {
         cancel(stop);
-        spatial.primary = fit.rho;
-        spatial.sensitivity = out.sensitivity;
-        out.diagnosticImage = diagnosticImage(spatial, true);
+        ImagingResult integrated;
+        integrated.axes = spatial.axes;
+        integrated.primary = spatial.integratedSolution;
+        integrated.sensitivity = out.sensitivity;
+        out.diagnosticImage = diagnosticImage(integrated, true);
     }
     log(QCoreApplication::translate("Imaging", "四维求解完成"), 100);
     return out;
+}
+
+BondVolume BondImaging::run(const QJsonObject &supplied, const std::atomic_bool &stop, Imaging::Progress progress) {
+    const auto log = bondProgress(stop, progress);
+    log(QCoreApplication::translate("Imaging", "校验样品、薄膜、扫描坐标和 ROI"), 0);
+    const auto inputs = prepareInputs(supplied, stop);
+    const auto spatial = prepareSpatial(inputs, inputs->config, stop, [&](const QString &text, int percent) {
+        log(text, percent * 65 / 100);
+    });
+    const auto channels = prepareChannels(spatial, stop, [&](const QString &text, int percent) {
+        log(text, 65 + percent * 13 / 100);
+    });
+    return reconstructVolume(*channels, spatial->config.value("output").toObject(), stop,
+                             [&](const QString &text, int percent) { log(text, 78 + percent * 22 / 100); });
 }
 
 ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &stop, Progress progress) {
@@ -1050,6 +1315,8 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
         saveJson(directory + "/input_validation.json", validation.report);
         QJsonObject sources;
         auto input = c["input"].toObject();
+        const auto blankPath=c["statistics"].toObject()["blank_nxs"].toString();
+        if(!blankPath.isEmpty()) input["blank_nxs"]=blankPath;
         for (auto it = input.begin(); it != input.end(); ++it) {
             QFileInfo f(it->toString());
             sources[it.key()] = QJsonObject{{"path", f.absoluteFilePath()},
@@ -1076,12 +1343,12 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                         matchedWeights(validation.calibration.axes[1], validation.sample.axes[2]).first);
         log("2/6 Mapping sample YZE and matching energy integrals", 25);
         sample(c, validation, selected, directory, stop, progress);
-        log("3/6 Fitting moving elliptical PSFs and affine trajectories", 46);
+        log("3/6 Calibrating per-crystal PSFs and centroid trajectories", 46);
         ImagingResult result;
         result.directory = directory;
         auto solution = solveSpatial(c, validation, selected, result, stop, log);
         const auto &[accepted, keys, response, operators, gains, history, h, b, rho, nnlsInfo, gainConverged,
-                     gainIteration, dx] = solution;
+                     gainIteration, dx, weightedH, varianceFloors] = solution;
         int nx = int(result.axes[0].size()), ny = int(result.axes[1].size()), nz = int(result.axes[2].size());
         const auto &x = result.axes[0];
         const auto &originalX = validation.calibration.axes[0];
@@ -1097,14 +1364,9 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
         double beta = 0;
         if (tvSettings["enabled"].toBool()) {
             log("5/6 Fixed-gain nonnegative TV", 75);
-            if (tvSettings["lambda"].isNull()) {
-                auto absolute = vector(b.cwiseAbs());
-                beta = tvSettings["relative_fraction"].toDouble() * percentile(absolute, 95) *
-                       std::min({spacing[0], spacing[1], spacing[2]});
-            } else
-                beta = tvSettings["lambda"].toDouble();
+            beta = tvLambda(tvSettings, b, spacing);
             log(QString("TV lambda = %1").arg(beta, 0, 'g', 12), 75);
-            result.tv = tv(h, b, ny, nz, spacing, beta, tvSettings["max_iterations"].toInt(),
+            result.tv = tv(solution.normal(), b, ny, nz, spacing, beta, tvSettings["max_iterations"].toInt(),
                            tvSettings["tolerance"].toDouble(), rho, stop, &tvInfo, log);
             if (tvInfo.converged) {
                 result.primary = result.tv;
@@ -1124,7 +1386,11 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
         for (double e : result.eigenvalues)
             if (e > std::max(0., result.eigenvalues.last()) * 1e-14)
                 ++rank;
-        double normData = 0, nnlsError = 0, tvError = 0;
+        double normData = 0, nnlsError = 0, tvError = 0, weightedSse = 0.;
+        const bool hasBackground = accepted.first().background.size() != 0;
+        if (!varianceFloors.isEmpty())
+            method.prepend("variance-weighted ");
+        QJsonObject floors;
         QJsonObject residuals, gainMap;
         QStringList atBounds;
         auto bounds = rec["gain_bounds"].toArray();
@@ -1139,6 +1405,10 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                 tvError += (pred - data).squaredNorm();
             }
             ImageMatrix pred = gains[i] * operators[i] * result.primary;
+            if (!varianceFloors.isEmpty()) {
+                floors[keys[i]]=varianceFloors[i];
+                weightedSse+=((pred-data).array().square()/(accepted[i].variance.array()+varianceFloors[i])).sum();
+            }
             residuals[keys[i]] = norm > 0 ? QJsonValue((pred - data).norm() / std::sqrt(norm)) : QJsonValue();
             gainMap[keys[i]] = gains[i];
             for (auto limit : bounds)
@@ -1194,26 +1464,34 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             {"x_cells", nx},
             {"gram_eigenvalue_relative_cutoff", 1e-14},
             {"roi_relative_l2_residual", residuals},
-            {"sample_background_subtracted", false},
+            {"sample_background_subtracted", hasBackground},
+            {"statistics", c["statistics"]},
+            {"variance_floors_by_roi", floors},
+            {"relative_residual_reference", "background-corrected integrated sample signal"},
+            {"weighted_residual_sum_squares",
+             varianceFloors.isEmpty() ? QJsonValue() : QJsonValue(weightedSse)},
             {"fitted_reference_offset_in_forward_model", false},
             {"postprocessing_crop", false},
             {"postprocessing_smooth", false},
             {"symmetry_constraint", false},
-            {"limitations", QJsonArray{"Grid spacing is not measured spatial resolution; foil positions are "
-                                       "observations, not X cell count.",
-                                       "Moving Gaussian PSF and affine centroid with constant "
-                                       "amplitude/width; finite foil thickness is not deconvolved.",
-                                       "Full X includes weak or unobservable depths; inspect sensitivity and "
-                                       "Gram eigenvalues; zeros do not prove empty material.",
-                                       "TV does not add measurements or improve measured resolution.",
-                                       "Relative Kapton-equivalent density; no sample background, absorption "
-                                       "or composition correction.",
-                                       "Unweighted least squares; counting variances exclude monitor, model, "
-                                       "gain and background uncertainty."}}};
+            {"limitations",
+             QJsonArray{
+                 "Grid spacing is not measured spatial resolution; foil positions are "
+                 "observations, not X cell count.",
+                 "Affine centroid trajectory; see per-crystal PSF selection. "
+                 "Finite foil thickness is not deconvolved.",
+                 "Full X includes weak or unobservable depths; inspect sensitivity and "
+                 "Gram eigenvalues; zeros do not prove empty material.",
+                 "TV does not add measurements or improve measured resolution.",
+                 "Relative Kapton-equivalent density; no absorption or composition correction.",
+                 "Marginal counting variances include independent background counting variance when used. "
+                 "Shared-background covariance and monitor, gain and model uncertainty are excluded."}}};
         if (!gainConverged)
             log("Gain/NNLS fit not converged: outputs remain provisional", 96);
         log("6/6 Saving volumes, XYZ axes, sensitivity, responses and residuals", 96);
         QJsonObject metadata{{"detector_pixel_pitch_mm", pitch},
+                             {"sample_background_subtracted",hasBackground},
+                             {"variance_weighted",!varianceFloors.isEmpty()},
                              {"sample_x_spacing_mm", dx},
                              {"foil_thickness_mm", acq["foil_thickness_mm"]},
                              {"crystal_gains", json(gains)},
@@ -1229,11 +1507,13 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
         }
         exportVolume(directory + "/reconstruction.h5", result.primary, result.axes, directory, method,
                      metadata, result.sensitivity, result.eigenvalues);
-        exportVolume(directory + "/reconstruction_nnls.h5", rho, result.axes, directory, "joint NNLS",
+        exportVolume(directory + "/reconstruction_nnls.h5", rho, result.axes, directory,
+                     varianceFloors.isEmpty() ? "joint NNLS" : "variance-weighted joint NNLS",
                      metadata, result.sensitivity, result.eigenvalues);
         if (result.tv.size())
             exportVolume(directory + "/reconstruction_tv.h5", result.tv, result.axes, directory,
-                         "fixed-gain TV", metadata, result.sensitivity, result.eigenvalues);
+                         varianceFloors.isEmpty() ? "fixed-gain TV" : "variance-weighted fixed-gain TV",
+                         metadata, result.sensitivity, result.eigenvalues);
         {
             ImagingH5 diagnosticsFile(directory + "/solver_diagnostics.h5", true);
             writeVector(diagnosticsFile, "gain_relative_change_history", history);
@@ -1253,13 +1533,20 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                         diagnosticsFile.write(base + "/" + name,
                                               {quint64(m.rows()), quint64(ny), quint64(nz)}, m.data());
                     };
-                    volume("measured_pyz", accepted[i].measured);
+                    auto observed=[&](ImageMatrix value) {
+                        if(hasBackground) {
+                            const auto &bg=accepted[i].background;
+                            if(bg.cols()==1) value.colwise()+=bg.col(0); else value+=bg;
+                        }
+                        return value;
+                    };
+                    volume("measured_pyz", observed(accepted[i].measured));
                     ImageMatrix pred = op * rho;
-                    volume("predicted_nnls_pyz", pred);
+                    volume("predicted_nnls_pyz", observed(pred));
                     volume("residual_nnls_pyz", pred - accepted[i].measured);
                     if (result.tv.size()) {
                         pred.noalias() = op * result.tv;
-                        volume("predicted_tv_pyz", pred);
+                        volume("predicted_tv_pyz", observed(pred));
                         volume("residual_tv_pyz", pred - accepted[i].measured);
                     }
                     QVector<quint64> pixels;

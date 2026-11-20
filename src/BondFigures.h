@@ -1,7 +1,10 @@
 #pragma once
 #include "Isosurface.h"
 #include <QColor>
+#include <QImage>
+#include <QLineF>
 #include <QWidget>
+#include <functional>
 
 class QPainter;
 
@@ -19,7 +22,14 @@ class BondFigures : public QWidget {
     void setMesh(const QVector<QVector<double>> &axes, const QVector<SurfaceTriangle> &first,
                  const QVector<SurfaceTriangle> &second, const QString &caption,
                  const std::array<QColor, 2> &colors = {});
+    bool hasMesh() const;
+    void setDepthProfile(const QVector<double> &relativeSensitivity, int index, double lowThreshold);
+    // Capture the mesh and view so frames can be rendered on a worker thread.
+    std::function<QImage(double)> rotationFrames(const QSize &size) const;
     static QColor fieldColor(double fraction, bool signedContrast);
+
+  signals:
+    void depthSelected(int index);
 
   protected:
     void paintEvent(QPaintEvent *) override;
@@ -39,10 +49,18 @@ class BondFigures : public QWidget {
     QVector<QVector<double>> m_axes, m_rows;
     QVector<double> m_field;
     QVector<int> m_z;
-    QVector<SurfaceTriangle> m_mesh[2];
+    std::array<QVector<SurfaceTriangle>, 2> m_mesh;
     std::array<QColor, 2> m_meshColors;
     double m_min = 0, m_max = 1, m_yaw = -.7, m_pitch = .46, m_zoom = 1.;
     bool m_signed = false;
     QString m_label, m_caption, m_sectionLabel;
     QPointF m_lastMouse;
+    QVector<double> m_depthProfile;
+    int m_depthIndex = -1;
+    double m_lowThreshold = 0;
+    QLineF m_xAxisOnScreen;
+    QPointF m_pressPosition;
+    bool m_dragged = false;
+    std::function<QVector3D(const QVector3D &)> m_depthProjector;
+    QRectF depthPlotRect() const;
 };
