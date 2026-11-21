@@ -1209,6 +1209,54 @@
     <context>
         <name>ComptonProcessing</name>
         <message>
+            <source>保护能区</source>
+            <translation>Protected energy ranges</translation>
+        </message>
+        <message>
+            <source>背景拟合能区</source>
+            <translation>background fit ranges</translation>
+        </message>
+        <message>
+            <source>保护能区覆盖了全部拟合区间。</source>
+            <translation>The protected ranges cover all fit ranges.</translation>
+        </message>
+        <message>
+            <source>非对称修正的宽度须为有限正数。</source>
+            <translation>Asymmetry widths must be finite and positive.</translation>
+        </message>
+        <message>
+            <source>请选择要扣除的 HF 背景壳层。</source>
+            <translation>Select the HF background shells to subtract.</translation>
+        </message>
+        <message>
+            <source>HF 表或样品组分中没有壳层 %1。</source>
+            <translation>Shell %1 is absent from the HF table or the sample composition.</translation>
+        </message>
+        <message>
+            <source>背景模型未覆盖全部实测能量点。</source>
+            <translation>The background model does not cover all measured energies.</translation>
+        </message>
+        <message>
+            <source>拟合能区至少需要两个可约束该背景的实测点。</source>
+            <translation>Select at least two measured samples with nonzero background response.</translation>
+        </message>
+        <message>
+            <source>非对称修正的拟合能区须覆盖 pz = 0 两侧。</source>
+            <translation>The asymmetry fit needs data on both sides of pz = 0.</translation>
+        </message>
+        <message>
+            <source>背景拟合比例无效。</source>
+            <translation>Invalid background fit scale.</translation>
+        </message>
+        <message>
+            <source>宽谱和目标谱的强度单位不一致。</source>
+            <translation>The wide-range and target spectra have different intensity units.</translation>
+        </message>
+        <message>
+            <source>目标谱缺少同名晶体的宽谱覆盖。</source>
+            <translation>The wide-range spectrum has no coverage for this crystal over the target energies.</translation>
+        </message>
+        <message>
             <source>已取消谱学分析。</source>
             <translation>Spectral analysis canceled.</translation>
         </message>
@@ -1363,6 +1411,58 @@
     </context>
     <context>
         <name>CrystalRoi</name>
+        <message>
+            <source>缺少或重复的文本 ROI 列 %1。</source>
+            <translation>Missing or duplicate text ROI column %1.</translation>
+        </message>
+        <message>
+            <source>文本 ROI 列数与表头不一致。</source>
+            <translation>The number of text ROI fields does not match the header.</translation>
+        </message>
+        <message>
+            <source>文本 ROI 列 %1 须为有效整数。</source>
+            <translation>Text ROI column %1 must contain a valid integer.</translation>
+        </message>
+        <message>
+            <source>文本 ROI 原始矩形无效。</source>
+            <translation>The source ROI rectangle is invalid.</translation>
+        </message>
+        <message>
+            <source>文本 ROI 的 add 值无效。</source>
+            <translation>The text ROI add flag is invalid.</translation>
+        </message>
+        <message>
+            <source>文本 ROI 没有数据行。</source>
+            <translation>The text ROI table has no data rows.</translation>
+        </message>
+        <message>
+            <source>请选择文本 ROI，并提供两台探测器的尺寸。</source>
+            <translation>Select text ROI tables and provide the sizes of both detectors.</translation>
+        </message>
+        <message>
+            <source>%1 · 按旧成像映射将编号 35 的 VU-C3 修正为 VU-A3。</source>
+            <translation>%1 · Applied the legacy imaging mapping VU-A3 to row 35 (listed as VU-C3).</translation>
+        </message>
+        <message>
+            <source>%1 · 无法识别晶体 %2。</source>
+            <translation>%1 · Unknown crystal %2.</translation>
+        </message>
+        <message>
+            <source>%1 · 晶体 %2 有多个非空 ROI，请先核对编号。</source>
+            <translation>%1 · Crystal %2 has several nonempty ROIs. Verify the crystal assignments first.</translation>
+        </message>
+        <message>
+            <source>%1 · 晶体 %2 的 ROI 无可用探测器范围。</source>
+            <translation>%1 · The ROI for crystal %2 has no valid detector bounds.</translation>
+        </message>
+        <message>
+            <source>%1 · %2 的矩形上限从 (%3, %4) 截为 (%5, %6)。</source>
+            <translation>%1 · Clipped the upper rectangle bounds of %2 from (%3, %4) to (%5, %6).</translation>
+        </message>
+        <message>
+            <source>文本 ROI 中没有可用晶体。</source>
+            <translation>The text ROI tables have no usable crystals.</translation>
+        </message>
         <message>
             <source>不是支持的 XRI ROI 方案。</source>
             <translation>This is not a supported XRI ROI scheme.</translation>
@@ -2539,6 +2639,70 @@ Settings (outer to inner): %4</translation>
     </context>
     <context>
         <name>MainWindow</name>
+        <message>
+            <source>文本式ROI转换</source>
+            <translation>Convert Text ROIs</translation>
+        </message>
+        <message>
+            <source>选择一个或多个文本 ROI 表</source>
+            <translation>Select one or more text ROI tables</translation>
+        </message>
+        <message>
+            <source>文本 ROI (*.txt *.tsv)</source>
+            <translation>Text ROI (*.txt *.tsv)</translation>
+        </message>
+        <message>
+            <source>已保存 ROI 配置 %1
+有效 %2 个，失效 %3 个。
+LAMBDA %4×%5，MINIPIX %6×%7</source>
+            <translation>Saved ROI configuration %1
+%2 valid and %3 invalid crystals.
+LAMBDA %4×%5, MINIPIX %6×%7</translation>
+        </message>
+        <message>
+            <source>%v / %m 个文件</source>
+            <translation>%v / %m files</translation>
+        </message>
+        <message>
+            <source>正在导入 %1</source>
+            <translation>Importing %1</translation>
+        </message>
+        <message>
+            <source>已处理 %1 个文件</source>
+            <translation>Processed %1 files</translation>
+        </message>
+        <message>
+            <source>从数据库导入HDF5文件</source>
+            <translation>Import HDF5 Files from Database</translation>
+        </message>
+        <message>
+            <source>选择数据库目录</source>
+            <translation>Select Database Folder</translation>
+        </message>
+        <message>
+            <source>正在搜索目录及其子目录…</source>
+            <translation>Searching the folder and its subfolders…</translation>
+        </message>
+        <message>
+            <source>相对目录</source>
+            <translation>Relative folder</translation>
+        </message>
+        <message>
+            <source>文件名</source>
+            <translation>File name</translation>
+        </message>
+        <message>
+            <source>导入所选文件</source>
+            <translation>Import Selected Files</translation>
+        </message>
+        <message>
+            <source>找到 %1 个文件 · Ctrl 点选，Shift 连选</source>
+            <translation>Found %1 files · Ctrl-click to select individually, Shift-click to select a range</translation>
+        </message>
+        <message>
+            <source>此目录及其子目录没有找到 HDF5 或 NeXus 文件。</source>
+            <translation>No HDF5 or NeXus files found in this folder or its subfolders.</translation>
+        </message>
         <message>
             <source>指定工作区…</source>
             <translation>Set Workspace…</translation>
@@ -3872,6 +4036,210 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectroscopyDialog</name>
+        <message>
+            <source>无法从内置表读取元素列表。</source>
+            <translation>Could not read the element list from the built-in table.</translation>
+        </message>
+        <message>
+            <source>选择元素</source>
+            <translation>Select an element</translation>
+        </message>
+        <message>
+            <source>选择目标壳层</source>
+            <translation>Select the target shell</translation>
+        </message>
+        <message>
+            <source>元素</source>
+            <translation>Element</translation>
+        </message>
+        <message>
+            <source>目标壳层</source>
+            <translation>Target Shell</translation>
+        </message>
+        <message>
+            <source>分组名称</source>
+            <translation>Group Name</translation>
+        </message>
+        <message>
+            <source>新建分组</source>
+            <translation>Create Group</translation>
+        </message>
+        <message>
+            <source>%1（已存在）</source>
+            <translation>%1 (already exists)</translation>
+        </message>
+        <message>
+            <source>元素与化学比</source>
+            <translation>Elements and Stoichiometric Ratios</translation>
+        </message>
+        <message>
+            <source>例如 Li:1, Ni:0.8, Co:0.1, Mn:0.1, O:2</source>
+            <translation>e.g. Li:1, Ni:0.8, Co:0.1, Mn:0.1, O:2</translation>
+        </message>
+        <message>
+            <source>内置默认表 · ComptonProfiles.dat</source>
+            <translation>Built-in default · ComptonProfiles.dat</translation>
+        </message>
+        <message>
+            <source>恢复默认</source>
+            <translation>Restore Default</translation>
+        </message>
+        <message>
+            <source>HF 壳层表</source>
+            <translation>HF Shell Table</translation>
+        </message>
+        <message>
+            <source>选择 DABAX HF 壳层数据</source>
+            <translation>Select DABAX HF Shell Data</translation>
+        </message>
+        <message>
+            <source>当前分组的扣除壳层</source>
+            <translation>Shells to Subtract for This Group</translation>
+        </message>
+        <message>
+            <source>选壳层…</source>
+            <translation>Choose Shells…</translation>
+        </message>
+        <message>
+            <source>例如 O:K 或 C:1</source>
+            <translation>e.g. O:K or C:1</translation>
+        </message>
+        <message>
+            <source>新建分组时自动关联所选壳层。也可使用 HF 表中的编号，例如 C:1。</source>
+            <translation>The shell selected when creating a group is linked automatically. You can also use a column number from the HF table, e.g. C:1.</translation>
+        </message>
+        <message>
+            <source>选择「%1」要扣除的 HF 壳层</source>
+            <translation>Select HF Shells to Subtract for %1</translation>
+        </message>
+        <message>
+            <source>勾选当前分组要扣除的壳层。</source>
+            <translation>Select the shells to subtract for this group.</translation>
+        </message>
+        <message>
+            <source>未在当前组分及 HF 表中找到：%1</source>
+            <translation>Missing from the current composition or HF table: %1</translation>
+        </message>
+        <message>
+            <source>%1 · 结合能 %2 eV</source>
+            <translation>%1 · Binding energy %2 eV</translation>
+        </message>
+        <message>
+            <source>XRS 扫描与元素分组</source>
+            <translation>XRS Scans and Edge Groups</translation>
+        </message>
+        <message>
+            <source>留空时使用弹性扫描名</source>
+            <translation>Defaults to the elastic scan name</translation>
+        </message>
+        <message>
+            <source>样品名称</source>
+            <translation>Sample Name</translation>
+        </message>
+        <message>
+            <source>元素边</source>
+            <translation>Element Edge</translation>
+        </message>
+        <message>
+            <source>已勾选 / 总数</source>
+            <translation>Checked / Total</translation>
+        </message>
+        <message>
+            <source>状态</source>
+            <translation>Status</translation>
+        </message>
+        <message>
+            <source>新建分组…</source>
+            <translation>New Group…</translation>
+        </message>
+        <message>
+            <source>重命名…</source>
+            <translation>Rename…</translation>
+        </message>
+        <message>
+            <source>删除分组…</source>
+            <translation>Delete Group…</translation>
+        </message>
+        <message>
+            <source>新建元素边分组</source>
+            <translation>New Element-Edge Group</translation>
+        </message>
+        <message>
+            <source>重命名元素边分组</source>
+            <translation>Rename Element-Edge Group</translation>
+        </message>
+        <message>
+            <source>删除元素边分组</source>
+            <translation>Delete Element-Edge Group</translation>
+        </message>
+        <message>
+            <source>元素边名称，例如 O_K 或 Ni_L3</source>
+            <translation>Edge name, for example O_K or Ni_L3</translation>
+        </message>
+        <message>
+            <source>请使用非空且未重复的分组名称。</source>
+            <translation>Enter a non-empty, unique group name.</translation>
+        </message>
+        <message>
+            <source>删除方案中的分组「%1」及其扫描配置？扫描和已保存的结果文件会保留。</source>
+            <translation>Remove group %1 and its scan settings from the plan? Scan files and saved results will be kept.</translation>
+        </message>
+        <message>
+            <source>当前分组的扫描</source>
+            <translation>Scans in the Current Group</translation>
+        </message>
+        <message>
+            <source>选择一个元素边分组，再勾选参与该组计算的扫描。</source>
+            <translation>Select an edge group, then check the scans to process in that group.</translation>
+        </message>
+        <message>
+            <source>谱学方案中的元素分组无效。</source>
+            <translation>The edge groups in this spectroscopy plan are invalid.</translation>
+        </message>
+        <message>
+            <source>已载入 %1 个元素分组：%2。</source>
+            <translation>Loaded %1 edge groups from %2.</translation>
+        </message>
+        <message>
+            <source>已新建分组「%1」，请添加该组的 XRS 扫描。</source>
+            <translation>Created group %1. Add its XRS scans.</translation>
+        </message>
+        <message>
+            <source>当前分组「%1」。点击下一步按该组方案计算。</source>
+            <translation>Current group: %1. Click Next to process this group.</translation>
+        </message>
+        <message>
+            <source>请先选择元素边分组。</source>
+            <translation>Select an element-edge group first.</translation>
+        </message>
+        <message>
+            <source>请为当前元素边分组添加并勾选 XRS 扫描。</source>
+            <translation>Add and check the XRS scans for the current edge group.</translation>
+        </message>
+        <message>
+            <source>未处理</source>
+            <translation>Pending</translation>
+        </message>
+        <message>
+            <source>已叠加</source>
+            <translation>Raw Spectrum Ready</translation>
+        </message>
+        <message>
+            <source>部分完成</source>
+            <translation>Partially Complete</translation>
+        </message>
+        <message>
+            <source>已完成</source>
+            <translation>Complete</translation>
+        </message>
+        <message>
+            <source>处理中</source>
+            <translation>Processing</translation>
+        </message>
+        <message>
+            <source>记录上次处理状态。切换分组或重新载入方案后，可按该组配置重新计算。</source>
+            <translation>Status of the last run. After changing groups or reopening the plan, use the group configuration to recalculate.</translation>
+        </message>
         <message><source>收起参数面板</source><translation>Collapse parameters</translation></message>
         <message><source>展开参数面板</source><translation>Expand parameters</translation></message>
         <message><source>计算弹性峰</source><translation>Fit elastic peaks</translation></message>
@@ -4323,16 +4691,16 @@ Incomplete output directory: </translation>
             <translation>5 Raw Spectra</translation>
         </message>
         <message>
-            <source>6 可选拼接</source>
-            <translation>6 Optional Stitching</translation>
+            <source>6 Compton 峰分析</source>
+            <translation>6 Compton Peak Analysis</translation>
         </message>
         <message>
-            <source>7 扣背底</source>
-            <translation>7 Background Subtraction</translation>
+            <source>7 背景分析</source>
+            <translation>7 Background Analysis</translation>
         </message>
         <message>
-            <source>8 能区结果</source>
-            <translation>8 Energy-Range Results</translation>
+            <source>8 近边结构结果分析</source>
+            <translation>8 Near-Edge Structure Results</translation>
         </message>
         <message>
             <source>选择弹性扫描，载入共用 ROI 方案，然后开始弹性标定。</source>
@@ -4479,10 +4847,6 @@ Incomplete output directory: </translation>
             <translation>All individual crystal spectra</translation>
         </message>
         <message>
-            <source> · 各扫描与叠加</source>
-            <translation> · Individual scans and sum</translation>
-        </message>
-        <message>
             <source>Total</source>
             <translation>Total</translation>
         </message>
@@ -4528,6 +4892,14 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectrumProcessing</name>
+        <message>
+            <source>读取原始宽谱前，请先完成第 3 步弹性标定。</source>
+            <translation>Complete elastic calibration in step 3 before loading a raw wide scan.</translation>
+        </message>
+        <message>
+            <source>原始宽谱没有通过当前 ROI 和弹性标定的晶体。</source>
+            <translation>The raw wide scan has no crystals that pass the current ROI and elastic calibration.</translation>
+        </message>
         <message>
             <source>数据处理已取消。</source>
             <translation>Processing canceled.</translation>
@@ -4613,6 +4985,10 @@ Incomplete output directory: </translation>
             <translation>Intensity units differ between the wide-range and near-edge spectra.</translation>
         </message>
         <message>
+            <source>宽谱与近边谱没有同时含有效数据的同名晶体。</source>
+            <translation>No crystal has valid data in both the wide and near-edge spectra.</translation>
+        </message>
+        <message>
             <source>近边能量 %1 eV 与宽谱网格不对齐。请按共同能量网格重新导出。</source>
             <translation>Near-edge energy %1 eV is not aligned with the wide-range grid. Export both on a common energy grid.</translation>
         </message>
@@ -4692,9 +5068,417 @@ Incomplete output directory: </translation>
             <source>无法完成 HDF5 文件写入：%1</source>
             <translation>Could not finish writing the HDF5 file: %1</translation>
         </message>
+        <message>
+            <source>无法完成文本文件写入：%1</source>
+            <translation>Could not finish writing the text file: %1</translation>
+        </message>
     </context>
     <context>
         <name>SpectrumProcessingPage</name>
+        <message>
+            <source>在第 1 步设置元素与化学比、HF 壳层表和当前分组的扣除壳层。</source>
+            <translation>Set the elements, stoichiometric ratios, HF shell table and shells to subtract for the current group in step 1.</translation>
+        </message>
+        <message>
+            <source>上一条谱</source>
+            <translation>Previous spectrum</translation>
+        </message>
+        <message>
+            <source>下一条谱</source>
+            <translation>Next spectrum</translation>
+        </message>
+        <message>
+            <source>按模组选…</source>
+            <translation>By Module…</translation>
+        </message>
+        <message>
+            <source>全选</source>
+            <translation>Select All</translation>
+        </message>
+        <message>
+            <source>反选</source>
+            <translation>Invert Selection</translation>
+        </message>
+        <message>
+            <source>按模组选择批量目标</source>
+            <translation>Select Batch Targets by Module</translation>
+        </message>
+        <message>
+            <source>%1 · %2 条谱</source>
+            <translation>%1 · %2 spectra</translation>
+        </message>
+        <message>
+            <source>处理对象</source>
+            <translation>Analysis scope</translation>
+        </message>
+        <message>
+            <source>分晶体</source>
+            <translation>Per crystal</translation>
+        </message>
+        <message>
+            <source>模组谱</source>
+            <translation>Module spectra</translation>
+        </message>
+        <message>
+            <source>保护能区</source>
+            <translation>Protected energy ranges</translation>
+        </message>
+        <message>
+            <source>保护能区 / eV</source>
+            <translation>Protected ranges / eV</translation>
+        </message>
+        <message>
+            <source>可选，例如 280:310</source>
+            <translation>Optional, e.g. 280:310</translation>
+        </message>
+        <message>
+            <source>拟合各项时跳过这里的采样点。多段用逗号分隔。</source>
+            <translation>Exclude these points from all fits. Separate ranges with commas.</translation>
+        </message>
+        <message>
+            <source>线性背景</source>
+            <translation>Linear background</translation>
+        </message>
+        <message>
+            <source>HF-core 拟合</source>
+            <translation>HF-core fit</translation>
+        </message>
+        <message>
+            <source>Compton 峰拟合背景</source>
+            <translation>Compton peak background</translation>
+        </message>
+        <message>
+            <source>非对称函数修正</source>
+            <translation>Asymmetry correction</translation>
+        </message>
+        <message>
+            <source>启用</source>
+            <translation>Enable</translation>
+        </message>
+        <message>
+            <source>拟合</source>
+            <translation>Fit</translation>
+        </message>
+        <message>
+            <source>拟合能区 / eV</source>
+            <translation>Fit ranges / eV</translation>
+        </message>
+        <message>
+            <source>起点:终点，多段用逗号分隔</source>
+            <translation>Start:end, comma-separated ranges</translation>
+        </message>
+        <message>
+            <source>扣除壳层</source>
+            <translation>Shells to subtract</translation>
+        </message>
+        <message>
+            <source>例如 C:1, O:2</source>
+            <translation>e.g. C:1, O:2</translation>
+        </message>
+        <message>
+            <source>选壳层…</source>
+            <translation>Choose Shells…</translation>
+        </message>
+        <message>
+            <source>编号 1 对应 DABAX 表中的 Shell_1。只填需要扣除的壳层，留出目标壳层。</source>
+            <translation>Index 1 corresponds to Shell_1 in the DABAX table. Select background shells and leave the target shell unselected.</translation>
+        </message>
+        <message>
+            <source>选择要扣除的 HF 背景壳层</source>
+            <translation>Select HF Background Shells</translation>
+        </message>
+        <message>
+            <source>%1 · 结合能 %2 eV</source>
+            <translation>%1 · Binding energy %2 eV</translation>
+        </message>
+        <message>
+            <source>勾选背景壳层，保留要分析的目标壳层。</source>
+            <translation>Select the background shells and leave the target shell unselected.</translation>
+        </message>
+        <message>
+            <source>上升宽度 / a.u.</source>
+            <translation>Rise width / a.u.</translation>
+        </message>
+        <message>
+            <source>衰减宽度 / a.u.</source>
+            <translation>Decay width / a.u.</translation>
+        </message>
+        <message>
+            <source>批量目标</source>
+            <translation>Batch targets</translation>
+        </message>
+        <message>
+            <source>批量扣除</source>
+            <translation>Batch Subtract</translation>
+        </message>
+        <message>
+            <source>原谱与背景分量</source>
+            <translation>Input and background components</translation>
+        </message>
+        <message>
+            <source>输入谱已更新，请重新拟合。</source>
+            <translation>The input spectrum changed. Fit the background again.</translation>
+        </message>
+        <message>
+            <source>%1 · q %2–%3 Å⁻¹</source>
+            <translation>%1 · q %2–%3 Å⁻¹</translation>
+        </message>
+        <message>
+            <source>请先逐项拟合当前预览谱中已启用的背景。</source>
+            <translation>Fit each enabled background on the preview spectrum first.</translation>
+        </message>
+        <message>
+            <source>请勾选要批量扣除的谱。</source>
+            <translation>Select spectra for batch subtraction.</translation>
+        </message>
+        <message>
+            <source>请填写「%1」的拟合能区。</source>
+            <translation>Enter the fit ranges for %1.</translation>
+        </message>
+        <message>
+            <source>正在拟合 %1…</source>
+            <translation>Fitting %1…</translation>
+        </message>
+        <message>
+            <source>已拟合 %1。</source>
+            <translation>Fitted %1.</translation>
+        </message>
+        <message>
+            <source>正在批量拟合并扣除背景…</source>
+            <translation>Fitting and subtracting backgrounds…</translation>
+        </message>
+        <message>
+            <source>批量扣除完成 · 成功 %1 条 · 失败 %2 条</source>
+            <translation>Batch subtraction complete · %1 succeeded · %2 failed</translation>
+        </message>
+        <message>
+            <source>q %1 Å⁻¹</source>
+            <translation>q %1 Å⁻¹</translation>
+        </message>
+        <message>
+            <source>%1 · R² %2</source>
+            <translation>%1 · R² %2</translation>
+        </message>
+        <message>
+            <source> · 峰心 %1 eV · FWHM %2 eV</source>
+            <translation> · Center %1 eV · FWHM %2 eV</translation>
+        </message>
+        <message>
+            <source> · 比例 %1</source>
+            <translation> · Scale %1</translation>
+        </message>
+        <message>
+            <source>总背景</source>
+            <translation>Total background</translation>
+        </message>
+        <message>
+            <source>批量扣除未完成：%1</source>
+            <translation>Batch subtraction failed: %1</translation>
+        </message>
+        <message>
+            <source>%1 条谱 · %2 个有效能量点 · 最大采样点 %3 eV，强度 %4</source>
+            <translation>%1 spectra · %2 valid samples · Maximum at %3 eV, intensity %4</translation>
+        </message>
+        <message>
+            <source>仅分晶体可用</source>
+            <translation>Per-crystal only</translation>
+        </message>
+        <message>
+            <source>已拟合</source>
+            <translation>Fitted</translation>
+        </message>
+        <message>
+            <source>待拟合</source>
+            <translation>Pending</translation>
+        </message>
+        <message>
+            <source>数据源</source>
+            <translation>Data Source</translation>
+        </message>
+        <message>
+            <source>谱线与能区</source>
+            <translation>Spectra and Energy Range</translation>
+        </message>
+        <message>
+            <source>预览谱</source>
+            <translation>Spectrum</translation>
+        </message>
+        <message>
+            <source>近边谱按扫描次数归一化</source>
+            <translation>Average near-edge scans</translation>
+        </message>
+        <message>
+            <source>用第 5 步的叠加强度除以参与叠加的扫描数，并将平均强度用于拼接。</source>
+            <translation>Divide the summed intensity from step 5 by the number of scans and use the average for splicing.</translation>
+        </message>
+        <message>
+            <source>近边谱已按 %1 次扫描取平均</source>
+            <translation>Near edge averaged over %1 scans</translation>
+        </message>
+        <message>
+            <source>近边谱由 %1 次扫描叠加</source>
+            <translation>Near edge summed over %1 scans</translation>
+        </message>
+        <message>
+            <source>限定预览能区</source>
+            <translation>Limit Preview Range</translation>
+        </message>
+        <message>
+            <source>能区下限</source>
+            <translation>Lower energy limit</translation>
+        </message>
+        <message>
+            <source>能区上限</source>
+            <translation>Upper energy limit</translation>
+        </message>
+        <message>
+            <source>总谱</source>
+            <translation>Total spectrum</translation>
+        </message>
+        <message>
+            <source>%1 模组谱</source>
+            <translation>%1 module spectrum</translation>
+        </message>
+        <message>
+            <source>汇总 %1 个晶体</source>
+            <translation>Sum of %1 crystals</translation>
+        </message>
+        <message>
+            <source>能区上限须大于下限。</source>
+            <translation>The upper energy limit must exceed the lower limit.</translation>
+        </message>
+        <message>
+            <source>所选能区没有有效宽谱点。</source>
+            <translation>No valid wide-scan points in the selected energy range.</translation>
+        </message>
+        <message>
+            <source>所选晶体和能区没有对应的近边谱。</source>
+            <translation>There is no matching near-edge spectrum for the selected crystals and energy range.</translation>
+        </message>
+        <message>
+            <source>预览谱或能区已改变，请重新拟合。</source>
+            <translation>The preview spectrum or energy range changed. Fit the peak again.</translation>
+        </message>
+        <message>
+            <source>独立测量</source>
+            <translation>Separate Scans</translation>
+        </message>
+        <message>
+            <source>ROI 或谱学配置已更新，请重新读取原始宽谱。</source>
+            <translation>The ROI or spectroscopy settings changed. Reload the raw wide scan.</translation>
+        </message>
+        <message>
+            <source>选择宽谱文件…</source>
+            <translation>Choose Wide-Range Spectrum…</translation>
+        </message>
+        <message>
+            <source>测量方式</source>
+            <translation>Acquisition</translation>
+        </message>
+        <message>
+            <source>起点:终点，留空使用宽谱全范围</source>
+            <translation>Start:end, or blank for the full wide range</translation>
+        </message>
+        <message>
+            <source>Compton 峰拼接</source>
+            <translation>Splice Compton Spectrum</translation>
+        </message>
+        <message>
+            <source>峰拟合能区 / eV</source>
+            <translation>Peak fit range / eV</translation>
+        </message>
+        <message>
+            <source>选择 Compton 宽谱文件</source>
+            <translation>Select a wide-range Compton spectrum file</translation>
+        </message>
+        <message>
+            <source>峰拟合能区</source>
+            <translation>peak fit range</translation>
+        </message>
+        <message>
+            <source>峰拟合请选择一段连续能区。</source>
+            <translation>Select a single continuous energy interval for the peak fit.</translation>
+        </message>
+        <message>
+            <source>峰拟合能区内至少需要 8 个实测点。</source>
+            <translation>The peak fit requires at least 8 measured points in the selected range.</translation>
+        </message>
+        <message>
+            <source>所选能区的实测峰顶两侧需要有采样点。</source>
+            <translation>The selected range must include measured points on both sides of the highest sample.</translation>
+        </message>
+        <message>
+            <source>正在拼接 Compton 宽谱与近边谱…</source>
+            <translation>Splicing the Compton and near-edge spectra…</translation>
+        </message>
+        <message>
+            <source>拟合峰的半高点超出实测范围，无法报告峰宽。</source>
+            <translation>The fitted half-maximum points extend beyond the measured range.</translation>
+        </message>
+        <message>
+            <source>已完成 Compton 峰拼接。</source>
+            <translation>Compton spectrum spliced.</translation>
+        </message>
+        <message>
+            <source>第 5 步原始谱作为近边谱。可选择原始扫描或已处理的逐晶体宽谱。</source>
+            <translation>Step 5 supplies the near-edge spectra. Choose a raw scan or a processed per-crystal wide-range spectrum.</translation>
+        </message>
+        <message>
+            <source>请先在第 5 步生成连续测量的逐晶体谱。</source>
+            <translation>Generate per-crystal spectra from the continuous scan in step 5 first.</translation>
+        </message>
+        <message>
+            <source>宽谱 %1 至 %2 eV · %3 个点 · 最大间距 %4 eV · 最大采样点 %5 eV</source>
+            <translation>Wide range %1 to %2 eV · %3 points · Largest step %4 eV · Highest sample at %5 eV</translation>
+        </message>
+        <message>
+            <source>当前晶体的宽谱没有有效点。</source>
+            <translation>The selected crystal has no valid wide-range points.</translation>
+        </message>
+        <message>
+            <source>Compton 宽谱</source>
+            <translation>Wide-range Compton spectrum</translation>
+        </message>
+        <message>
+            <source>当前晶体缺少对应的近边谱。</source>
+            <translation>No matching near-edge spectrum for this crystal.</translation>
+        </message>
+        <message>
+            <source>近边 %1 至 %2 eV · %3 个点</source>
+            <translation>Near edge %1 to %2 eV · %3 points</translation>
+        </message>
+        <message>
+            <source>能区交集 %1 至 %2 eV</source>
+            <translation>Overlap %1 to %2 eV</translation>
+        </message>
+        <message>
+            <source>两段能区相离，间隔 %1 eV</source>
+            <translation>Disjoint ranges with a %1 eV gap</translation>
+        </message>
+        <message>
+            <source>近边谱</source>
+            <translation>Near-edge spectrum</translation>
+        </message>
+        <message>
+            <source>强度单位不同，图中仅显示宽谱。</source>
+            <translation>The plot shows the wide-range spectrum only because the intensity units differ.</translation>
+        </message>
+        <message>
+            <source>Pearson VII 拟合</source>
+            <translation>Pearson VII fit</translation>
+        </message>
+        <message>
+            <source>拟合峰心 %1 eV · FWHM %2 eV · R² %3</source>
+            <translation>Fitted center %1 eV · FWHM %2 eV · R² %3</translation>
+        </message>
+        <message>
+            <source>请先在第 6 步设置 Compton 宽谱参考。</source>
+            <translation>Set the Compton reference in step 6 first.</translation>
+        </message>
+        <message>
+            <source>请先在第 5 步生成原始谱或载入外部逐晶体谱。</source>
+            <translation>Generate spectra in step 5 or load an external per-crystal spectrum.</translation>
+        </message>
         <message>
             <source>用当前原始谱作宽谱</source>
             <translation>Use Current Raw Spectrum as Wide-Range Spectrum</translation>
@@ -4752,8 +5536,42 @@ Incomplete output directory: </translation>
             <translation>Preview crystal</translation>
         </message>
         <message>
-            <source>扣背底输入</source>
-            <translation>Background-subtraction input</translation>
+            <source>背景分析输入</source>
+            <translation>Background Analysis Input</translation>
+        </message>
+        <message>
+            <source>输入谱已改变，请重新拼接。</source>
+            <translation>The input spectra changed. Splice the spectra again.</translation>
+        </message>
+        <message>
+            <source>拼接结果 · %1 个同名晶体 · %2 个实测能量坐标</source>
+            <translation>Spliced spectrum · %1 matching crystals · %2 measured energy coordinates</translation>
+        </message>
+        <message>
+            <source>请选择 Compton 宽谱文件。</source>
+            <translation>Select a wide-range Compton spectrum file.</translation>
+        </message>
+        <message>
+            <source>请先在第 5 步生成原始谱。</source>
+            <translation>Generate the raw spectra in step 5 first.</translation>
+        </message>
+        <message>
+            <source>请在第 6 步点击「下一步」导入谱。</source>
+            <translation>Click Next in step 6 to import a spectrum.</translation>
+        </message>
+        <message>
+            <source>第 6 步 Compton 拼接谱</source>
+            <translation>Step 6 spliced Compton spectrum</translation>
+        </message>
+        <message>
+            <source>第 6 步 Full Scan</source>
+            <translation>Step 6 Full Scan</translation>
+        </message>
+        <message>
+            <source>%1
+%2 个晶体 · %3 个能量点 · %4 至 %5 eV</source>
+            <translation>%1
+%2 crystals · %3 energy points · %4 to %5 eV</translation>
         </message>
         <message>
             <source>第 5 步原始谱</source>
@@ -4876,8 +5694,36 @@ Incomplete output directory: </translation>
             <translation>Cancel Analysis</translation>
         </message>
         <message>
-            <source>保存当前能区 HDF5…</source>
-            <translation>Save Current Energy Range as HDF5…</translation>
+            <source>保存为 HDF5…</source>
+            <translation>Save as HDF5…</translation>
+        </message>
+        <message>
+            <source>保存为文本…</source>
+            <translation>Save as Text…</translation>
+        </message>
+        <message>
+            <source>谱图设置</source>
+            <translation>Plot Settings</translation>
+        </message>
+        <message>
+            <source>显示内容</source>
+            <translation>Display</translation>
+        </message>
+        <message>
+            <source>保存当前能区</source>
+            <translation>Export Current Range</translation>
+        </message>
+        <message>
+            <source>保存近边结构结果</source>
+            <translation>Save Near-Edge Structure Results</translation>
+        </message>
+        <message>
+            <source>制表符分隔文本 (*.txt *.tsv)</source>
+            <translation>Tab-separated text (*.txt *.tsv)</translation>
+        </message>
+        <message>
+            <source>HDF5 (*.h5 *.hdf5)</source>
+            <translation>HDF5 (*.h5 *.hdf5)</translation>
         </message>
         <message>
             <source>结果谱</source>

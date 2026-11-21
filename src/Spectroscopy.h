@@ -89,6 +89,8 @@ class Spectroscopy {
     static QPair<double, double> momentum(const QString &label, double angleDeg, double incidentKev,
                                           double finalKev, const SpectrumSettings &);
     static QMap<QString, double> readAngles(const QString &file);
+    static double analyzerAngle(const QString &label, double moduleAngleDeg, double pitchDeg);
     static bool saveResult(const QString &directory, const SpectrumSettings &, const ElasticCalibration &,
-                           const QVector<SpectrumScan> &, const SpectrumResult &, QString *error);
+                           const QVector<SpectrumScan> &, const SpectrumResult &, QString *error,
+                           const QJsonObject &identity = {});
 };

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(XRI VERSION 0.4.0 LANGUAGES C CXX)
+project(XRI VERSION 0.4.1 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -71,6 +71,10 @@ set(SPECTROSCOPY_SOURCES ${SPECTRUM_CORE_SOURCES} src/SpectralMaskDialog.cpp src
     src/SpectrumPlot.cpp src/SpectrumPlot.h src/SpectroscopyDialog.cpp src/SpectroscopyDialog.h
     src/SpectrumProcessingPage.cpp src/SpectrumProcessingPage.h)
 target_sources(XRI PRIVATE ${SPECTROSCOPY_SOURCES})
+set(XRI_DABAX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dabax")
+set(XRI_DABAX_FILES "${XRI_DABAX_DIR}/ComptonProfiles.dat" "${XRI_DABAX_DIR}/ComptonShellMap.tsv")
+qt_add_resources(XRI "dabax_profiles" PREFIX "/dabax" BASE "${XRI_DABAX_DIR}"
+    FILES ${XRI_DABAX_FILES})
 set(BOND_WIDGET_SOURCES src/BondWorkspace.cpp src/BondWorkspace.h src/BondFigures.cpp src/BondFigures.h
     src/ImagingInputUi.h)
 target_sources(XRI PRIVATE ${BOND_WIDGET_SOURCES})
@@ -99,6 +103,8 @@ if(BUILD_TESTING)
     qt_add_resources(xri_gui_tests "lucide_icons" PREFIX "/" FILES ${XRI_LUCIDE_ICONS})
     qt_add_resources(xri_gui_tests "ui_translations" PREFIX "/i18n" BASE "${CMAKE_CURRENT_BINARY_DIR}"
         FILES ${XRI_TRANSLATIONS})
+    qt_add_resources(xri_gui_tests "dabax_profiles" PREFIX "/dabax" BASE "${XRI_DABAX_DIR}"
+        FILES ${XRI_DABAX_FILES})
     target_sources(xri_gui_tests PRIVATE ${ROI_DETECTION_SOURCES} ${WORKSPACE_PATH_SOURCES})
     qt_add_resources(xri_gui_tests "roi_detection" PREFIX "/" FILES scripts/roi_maskrcnn.py)
     set_target_properties(xri_gui_tests PROPERTIES WIN32_EXECUTABLE FALSE)
@@ -114,6 +120,8 @@ if(BUILD_TESTING)
     set_tests_properties(gui_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XRI_TEST_FILE=${CMAKE_SOURCE_DIR}/Data/15469_grid_scan_20261014231918_1.nxs")
     qt_add_executable(xri_spectroscopy_tests tests/SpectroscopyTests.cpp tests/SpectrumFixture.h
         ${SPECTRUM_CORE_SOURCES} src/CrystalRoi.cpp src/CrystalRoi.h src/HdfFile.cpp src/HdfFile.h)
+    qt_add_resources(xri_spectroscopy_tests "dabax_profiles" PREFIX "/dabax" BASE "${XRI_DABAX_DIR}"
+        FILES ${XRI_DABAX_FILES})
     set_target_properties(xri_spectroscopy_tests PROPERTIES WIN32_EXECUTABLE FALSE)
     target_include_directories(xri_spectroscopy_tests PRIVATE src ${HDF5_INCLUDE_DIRS})
     target_link_libraries(xri_spectroscopy_tests PRIVATE Qt6::Core ${HDF5_LIBRARIES} xri_imaging)
@@ -143,6 +151,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES README.md THIRD_PARTY.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/xri-tools)
     install(FILES assets/lucide/LICENSE assets/lucide/LICENSE.feather
         DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/xri-tools/lucide)
+    install(FILES "${XRI_DABAX_DIR}/LICENSE" "${XRI_DABAX_DIR}/xraylib-LICENSE"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/xri-tools/dabax)
     set(XRI_ROI_MODEL "" CACHE FILEPATH "Optional trained Mask R-CNN weights for automatic ROI detection")
     if(XRI_ROI_MODEL)
         install(FILES "${XRI_ROI_MODEL}" DESTINATION ${CMAKE_INSTALL_DATADIR}/xri-tools/models
@@ -169,4 +179,5 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
     install(TARGETS XRI RUNTIME DESTINATION .)
     install(FILES assets/lucide/LICENSE assets/lucide/LICENSE.feather DESTINATION licenses/lucide)
+    install(FILES "${XRI_DABAX_DIR}/LICENSE" "${XRI_DABAX_DIR}/xraylib-LICENSE" DESTINATION licenses/dabax)
 endif()

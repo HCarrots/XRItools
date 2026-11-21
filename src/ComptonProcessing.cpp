@@ -71,6 +71,7 @@ struct Scattering {
 
 struct Shell {
     double binding = 0, electrons = 0;
+    QString name, edge;
     QVector<double> momentum, profile, derivative;
 
     void prepare() {
@@ -108,6 +109,23 @@ struct Shell {
     }
 };
 
+const QMap<QString, QStringList> &standardShellColumns() {
+    static const auto columns = [] {
+        QMap<QString, QStringList> result;
+        QFile file(":/dabax/ComptonShellMap.tsv");
+        if (!file.open(QIODevice::ReadOnly))
+            return result;
+        QTextStream stream(&file);
+        while (!stream.atEnd()) {
+            const auto line = stream.readLine().split('\t');
+            if (line.size() > 1 && !line.first().startsWith('#'))
+                result.insert(line.first(), line.mid(1));
+        }
+        return result;
+    }();
+    return columns;
+}
+
 QVector<Shell> readShells(const ComptonSettings &settings) {
     QMap<QString, double> weights;
     for (const auto &item :
@@ -128,12 +146,26 @@ QVector<Shell> readShells(const ComptonSettings &settings) {
     const QRegularExpression space("\\s+");
     QVector<Shell> shells, element;
     QString symbol;
+    QStringList shellColumns;
+    QVector<double> occupations;
     auto commit = [&] {
         if (!weights.contains(symbol))
             return;
         if (element.isEmpty())
             fail(QCoreApplication::translate("ComptonProcessing", "HF 表缺少 %1 的壳层数据。").arg(symbol));
-        for (auto &shell : element) {
+        const auto standard = standardShellColumns().value(symbol);
+        bool standardOrder = standard.size() == element.size();
+        for (qsizetype i = 0; standardOrder && i < standard.size(); ++i)
+            standardOrder = standard[i].section(':', 1).toDouble() == occupations[i];
+        static const QRegularExpression edgeName("^(?:K|[LMNOPQ][1-7]{1,2})$");
+        for (qsizetype i = 0; i < element.size(); ++i) {
+            auto &shell = element[i];
+            shell.name = symbol + ':' + QString::number(i + 1);
+            const auto label = shellColumns.value(i).toUpper().remove(',');
+            if (edgeName.match(label).hasMatch())
+                shell.edge = label;
+            else if (standardOrder && label == "SHELL_" + QString::number(i + 1))
+                shell.edge = standard[i].section(':', 0, 0);
             shell.prepare();
             shells.append(std::move(shell));
         }
@@ -148,15 +180,19 @@ QVector<Shell> readShells(const ComptonSettings &settings) {
         if (tag == "#S") {
             commit();
             element.clear();
+            shellColumns.clear();
+            occupations.clear();
             symbol = fields.last();
         } else if (weights.contains(symbol)) {
             if (tag == "#UOCCUP") {
                 element.resize(fields.size() - 1);
+                occupations.resize(element.size());
                 for (qsizetype i = 0; i < element.size(); ++i) {
                     bool ok;
                     const double n = fields[i + 1].toDouble(&ok);
                     if (!ok || !std::isfinite(n) || n < 0)
                         fail(QCoreApplication::translate("ComptonProcessing", "HF 壳层占据数无效。"));
+                    occupations[i] = n;
                     element[i].electrons = n * weights[symbol];
                 }
             } else if (tag == "#UBIND") {
@@ -168,6 +204,8 @@ QVector<Shell> readShells(const ComptonSettings &settings) {
                     if (!ok || !std::isfinite(element[i].binding) || element[i].binding < 0)
                         fail(QCoreApplication::translate("ComptonProcessing", "HF 壳层结合能无效。"));
                 }
+            } else if (tag == "#L") {
+                shellColumns = fields.mid(3);
             } else if (!tag.startsWith('#')) {
                 if (fields.size() != element.size() + 2)
                     fail(QCoreApplication::translate("ComptonProcessing", "HF 壳层强度列数无效。"));
@@ -192,6 +230,19 @@ QVector<Shell> readShells(const ComptonSettings &settings) {
     return shells;
 }
 
+QMap<QString, HfShellInfo> shellInfo(const QVector<Shell> &shells) {
+    QMap<QString, HfShellInfo> info;
+    for (const auto &shell : shells)
+        info.insert(shell.name, {shell.binding, shell.edge});
+    return info;
+}
+
+QStringList edgeComponents(const QString &edge) {
+    if (edge.size() == 3)
+        return {edge.left(2), edge.left(1) + edge.last(1)};
+    return {edge};
+}
+
 double interpolate(const QVector<double> &axis, const QVector<double> &values, double point,
                    double outside = NAN) {
     if (axis.isEmpty() || point < axis.first() || point > axis.last())
@@ -204,15 +255,24 @@ double interpolate(const QVector<double> &axis, const QVector<double> &values, d
     return (1 - t) * values[i - 1] + t * values[i];
 }
 
+bool coveredBySamples(const QVector<double> &axis, const QVector<double> &values, double point) {
+    if (axis.isEmpty() || values.size() != axis.size() || point < axis.first() || point > axis.last())
+        return false;
+    const auto hi = std::lower_bound(axis.cbegin(), axis.cend(), point);
+    const auto i = hi - axis.cbegin();
+    return std::isfinite(values[i]) && (*hi == point || (i > 0 && std::isfinite(values[i - 1])));
+}
+
 struct Prepared {
-    QVector<double> pz, q, normalizedWide, normalizedTarget, core;
+    QVector<double> pz, q, normalizedWide, core, coreEnergy, coreProfile;
     double scale = 1.;
 };
-Prepared prepare(const QVector<double> &energy, const QVector<double> &wide, const QVector<double> &target,
-                 SpectrumGeometry geometry, const QVector<Shell> &shells, const ComptonSettings &settings,
-                 const std::atomic_bool &stop) {
-    Scattering scattering(geometry);
-    const double e0 = geometry.analyzerKev;
+struct HfProfiles {
+    QVector<double> energy, total, core;
+};
+HfProfiles hfProfiles(const Scattering &scattering, const QVector<Shell> &shells, double cutoff,
+                     const std::atomic_bool &stop) {
+    const double e0 = scattering.e0;
     double hi = e0 * 4;
     while (scattering.pz(hi) >= -100 && hi < e0 * 32)
         hi *= 2;
@@ -246,10 +306,20 @@ Prepared prepare(const QVector<double> &energy, const QVector<double> &wide, con
         for (qsizetype i = 0; i < values.size(); ++i) {
             double v = values[i] * shell.electrons * qGrid[i] * qGrid[i] / (2 * hartreeEv * integral);
             total[i] += v;
-            if (shell.binding >= settings.valenceCutoffEv)
+            if (shell.binding >= cutoff)
                 core[i] += v;
         }
     }
+    return {std::move(eGrid), std::move(total), std::move(core)};
+}
+
+Prepared prepare(const QVector<double> &energy, const QVector<double> &wide,
+                 SpectrumGeometry geometry, const QVector<Shell> &shells, const ComptonSettings &settings,
+                 const std::atomic_bool &stop) {
+    Scattering scattering(geometry);
+    const double e0 = geometry.analyzerKev;
+    auto profiles = hfProfiles(scattering, shells, settings.valenceCutoffEv, stop);
+    const auto &eGrid = profiles.energy;
     Prepared out;
     QVector<double> hf;
     for (qsizetype i = 0; i < energy.size(); ++i) {
@@ -262,9 +332,8 @@ Prepared prepare(const QVector<double> &energy, const QVector<double> &wide, con
         out.pz.append(scattering.pz(incident));
         out.q.append(scattering.qKev(incident) / (electronKev * alpha));
         out.normalizedWide.append(wide[i] * factor);
-        out.normalizedTarget.append(target[i] * factor);
-        out.core.append(interpolate(eGrid, core, energy[i], energy[i] < 0 ? 0. : NAN));
-        hf.append(interpolate(eGrid, total, energy[i], energy[i] < 0 ? 0. : NAN));
+        out.core.append(interpolate(eGrid, profiles.core, energy[i], energy[i] < 0 ? 0. : NAN));
+        hf.append(interpolate(eGrid, profiles.total, energy[i], energy[i] < 0 ? 0. : NAN));
     }
     double observed = 0, expected = 0;
     for (qsizetype i = 1; i < energy.size(); ++i) {
@@ -284,8 +353,8 @@ Prepared prepare(const QVector<double> &energy, const QVector<double> &wide, con
         fail(QCoreApplication::translate("ComptonProcessing", "HF 归一化系数无效。"));
     for (auto &v : out.normalizedWide)
         v *= out.scale;
-    for (auto &v : out.normalizedTarget)
-        v *= out.scale;
+    out.coreEnergy = std::move(profiles.energy);
+    out.coreProfile = std::move(profiles.core);
     return out;
 }
 struct Reference {
@@ -336,10 +405,9 @@ void subtractLinear(ComptonResult &out, const ProcessedSpectrum &spectrum, const
     }
     cancel(stop);
 }
-QMap<QString, Prepared> fitReference(const ProcessedSpectrum &wide, const ProcessedSpectrum &target,
+QMap<QString, Prepared> fitReference(const ProcessedSpectrum &wide,
                                      const QStringList &high, const ComptonSettings &settings,
                                      ComptonResult &out, const std::atomic_bool &stop) {
-    const auto &e = wide.energyEv;
     checkWindows(settings.normalization, QCoreApplication::translate("ComptonProcessing", "HF 归一化区间"));
     if (settings.normalization.size() != 1)
         fail(QCoreApplication::translate("ComptonProcessing", "HF 归一化使用一个连续区间。"));
@@ -354,7 +422,8 @@ QMap<QString, Prepared> fitReference(const ProcessedSpectrum &wide, const Proces
     for (const auto &label : high) {
         cancel(stop);
         try {
-            auto data = prepare(e, wide.crystals.value(label), target.crystals.value(label),
+            const auto &e = wide.energyForCrystal(label);
+            auto data = prepare(e, wide.crystals.value(label),
                                 wide.geometry.value(label), shells, settings, stop);
             try {
                 refs.append(referenceFor(e, data, settings, stop));
@@ -414,6 +483,216 @@ double valenceAt(const ComptonResult &reference, double pz, double q) {
 }
 } // namespace
 
+QString backgroundComponentKey(BackgroundComponent component) {
+    static const QStringList keys{"linear", "hf_core", "compton_peak", "asymmetry"};
+    return keys.value(int(component));
+}
+
+QString effectiveHfTable(const QString &path) {
+    const auto selected = path.trimmed();
+    return selected.isEmpty() ? QStringLiteral(":/dabax/ComptonProfiles.dat") : selected;
+}
+
+QStringList backgroundHfShellSelection(const QString &text) {
+    auto shells = text.split(QRegularExpression("[,，;；\\s]+"), Qt::SkipEmptyParts);
+    shells.removeDuplicates();
+    return shells;
+}
+
+QMap<QString, HfShellInfo> backgroundHfShells(const QString &table, const QString &composition) {
+    ComptonSettings settings;
+    settings.hfTable = effectiveHfTable(table);
+    settings.composition = composition;
+    return shellInfo(readShells(settings));
+}
+
+HfShellSelection resolveHfShellSelection(const QMap<QString, HfShellInfo> &shells, const QStringList &requested) {
+    HfShellSelection result;
+    for (const auto &token : requested) {
+        if (shells.contains(token)) {
+            result.identifiers.append(token);
+            continue;
+        }
+        const auto prefix = token.section(':', 0, 0) + ':', edge = token.section(':', 1).toUpper();
+        auto match = [&](const QString &component) {
+            QString combined;
+            if (component.isEmpty())
+                return combined;
+            for (auto it = shells.cbegin(); it != shells.cend(); ++it) {
+                if (!it.key().startsWith(prefix))
+                    continue;
+                if (it->edge == component)
+                    return it.key();
+                if (edgeComponents(it->edge).contains(component))
+                    combined = it.key();
+            }
+            return combined;
+        };
+
+        const auto direct = match(edge);
+        if (!direct.isEmpty()) {
+            result.identifiers.append(direct);
+            continue;
+        }
+        const auto components = edgeComponents(edge);
+        QStringList joined;
+        for (const auto &component : components) {
+            const auto identifier = match(component);
+            if (!identifier.isEmpty())
+                joined.append(identifier);
+        }
+        if (joined.size() == components.size())
+            result.identifiers.append(joined);
+        else
+            result.missing.append(token);
+    }
+    result.identifiers.removeDuplicates();
+    return result;
+}
+
+CrystalBackground fitBackgroundComponent(BackgroundComponent component, const StagedBackgroundSettings &settings,
+                                         const QVector<double> &energy, const QVector<double> &residual,
+                                         SpectrumGeometry geometry, const std::atomic_bool &stop) {
+    if (energy.size() != residual.size() || energy.size() < 2)
+        fail(QCoreApplication::translate("SpectrumProcessing", "缺少可拟合的晶体谱或能量区间。"));
+    if (!settings.protectedWindows.isEmpty())
+        checkWindows(settings.protectedWindows, QCoreApplication::translate("ComptonProcessing", "保护能区"));
+    auto windows = settings.windows.at(int(component));
+    checkWindows(windows, QCoreApplication::translate("ComptonProcessing", "背景拟合能区"));
+    for (const auto &protectedWindow : settings.protectedWindows) {
+        SpectrumWindows remaining;
+        for (const auto &window : std::as_const(windows)) {
+            if (window.second < protectedWindow.first || window.first > protectedWindow.second) {
+                remaining.append(window);
+                continue;
+            }
+            const double left = std::nextafter(protectedWindow.first, -INFINITY);
+            const double right = std::nextafter(protectedWindow.second, INFINITY);
+            if (window.first < left)
+                remaining.append({window.first, left});
+            if (right < window.second)
+                remaining.append({right, window.second});
+        }
+        windows = std::move(remaining);
+    }
+    if (windows.isEmpty())
+        fail(QCoreApplication::translate("ComptonProcessing", "保护能区覆盖了全部拟合区间。"));
+    if (component == BackgroundComponent::Linear || component == BackgroundComponent::ComptonPeak) {
+        const bool peak = component == BackgroundComponent::ComptonPeak;
+        auto result = SpectrumProcessing::fit(energy, residual, {peak, windows, peak}, stop);
+        result.method = backgroundComponentKey(component);
+        return result;
+    }
+
+    const bool core = component == BackgroundComponent::HfCore;
+    if (!core && !(settings.asymmetryRise > 0 && settings.asymmetryDecay > 0 &&
+                  std::isfinite(settings.asymmetryRise) && std::isfinite(settings.asymmetryDecay)))
+        fail(QCoreApplication::translate("ComptonProcessing", "非对称修正的宽度须为有限正数。"));
+    const Scattering scattering(geometry);
+    HfProfiles profiles;
+    QJsonObject resolvedShells;
+    if (core) {
+        if (settings.hfShells.isEmpty())
+            fail(QCoreApplication::translate("ComptonProcessing", "请选择要扣除的 HF 背景壳层。"));
+        ComptonSettings source;
+        source.hfTable = effectiveHfTable(settings.hfTable);
+        source.composition = settings.composition;
+        auto shells = readShells(source);
+        const auto selection = resolveHfShellSelection(shellInfo(shells), settings.hfShells);
+        if (!selection.missing.isEmpty())
+            fail(QCoreApplication::translate("ComptonProcessing", "HF 表或样品组分中没有壳层 %1。")
+                     .arg(selection.missing.join(", ")));
+        shells.removeIf([&](const Shell &s) { return !selection.identifiers.contains(s.name); });
+        for (const auto &shell : shells)
+            resolvedShells[shell.name] = shell.edge;
+        profiles = hfProfiles(scattering, shells, 0., stop);
+    }
+
+    QVector<double> basis(energy.size(), NAN);
+    long double xx = 0., xy = 0., y = 0., yy = 0.;
+    qsizetype count = 0;
+    bool left = false, right = false;
+    for (qsizetype i = 0; i < energy.size(); ++i) {
+        if ((i & 255) == 0)
+            cancel(stop);
+        if (!std::isfinite(residual[i]))
+            continue;
+        const double incident = scattering.e0 + energy[i] / 1000.;
+        const double correction = scattering.correction(incident), p = scattering.pz(incident);
+        if (!(incident > 0 && correction > 0 && std::isfinite(correction) && std::isfinite(p)))
+            fail(QCoreApplication::translate("ComptonProcessing", "康普顿截面修正无效。"));
+        const double q = scattering.qKev(incident) / (electronKev * alpha);
+        const double reference = core
+            ? interpolate(profiles.energy, profiles.core, energy[i],
+                          energy[i] < profiles.energy.first() ? 0. : NAN)
+            : std::tanh(p / settings.asymmetryRise) * std::exp(-std::pow(p / settings.asymmetryDecay, 4)) / q;
+        basis[i] = reference / correction;
+        if (!std::isfinite(basis[i]))
+            fail(QCoreApplication::translate("ComptonProcessing", "背景模型未覆盖全部实测能量点。"));
+        if (basis[i] == 0. || !inWindows(energy[i], windows))
+            continue;
+        xx += static_cast<long double>(basis[i]) * basis[i];
+        xy += static_cast<long double>(basis[i]) * residual[i];
+        y += residual[i];
+        yy += static_cast<long double>(residual[i]) * residual[i];
+        ++count;
+        left |= p < 0;
+        right |= p > 0;
+    }
+    if (count < 2 || !(xx > 0.))
+        fail(QCoreApplication::translate("ComptonProcessing", "拟合能区至少需要两个可约束该背景的实测点。"));
+    if (!core && !(left && right))
+        fail(QCoreApplication::translate("ComptonProcessing", "非对称修正的拟合能区须覆盖 pz = 0 两侧。"));
+    const double scale = core ? std::max(0., double(xy / xx)) : double(xy / xx);
+    if (!std::isfinite(scale))
+        fail(QCoreApplication::translate("ComptonProcessing", "背景拟合比例无效。"));
+    CrystalBackground out;
+    out.settings.windows = windows;
+    out.method = backgroundComponentKey(component);
+    out.parameters["scale"] = scale;
+    if (core)
+        out.parameters["resolved_shells"] = resolvedShells;
+    const long double variance = yy - y * y / count;
+    const long double error = yy - 2 * scale * xy + scale * scale * xx;
+    out.rSquared = variance > 0 ? double(1 - error / variance) : NAN;
+    for (qsizetype i = 0; i < energy.size(); ++i) {
+        out.background.append(basis[i] * scale);
+        out.corrected.append(residual[i] - out.background.last());
+    }
+    return out;
+}
+
+CrystalBackground sumBackground(const QVector<double> &input,
+                                const QMap<BackgroundComponent, CrystalBackground> &terms) {
+    CrystalBackground out;
+    out.method = QStringLiteral("staged_background");
+    out.background.fill(0., input.size());
+    for (const auto &term : terms)
+        for (qsizetype i = 0; i < input.size(); ++i)
+            out.background[i] += term.background[i];
+    out.corrected.reserve(input.size());
+    for (qsizetype i = 0; i < input.size(); ++i)
+        out.corrected.append(input[i] - out.background[i]);
+    return out;
+}
+
+StagedSpectrumFit fitBackgroundStages(const StagedBackgroundSettings &settings, const QVector<double> &energy,
+                                      const QVector<double> &input, SpectrumGeometry geometry,
+                                      const std::atomic_bool &stop) {
+    StagedSpectrumFit out;
+    auto residual = input;
+    for (int i = 0; i < backgroundComponentCount; ++i) {
+        if (settings.windows[i].isEmpty())
+            continue;
+        const auto component = BackgroundComponent(i);
+        auto term = fitBackgroundComponent(component, settings, energy, residual, geometry, stop);
+        residual = std::move(term.corrected);
+        out.terms.insert(component, std::move(term));
+    }
+    out.total = sumBackground(input, out.terms);
+    return out;
+}
+
 ComptonResult analyzeLinear(const ProcessedSpectrum &spectrum, const SpectrumWindows &windows,
                             const std::atomic_bool &stop) {
     if (spectrum.crystals.isEmpty())
@@ -425,9 +704,9 @@ ComptonResult analyzeLinear(const ProcessedSpectrum &spectrum, const SpectrumWin
     return out;
 }
 
-ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpectrum &stitched,
+ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpectrum &target,
                              const ComptonSettings &settings, const std::atomic_bool &stop) {
-    if (wide.crystals.isEmpty() || wide.energyEv != stitched.energyEv || !std::isfinite(settings.highQMin) ||
+    if (wide.crystals.isEmpty() || !std::isfinite(settings.highQMin) ||
         settings.highQMin < 0)
         fail(QCoreApplication::translate("ComptonProcessing", "请载入宽谱并填写有效的高 q 阈值。"));
     ComptonResult out;
@@ -441,39 +720,61 @@ ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpect
                       {"core_tail_ev", ranges(settings.coreTail)},
                       {"clean_reference_ev", ranges(settings.cleanReference)},
                       {"high_residual_ev", ranges(settings.highResidual)},
-                      {"low_linear_ev", ranges(settings.lowLinear)}};
+                      {"low_linear_ev", ranges(settings.lowLinear)},
+                      {"compton_reference_sources", QJsonArray::fromStringList(wide.sources)}};
     QStringList high, low;
-    for (auto it = stitched.crystals.cbegin(); it != stitched.crystals.cend(); ++it) {
-        const double q = wide.geometry.value(it.key()).qMean;
-        if (!std::isfinite(q) || q <= 0)
-            out.failures[it.key()] = QCoreApplication::translate("ComptonProcessing", "缺少唯一、有效的晶体 q 值。");
-        else if (q >= settings.highQMin)
-            high.append(it.key());
-        else
-            low.append(it.key());
+    const auto &e = target.energyEv;
+    for (auto it = target.crystals.cbegin(); it != target.crystals.cend(); ++it) {
+        const auto &label = it.key();
+        const double q = wide.geometry.value(label, target.geometry.value(label)).qMean;
+        if (!std::isfinite(q) || q <= 0) {
+            out.failures[label] = QCoreApplication::translate("ComptonProcessing", "缺少唯一、有效的晶体 q 值。");
+        } else if (q < settings.highQMin) {
+            low.append(label);
+        } else if (wide.intensityUnit != target.intensityUnit) {
+            out.failures[label] = QCoreApplication::translate("ComptonProcessing", "宽谱和目标谱的强度单位不一致。");
+        } else {
+            const auto &wideRow = wide.crystals.value(label);
+            if (std::any_of(e.cbegin(), e.cend(), [&](double energy) {
+                    return coveredBySamples(wide.energyForCrystal(label), wideRow, energy);
+                }))
+                high.append(label);
+            else
+                out.failures[label] = QCoreApplication::translate("ComptonProcessing", "目标谱缺少同名晶体的宽谱覆盖。");
+        }
     }
-    const auto &e = wide.energyEv;
     if (!low.isEmpty())
         checkWindows(settings.lowLinear, QCoreApplication::translate("ComptonProcessing", "低 q 线性区间"));
-    subtractLinear(out, stitched, low, settings.lowLinear, QStringLiteral("Low q linear"), stop);
+    subtractLinear(out, target, low, settings.lowLinear, QStringLiteral("Low q linear"), stop);
     if (high.isEmpty())
         return out;
     try {
         checkWindows(settings.highResidual, QCoreApplication::translate("ComptonProcessing", "高 q 残余直线区间"));
-        const auto prepared = fitReference(wide, stitched, high, settings, out, stop);
+        const auto prepared = fitReference(wide, high, settings, out, stop);
         for (auto it = prepared.cbegin(); it != prepared.cend(); ++it) {
             cancel(stop);
             try {
                 ComptonCrystal item;
                 item.high = true;
                 item.scale = it->scale;
-                item.input = it->normalizedTarget;
-                item.hfCore = it->core;
-                auto residual = item.input;
+                const auto geometry = wide.geometry.value(it.key());
+                const Scattering scattering(geometry);
+                const auto &samples = target.crystals.value(it.key());
+                const auto &wideEnergy = wide.energyForCrystal(it.key());
+                QVector<double> residual;
                 for (qsizetype i = 0; i < e.size(); ++i) {
-                    double valence = valenceAt(out, it->pz[i], it->q[i]);
+                    const double incident = geometry.analyzerKev + e[i] / 1000.;
+                    const double correction = scattering.correction(incident);
+                    const bool covered = coveredBySamples(wideEnergy, it->normalizedWide, e[i]);
+                    const double valence = covered ? valenceAt(out, scattering.pz(incident),
+                        scattering.qKev(incident) / (electronKev * alpha)) : NAN;
                     item.valence.append(valence);
-                    residual[i] -= valence;
+                    item.hfCore.append(covered ? interpolate(it->coreEnergy, it->coreProfile, e[i],
+                                                            e[i] < 0 ? 0. : NAN) : NAN);
+                    const double observed = std::isfinite(correction) && correction > 0
+                        ? samples[i] * correction * item.scale : NAN;
+                    item.input.append(observed);
+                    residual.append(observed - valence);
                 }
                 item.fit = SpectrumProcessing::fit(e, residual, {false, settings.highResidual}, stop);
                 for (qsizetype i = 0; i < e.size(); ++i)
@@ -503,7 +804,7 @@ QMap<QString, ComptonTransfer> transferCompton(const ProcessedSpectrum &wide, co
             high.append(it.key());
     }
     ComptonResult reference;
-    const auto prepared = fitReference(wide, wide, high, settings, reference, stop);
+    const auto prepared = fitReference(wide, high, settings, reference, stop);
     QMap<QString, ComptonTransfer> transfers;
     for (const auto &label : labels) {
         const auto geometry = wide.geometry.value(label);
@@ -514,6 +815,7 @@ QMap<QString, ComptonTransfer> transferCompton(const ProcessedSpectrum &wide, co
         ComptonTransfer out;
         out.analyzerKev = geometry.analyzerKev;
         const auto &source = prepared.constFind(label)->normalizedWide;
+        const auto &energy = wide.energyForCrystal(label);
         for (double incident : incidentKev) {
             cancel(stop);
             if (!(std::isfinite(incident) && incident > 0))
@@ -523,7 +825,7 @@ QMap<QString, ComptonTransfer> transferCompton(const ProcessedSpectrum &wide, co
             if (!(std::isfinite(factor) && factor > 0))
                 fail(QCoreApplication::translate("ComptonProcessing", "重建通道的康普顿截面修正无效。"));
             out.correction.append(factor);
-            out.reference.append(interpolate(wide.energyEv, source, loss));
+            out.reference.append(interpolate(energy, source, loss));
             out.valence.append(valenceAt(reference, scattering.pz(incident),
                                          scattering.qKev(incident) / (electronKev * alpha)));
         }

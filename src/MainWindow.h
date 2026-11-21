@@ -71,8 +71,10 @@ class MainWindow : public QMainWindow {
 
   private:
     void buildUi();
+    void importDatabaseFiles();
     bool restartForLanguage(const QString &language);
     void openAutomaticRoi();
+    void convertTextRois();
     void showWorkspace(QWidget *page, const QString &title = {});
     void updateBrowserTitle();
     QTreeWidgetItem *fileRoot(const QString &file) const;

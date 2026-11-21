@@ -4,6 +4,7 @@
 #include "SpectrumFixture.h"
 #include "SpectrumProcessing.h"
 #include <QCoreApplication>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
@@ -97,6 +98,25 @@ int main(int argc, char **argv) {
                 expect(compared > 100 && maxError < 1e-10 && model.analyzerKev == geometry.analyzerKev,
                        "transferred valence matches spectroscopy on the original incident grid");
             }
+            ProcessedSpectrum independent = stitched;
+            independent.energyEv = {wide.energyEv.first() - 5., 461.1, 470.1, 480.1, 490.1, 505.1,
+                                    wide.energyEv.last() + 5.};
+            for (auto &row : independent.crystals)
+                row.fill(1., independent.energyEv.size());
+            auto nativeWide = wide;
+            for (auto it = nativeWide.crystals.cbegin(); it != nativeWide.crystals.cend(); ++it)
+                nativeWide.crystalEnergyEv.insert(it.key(), wide.energyEv);
+            nativeWide.energyEv.clear();
+            const auto separate = analyzeCompton(nativeWide, independent, settings, cancel);
+            const auto independentlyCorrected =
+                std::find_if(separate.crystals.cbegin(), separate.crystals.cend(),
+                             [](const ComptonCrystal &item) { return item.high; });
+            expect(independentlyCorrected != separate.crystals.cend() &&
+                       independentlyCorrected->fit.corrected.size() == independent.energyEv.size() &&
+                       std::isnan(independentlyCorrected->fit.corrected.first()) &&
+                       std::isnan(independentlyCorrected->fit.corrected.last()) &&
+                       std::isfinite(independentlyCorrected->fit.corrected[3]),
+                   "independent near-edge grids retain target points with no Compton correction outside wide coverage");
             return failures ? 1 : 0;
         }
         if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--real-elastic") {
@@ -398,10 +418,132 @@ int main(int argc, char **argv) {
                    direct.parameters.value("background_mode").toString() == "linear_only",
                "edge-only linear processing fits high-q and unknown-q crystals independently without a wide "
                "scan");
+        ProcessedSpectrum sampled;
+        sampled.crystalEnergyEv = {{"VB-A1", {0., 1., 2., 3., 4.}}, {"VB-A2", {.5, 1.5, 2.5, 3.5}}};
+        sampled.crystals = {{"VB-A1", {1., 2., 3., 4., 5.}}, {"VB-A2", {10., 12., 14., 16.}}};
+        const auto sum = SpectrumProcessing::selectSamples(sampled, {"VB-A1", "VB-A2"}, 0., 4.);
+        const auto within = SpectrumProcessing::selectSamples(sampled, {"VB-A1", "VB-A2"}, 1., 3.);
+        const auto single = SpectrumProcessing::selectSamples(sampled, {"VB-A1"}, 1., 3.);
+        expect(sum.energyEv == QVector<double>{1., 2., 3.} && sum.intensity == QVector<double>{13., 16., 19.} &&
+                   within.energyEv == QVector<double>{2.} && within.intensity == QVector<double>{16.} &&
+                   single.energyEv == QVector<double>{1., 2., 3.} && single.intensity == QVector<double>{2., 3., 4.},
+               "preview sums on shared coverage and uses only samples inside the selected energy interval");
+        sampled.intensityUnit = "counts";
+        sampled.sources = {"compton"};
+        ProcessedSpectrum detailed{{1.25, 2.25, 2.75},
+                                    {{"VB-A1", {60., 80., 100.}}, {"VB-A2", {120., 140., 160.}}},
+                                    "counts", {"near-a", "near-b"}};
+        detailed.geometry["VB-A1"].qMean = 4.;
+        const auto joined = SpectrumProcessing::spliceCompton(sampled, detailed, true, cancel);
+        const auto &joinedA = joined.crystals["VB-A1"];
+        expect(joined.energyEv == QVector<double>{0., .5, 1., 1.25, 2.25, 2.75, 3., 3.5, 4.} &&
+                   joinedA[0] == 1. && std::isnan(joinedA[1]) && joinedA[3] == 30. && joinedA[4] == 40. &&
+                   joinedA[5] == 50. && joinedA[6] == 4. && std::isnan(joinedA[7]) &&
+                   joined.pointSources["VB-A1"][3] == 1 && joined.pointSources["VB-A1"][6] == 0 &&
+                   joined.geometry.value("VB-A1").qMean == 4.,
+               "contained near-edge ranges replace coarse points while retaining distinct per-crystal energies");
+        detailed.energyEv = {7., 7.5, 8.};
+        const auto disjoint = SpectrumProcessing::spliceCompton(sampled, detailed, false, cancel);
+        expect(disjoint.energyEv == QVector<double>{0., .5, 1., 1.5, 2., 2.5, 3., 3.5, 4., 7., 7.5, 8.} &&
+                   disjoint.crystals["VB-A1"].last() == 100. && disjoint.crystals["VB-A2"].last() == 160.,
+               "disjoint ranges retain only measured energies and unnormalized intensity when requested");
+        detailed.energyEv = {3.25, 4., 5.};
+        const auto partial = SpectrumProcessing::spliceCompton(sampled, detailed, false, cancel);
+        expect(partial.energyEv == QVector<double>{0., .5, 1., 1.5, 2., 2.5, 3., 3.25, 4., 5.} &&
+                   partial.crystals["VB-A1"][8] == 80.,
+               "partially overlapping scans keep the near-edge points and the unoverlapped wide-scan tail");
         auto pearson = SpectrumProcessing::fit(energy, compton, {true, {{0, 10}}}, cancel);
         expect(close(pearson.centerEv, 4.2, 1e-5) && close(pearson.fwhmEv, 3.4, 1e-5) &&
                    close(pearson.exponent, 2.5, 1e-4) && close(pearson.corrected[42], 0, 1e-5),
                "Pearson VII fit recovers known Compton center, FWHM and shape");
+        auto withGap = line;
+        withGap[55] = NAN;
+        StagedBackgroundSettings plan;
+        plan.windows[int(BackgroundComponent::Linear)] = {{0, 10}};
+        plan.protectedWindows = {{4.8, 5.2}};
+        const auto protectedLine = fitBackgroundStages(plan, energy, withGap, {}, cancel);
+        expect(close(protectedLine.total.corrected[50], 13, 1e-9) &&
+                   std::isnan(protectedLine.total.background[55]) && std::isnan(protectedLine.total.corrected[55]),
+               "positive near-edge signal is excluded from the fit and masked samples stay masked");
+        plan.protectedWindows.clear();
+        plan.windows[int(BackgroundComponent::ComptonPeak)] = {{0, 10}};
+        QVector<double> reduced;
+        for (const double value : compton)
+            reduced.append(value - 3.);
+        const auto peakOnly = fitBackgroundComponent(BackgroundComponent::ComptonPeak, plan, energy, reduced, {}, cancel);
+        expect(close(peakOnly.peakHeight, 27, 1e-5) && close(peakOnly.centerEv, 4.2, 1e-5) &&
+                   close(peakOnly.corrected[0], 0, 1e-5),
+               "the Compton peak component has a fixed zero baseline");
+
+        plan.hfTable = temp.filePath("test-profiles.dat");
+        QFile hfTable(plan.hfTable);
+        if (!hfTable.open(QIODevice::WriteOnly))
+            throw std::runtime_error("could not write the synthetic HF table");
+        hfTable.write("#S 6 C\n#UOCCUP 2 2\n#UBIND 8 284\n#L pz total L1 K\n"
+                      "0 2 1 1\n1 1 .2 .8\n2 .6 .1 .5\n5 .2 .03 .17\n10 .05 .01 .04\n");
+        hfTable.close();
+        plan.composition = "C:1";
+        expect(backgroundHfShells(plan.hfTable, plan.composition).value("C:2").bindingEv == 284.,
+               "the selectable HF shell identifiers preserve the tabulated binding energies");
+        const auto builtinShells = backgroundHfShells({}, "O:2, Ni:1, Kr:1, K:1");
+        const auto selection = resolveHfShellSelection(builtinShells, {"O:K", "Ni:L2", "Ni:L3", "Kr:L23", "K:M4"});
+        expect(selection.identifiers == QStringList{"O:1", "Ni:3", "Kr:3", "Kr:4"} &&
+                   selection.missing == QStringList{"K:M4"} && builtinShells.value("Ni:3").edge == "L23",
+               "absorption edges resolve to the actual Biggs profiles, including combined and split spin-orbit shells");
+        expect(resolveHfShellSelection(builtinShells, {"Ni:3"}).identifiers == QStringList{"Ni:3"},
+               "legacy numbered selections remain valid");
+        plan.hfShells = {"C:K"};
+        plan.windows[int(BackgroundComponent::HfCore)] = {{350, 900}};
+        plan.windows[int(BackgroundComponent::Asymmetry)] = {{15, 180}};
+        const SpectrumGeometry geometry{5., 9.69, 60.};
+        QVector<double> broadEnergy, positive, odd;
+        for (int e = 0; e <= 1000; e += 5) {
+            broadEnergy.append(e);
+            positive.append(e == 500 ? NAN : 50.);
+            odd.append(e < 93 ? 10. : -10.);
+        }
+        const auto hfFit = fitBackgroundComponent(BackgroundComponent::HfCore, plan, broadEnergy, positive,
+                                                  geometry, cancel);
+        expect(hfFit.parameters.value("scale").toDouble() > 0. && hfFit.background[30] == 0. &&
+                   hfFit.background[80] > 0. && std::isnan(hfFit.background[100]) &&
+                   hfFit.parameters.value("resolved_shells").toObject().value("C:2") == "K",
+               "the custom table's named K shell drives the fit and its actual identifier is recorded");
+        const auto oddFit = fitBackgroundComponent(BackgroundComponent::Asymmetry, plan, broadEnergy, odd,
+                                                   geometry, cancel);
+        expect(oddFit.background[12] * oddFit.background[24] < 0.,
+               "the asymmetry correction is signed on opposite sides of the crystal's Compton center");
+        plan.hfShells.clear();
+        expect(throws([&] { fitBackgroundComponent(BackgroundComponent::HfCore, plan, broadEnergy, positive,
+                                                  geometry, cancel); }),
+               "HF fitting requires explicit shell selection");
+        const auto stagedPath = temp.filePath("staged-background.h5");
+        SpectrumProcessing::save(stagedPath, {energy, {{"A", withGap}}, "counts", {}},
+                                 {{"A", protectedLine.total}},
+                                 {{"linear", {{"A", protectedLine.total.background}}}});
+        ImagingH5 stagedFile(stagedPath);
+        const auto savedLine = stagedFile.read("/entry/spectrum/background_linear");
+        expect(close(savedLine[50], protectedLine.total.background[50]) && std::isnan(savedLine[55]),
+               "HDF5 export keeps each background component and its missing samples");
+        const auto textPath = temp.filePath("staged-background.txt");
+        const ProcessedSpectrum textSpectrum{energy, {{"A", withGap}}, "counts", {}};
+        const QMap<QString, CrystalBackground> textFits{{"A", protectedLine.total}};
+        const QMap<QString, QMap<QString, QVector<double>>> textComponents{
+            {"linear", {{"A", protectedLine.total.background}}}};
+        SpectrumProcessing::saveText(textPath, textSpectrum, textFits, textComponents);
+        QFile savedText(textPath);
+        if (!savedText.open(QIODevice::ReadOnly))
+            throw std::runtime_error("could not open the exported text spectrum");
+        const auto lines = savedText.readAll().split('\n');
+        savedText.close();
+        const auto signal = lines.value(51).split('\t'), gap = lines.value(56).split('\t');
+        expect(lines.size() == energy.size() + 2 &&
+                   lines.first() == "Energy Transfer (eV)\tA_input\tA_background_linear\tA_background_total\tA_corrected" &&
+                   signal.size() == 5 && signal.value(0).toDouble() == energy[50] &&
+                   signal.value(2).toDouble() == savedLine[50] && close(signal.value(4).toDouble(), 13.) &&
+                   gap == QList<QByteArray>{QByteArray::number(energy[55], 'g', 17), "nan", "nan", "nan", "nan"},
+               "text export preserves the energy grid, full-precision intensities, background columns and gaps");
+        expect(throws([&] { SpectrumProcessing::saveText(textPath, textSpectrum, textFits, textComponents); }),
+               "text export never overwrites an existing spectrum");
         auto correctedPath = temp.path() + "/corrected.h5";
         SpectrumProcessing::save(correctedPath, {energy, {{"A", line}, {"B", compton}}, "counts", {}},
                                  {{"A", linear}});

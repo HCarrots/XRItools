@@ -7,12 +7,18 @@
 #include "SpectroscopyDialog.h"
 #include "WorkflowUi.h"
 #include "WorkspacePaths.h"
+#include <QDirIterator>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSaveFile>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 
 namespace {
 constexpr int PathRole = Qt::UserRole, GroupRole = Qt::UserRole + 1, LoadedRole = Qt::UserRole + 2,
@@ -27,6 +33,42 @@ QString sourceFile(QTreeWidgetItem *item) {
 QString value(double v) {
     return QString::number(v, 'g', 10);
 }
+
+class DatabaseFileModel : public QAbstractTableModel {
+  public:
+    using QAbstractTableModel::QAbstractTableModel;
+
+    int rowCount(const QModelIndex &parent = {}) const override { return parent.isValid() ? 0 : int(paths.size()); }
+    int columnCount(const QModelIndex &parent = {}) const override { return parent.isValid() ? 0 : 2; }
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
+        if (orientation == Qt::Horizontal && role == Qt::DisplayRole)
+            return section == 0 ? QCoreApplication::translate("MainWindow", "文件名")
+                                : QCoreApplication::translate("MainWindow", "相对目录");
+        return {};
+    }
+    QVariant data(const QModelIndex &index, int role) const override {
+        if (!index.isValid())
+            return {};
+        const auto &path = paths.at(index.row());
+        if (role == Qt::ToolTipRole)
+            return QDir::toNativeSeparators(path);
+        if (role != Qt::DisplayRole)
+            return {};
+        const auto separator = path.lastIndexOf('/');
+        if (index.column() == 0)
+            return path.mid(separator + 1);
+        return separator < 0 ? QStringLiteral(".") : QDir::toNativeSeparators(path.left(separator));
+    }
+    void setPaths(QStringList files) {
+        beginResetModel();
+        paths = std::move(files);
+        endResetModel();
+    }
+    const QString &pathAt(int row) const { return paths.at(row); }
+
+  private:
+    QStringList paths;
+};
 } // namespace
 
 class SliceTableModel : public QAbstractTableModel {
@@ -141,6 +183,10 @@ void MainWindow::buildUi() {
             "HDF5 / NeXus (*.nxs *.h5 *.hdf5 *.hdf *.nx5);;All files (*)");
         openFiles(files);
     });
+    auto importDatabase =
+        fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("从数据库导入HDF5文件"));
+    importDatabase->setObjectName("ImportDatabaseHdfFiles");
+    connect(importDatabase, &QAction::triggered, this, &MainWindow::importDatabaseFiles);
     m_exportAction = fileMenu->addAction(WorkflowUi::icon("download"), tr("导出当前文件副本…"));
     m_exportAction->setObjectName("ExportHdfFile");
     connect(m_exportAction, &QAction::triggered, this, [this] {
@@ -192,6 +238,9 @@ void MainWindow::buildUi() {
     m_automaticRoiAction = roiMenu->addAction(tr("自动选取 ROI"));
     m_automaticRoiAction->setObjectName("DetectSpotRois");
     connect(m_automaticRoiAction, &QAction::triggered, this, &MainWindow::openAutomaticRoi);
+    auto textRoi = roiMenu->addAction(tr("文本式ROI转换"));
+    textRoi->setObjectName("ConvertTextRois");
+    connect(textRoi, &QAction::triggered, this, &MainWindow::convertTextRois);
     auto spectroscopyMenu = menuBar()->addMenu(tr("谱学(&S)"));
     auto spectrum = spectroscopyMenu->addAction(WorkflowUi::icon("chart-line"), tr("打开谱学处理工作区"));
     spectrum->setObjectName("SpectroscopyStep0");
@@ -467,6 +516,114 @@ void MainWindow::buildUi() {
     syncFiles();
 }
 
+void MainWindow::importDatabaseFiles() {
+    QSettings settings;
+    const auto root = QFileDialog::getExistingDirectory(
+        this, tr("选择数据库目录"), settings.value("databaseDirectory", settings.value("lastDirectory")).toString());
+    if (root.isEmpty())
+        return;
+    settings.setValue("databaseDirectory", root);
+
+    QDialog dialog(this);
+    dialog.setObjectName("DatabaseHdfFilePicker");
+    dialog.setWindowTitle(tr("从数据库导入HDF5文件"));
+    dialog.resize(820, 520);
+    auto layout = new QVBoxLayout(&dialog);
+    auto folder = new QLabel(QDir::toNativeSeparators(root));
+    folder->setTextFormat(Qt::PlainText);
+    folder->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(folder);
+    auto status = new QLabel(tr("正在搜索目录及其子目录…"));
+    status->setTextFormat(Qt::PlainText);
+    layout->addWidget(status);
+    auto list = new QTableView;
+    list->setObjectName("DatabaseHdfFiles");
+    auto model = new DatabaseFileModel(list);
+    list->setModel(model);
+    list->setSelectionBehavior(QAbstractItemView::SelectRows);
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    list->verticalHeader()->hide();
+    list->horizontalHeader()->resizeSection(0, 320);
+    list->horizontalHeader()->setStretchLastSection(true);
+    layout->addWidget(list);
+    auto progress = new QProgressBar;
+    progress->setObjectName("DatabaseImportProgress");
+    progress->setRange(0, 0);
+    layout->addWidget(progress);
+    auto buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto import = buttons->addButton(tr("导入所选文件"), QDialogButtonBox::AcceptRole);
+    import->setObjectName("ImportSelectedDatabaseFiles");
+    import->setEnabled(false);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(list->selectionModel(), &QItemSelectionModel::selectionChanged, &dialog,
+            [list, import] { import->setEnabled(list->selectionModel()->hasSelection()); });
+
+    QFutureWatcher<QStringList> scan;
+    const auto stop = std::make_shared<std::atomic_bool>(false);
+    connect(&scan, &QFutureWatcher<QStringList>::finished, &dialog, [&] {
+        model->setPaths(scan.result());
+        progress->hide();
+        const auto count = model->rowCount();
+        status->setText(count ? tr("找到 %1 个文件 · Ctrl 点选，Shift 连选").arg(count)
+                              : tr("此目录及其子目录没有找到 HDF5 或 NeXus 文件。"));
+    });
+    scan.setFuture(QtConcurrent::run([root, stop] {
+        const QDir base(root);
+        QDirIterator iterator(root, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+        const QStringList extensions{"h5", "hdf5", "hdf", "nxs", "nx5"};
+        QStringList files;
+        while (!stop->load() && iterator.hasNext()) {
+            const auto path = iterator.next();
+            if (extensions.contains(iterator.fileInfo().suffix(), Qt::CaseInsensitive))
+                files.append(base.relativeFilePath(path));
+        }
+        if (!stop->load())
+            files.sort(Qt::CaseInsensitive);
+        return files;
+    }));
+    QStringList files;
+    int completed = 0;
+    QTimer importTimer;
+    importTimer.setSingleShot(true);
+    importTimer.setInterval(20);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        if (!files.isEmpty())
+            return;
+        auto selection = list->selectionModel()->selectedRows();
+        if (selection.isEmpty())
+            return;
+        std::sort(selection.begin(), selection.end(),
+                  [](const QModelIndex &a, const QModelIndex &b) { return a.row() < b.row(); });
+        const QDir base(root);
+        for (const auto &index : selection)
+            files.append(base.filePath(model->pathAt(index.row())));
+        list->setEnabled(false);
+        import->setEnabled(false);
+        progress->setRange(0, int(files.size()));
+        progress->setValue(0);
+        progress->setFormat(tr("%v / %m 个文件"));
+        progress->show();
+        showWorkspace(m_browser);
+        status->setText(tr("正在导入 %1").arg(QFileInfo(files.first()).fileName()));
+        importTimer.start();
+    });
+    connect(&importTimer, &QTimer::timeout, &dialog, [&] {
+        openFile(files[completed]);
+        progress->setValue(++completed);
+        if (completed == files.size()) {
+            status->setText(tr("已处理 %1 个文件").arg(completed));
+            QTimer::singleShot(150, &dialog, &QDialog::accept);
+        } else {
+            status->setText(tr("正在导入 %1").arg(QFileInfo(files[completed]).fileName()));
+            importTimer.start();
+        }
+    });
+
+    dialog.exec();
+    stop->store(true);
+}
+
 void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     m_play->setChecked(false);
     if (auto editor = qobject_cast<RoiDialog *>(m_workspaces->currentWidget()); editor && editor != page) {
@@ -607,6 +764,62 @@ void MainWindow::openAutomaticRoi() {
         m_workspaces->addWidget(m_automaticRoi);
     }
     showWorkspace(m_automaticRoi, m_automaticRoi->windowTitle());
+}
+
+void MainWindow::convertTextRois() {
+    const auto title = tr("文本式ROI转换");
+    QSettings settings;
+    auto directory = settings.value("roi/textImportDirectory").toString();
+    if (directory.isEmpty()) {
+        const auto workspace = WorkspacePaths::root();
+        const auto legacy = workspace.isEmpty() ? QDir::current().filePath("workspace/ROI/old_ROI")
+                                                 : QDir(workspace).filePath("ROI/old_ROI");
+        directory = QFileInfo(legacy).isDir() ? legacy : settings.value("lastDirectory").toString();
+    }
+    const auto files = QFileDialog::getOpenFileNames(this, tr("选择一个或多个文本 ROI 表"), directory,
+                                                    tr("文本 ROI (*.txt *.tsv)"));
+    if (files.isEmpty())
+        return;
+    const auto first = QFileInfo(files.first());
+    settings.setValue("roi/textImportDirectory", first.absolutePath());
+
+    QVector<QSize> sizes{{516, 516}, {256, 256}};
+    const QStringList detectors{"D_LAMBDA", "D_MINIPIX"};
+    for (int i = 0; !m_file.isEmpty() && i < detectors.size(); ++i) {
+        try {
+            const auto shape = HdfFile::inspect(m_file, "/entry/data/" + detectors[i]).dims;
+            if (shape.size() == 3 && shape[1] > 0 && shape[2] > 0 && shape[1] <= 100000 && shape[2] <= 100000)
+                sizes[i] = QSize(int(shape[2]), int(shape[1]));
+        } catch (const std::exception &) {
+            // A detector missing from the active file keeps the standard detector size.
+        }
+    }
+    try {
+        QStringList notes;
+        const auto bytes = CrystalRois::convertTextFiles(files, sizes, &notes);
+        const auto path = WorkspacePaths::saveFile(
+            this, WorkspacePaths::Workflow::Roi, WorkspacePaths::Kind::Config, first.fileName(), title,
+            "converted.roi.json", "XRI ROI (*.roi.json)", first.absoluteDir().filePath("converted.roi.json"));
+        if (path.isEmpty())
+            return;
+        QSaveFile output(path);
+        if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit())
+            throw std::runtime_error(output.errorString().toStdString());
+        const auto crystals = QJsonDocument::fromJson(bytes).object().value("crystals").toArray();
+        const auto valid = std::count_if(crystals.cbegin(), crystals.cend(), [](const QJsonValue &entry) {
+            return entry.toObject().value("state") == "valid";
+        });
+        QMessageBox message(QMessageBox::Information, title,
+                            tr("已保存 ROI 配置 %1\n有效 %2 个，失效 %3 个。\nLAMBDA %4×%5，MINIPIX %6×%7")
+                                .arg(QDir::toNativeSeparators(path)).arg(valid).arg(crystals.size() - valid)
+                                .arg(sizes[0].width()).arg(sizes[0].height())
+                                .arg(sizes[1].width()).arg(sizes[1].height()), QMessageBox::Ok, this);
+        if (!notes.isEmpty())
+            message.setDetailedText(notes.join('\n'));
+        message.exec();
+    } catch (const std::exception &error) {
+        QMessageBox::warning(this, title, QString::fromUtf8(error.what()));
+    }
 }
 
 void MainWindow::populate(QTreeWidgetItem *parent, const QString &path, int depth) {

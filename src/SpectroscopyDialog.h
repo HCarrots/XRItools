@@ -2,8 +2,10 @@
 #include "Spectroscopy.h"
 #include <QDialog>
 #include <QFutureWatcher>
+#include <QJsonArray>
 
 class QTabWidget;
+class QDir;
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
@@ -38,11 +40,10 @@ class SpectroscopyDialog : public QDialog {
     bool importConfiguration(const QString &path);
     bool saveConfiguration(const QString &path);
     bool loadRois(const QString &path);
+    bool addEdgeGroup(const QString &element, const QString &shell);
     void addScans(const QStringList &files);
     void runStep(int step);
-    void setAvailableFiles(const QStringList &files) {
-        m_availableFiles = files;
-    }
+    void setAvailableFiles(const QStringList &files);
     void useRoiDraft(const QString &file, const QString &path);
     const SpectrumResult &result() const {
         return m_result;
@@ -52,6 +53,25 @@ class SpectroscopyDialog : public QDialog {
     void roiRequested(const QString &file);
 
   private:
+    enum class EdgeStatus { Pending, Combined, Partial, Completed };
+    struct EdgeConfiguration {
+        QString elasticFile, roiFile, wideFile;
+        CrystalRois rois;
+        QVector<QSize> sizes;
+        QMap<int, SpectralSelection> masks;
+        QSet<int> exclusions;
+        QJsonObject parameters;
+        QJsonArray corrections;
+        QList<QPair<QString, bool>> scans;
+        QJsonValue batchTargets;
+    };
+    struct EdgeGroup {
+        QString id, name;
+        EdgeConfiguration config;
+        EdgeStatus status = EdgeStatus::Pending;
+        QJsonObject lastSaved;
+        QString targetElement, targetShell;
+    };
     struct Work {
         ElasticCalibration masks, calibration;
         QVector<SpectrumScan> scans;
@@ -60,8 +80,23 @@ class SpectroscopyDialog : public QDialog {
     };
     SpectrumSettings settings() const;
     QMap<QString, QWidget *> configurationFields() const;
+    EdgeConfiguration captureEdgeConfiguration() const;
+    EdgeConfiguration readEdgeConfiguration(const QJsonObject &, const QDir &) const;
+    QJsonObject writeEdgeConfiguration(const EdgeConfiguration &) const;
+    void applyEdgeConfiguration(const EdgeConfiguration &);
+    bool validEdgeName(const QString &name, int except = -1) const;
+    void chooseNewEdgeGroup();
+    void switchEdgeGroup(int index);
+    void refreshEdgeGroups();
+    void chooseEdgeHfShells();
+    void setEdgeStatus(EdgeStatus);
+    void refreshExportIdentity();
+    QString sampleStem() const;
+    QString resultStem() const;
+    QJsonObject edgeIdentity() const;
+    static QString edgeStatusKey(EdgeStatus);
     void buildUi();
-    void invalidate(int stage);
+    void invalidate(int stage, bool preserveEdgeStatus = false);
     void refreshState();
     void refreshActions();
     void advanceToPage(int target);
@@ -92,12 +127,16 @@ class SpectroscopyDialog : public QDialog {
     int m_job = 0;
     int m_nextPage = -1;
     QStringList m_availableFiles;
+    QList<EdgeGroup> m_edgeGroups;
+    EdgeConfiguration m_edgeDraft;
+    int m_activeEdge = -1;
     QPair<QString, QString> m_pendingRoi;
     QPushButton *m_nextButton = nullptr, *m_previousButton = nullptr;
     QPushButton *m_fitElasticButton = nullptr;
     QDoubleSpinBox *m_glitchDrop = nullptr;
     QTabWidget *m_tabs = nullptr;
-    QLineEdit *m_elasticFile = nullptr, *m_roiPath = nullptr;
+    QLineEdit *m_elasticFile = nullptr, *m_roiPath = nullptr, *m_sampleName = nullptr;
+    QLineEdit *m_hfTable = nullptr, *m_hfComposition = nullptr, *m_hfShells = nullptr;
     QComboBox *m_elasticEnergy = nullptr, *m_xrsEnergy = nullptr, *m_elasticI0 = nullptr, *m_xrsI0 = nullptr,
               *m_model = nullptr;
     QCheckBox *m_normalizeElastic = nullptr, *m_normalizeXrs = nullptr, *m_repair = nullptr,
@@ -106,6 +145,9 @@ class SpectroscopyDialog : public QDialog {
                    *m_r2 = nullptr;
     QSpinBox *m_roiSize = nullptr;
     QListWidget *m_files = nullptr;
+    QTableWidget *m_edgeTable = nullptr;
+    QPushButton *m_newEdge = nullptr, *m_renameEdge = nullptr, *m_removeEdge = nullptr,
+                *m_addScans = nullptr, *m_removeScans = nullptr, *m_saveConfig = nullptr;
     QTableWidget *m_corrections = nullptr, *m_fits = nullptr, *m_inclusion = nullptr;
     QComboBox *m_imageSource = nullptr, *m_elasticView = nullptr, *m_scanChoice = nullptr,
               *m_crystalChoice = nullptr, *m_resultChoice = nullptr;

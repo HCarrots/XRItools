@@ -1,9 +1,107 @@
 #include "CrystalRoi.h"
 #include <QCoreApplication>
+#include <QFile>
+#include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
+#include <QTextStream>
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <stdexcept>
+
+namespace {
+struct TextRoi {
+    QString id, label, location;
+    std::array<int, 4> bounds{};
+    bool enabled = true;
+    bool empty = false;
+};
+
+QStringList textColumns(const QString &line) {
+    auto fields = line.contains('\t') ? line.split('\t') : line.simplified().split(' ');
+    for (auto &field : fields)
+        field = field.trimmed();
+    return fields;
+}
+
+QVector<TextRoi> readTextRois(const QString &path) {
+    const auto fail = [&](int line, const QString &reason) {
+        throw std::runtime_error(
+            QString("%1:%2 · %3").arg(QFileInfo(path).fileName()).arg(line).arg(reason).toStdString());
+    };
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        fail(1, file.errorString());
+    QTextStream input(&file);
+    const auto header = textColumns(input.readLine());
+    for (const auto *column : {"roi_label", "x1", "x2", "y1", "y2"}) {
+        if (header.count(column) != 1)
+            fail(1, QCoreApplication::translate("CrystalRoi", "缺少或重复的文本 ROI 列 %1。").arg(column));
+    }
+
+    QVector<TextRoi> rows;
+    int line = 1;
+    while (!input.atEnd()) {
+        const auto text = input.readLine();
+        ++line;
+        if (text.trimmed().isEmpty())
+            continue;
+        auto fields = textColumns(text);
+        QString id;
+        if (fields.size() == header.size() + 1 && header.first() == "roi_label")
+            id = fields.takeFirst();
+        else if (header.first().isEmpty() || header.first() == "id" || header.first() == "index")
+            id = fields.value(0);
+        if (fields.size() != header.size())
+            fail(line, QCoreApplication::translate("CrystalRoi", "文本 ROI 列数与表头不一致。"));
+        const auto field = [&](const QString &name) { return fields.value(header.indexOf(name)); };
+        const auto integer = [&](const QString &name, bool optional = false) {
+            const auto value = field(name);
+            if (optional && value.isEmpty())
+                return 0;
+            bool ok;
+            const int n = value.toInt(&ok);
+            if (!ok || n < -100000 || n > 100000)
+                fail(line, QCoreApplication::translate("CrystalRoi", "文本 ROI 列 %1 须为有效整数。").arg(name));
+            return n;
+        };
+        TextRoi roi;
+        roi.id = id;
+        roi.label = field("roi_label").toUpper();
+        roi.location = QString("%1:%2").arg(QFileInfo(path).fileName()).arg(line);
+        const int x1 = integer("x1"), x2 = integer("x2"), y1 = integer("y1"), y2 = integer("y2");
+        roi.empty = x1 == 0 && x2 == 0 && y1 == 0 && y2 == 0;
+        if (!roi.empty && (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1))
+            fail(line, QCoreApplication::translate("CrystalRoi", "文本 ROI 原始矩形无效。"));
+        const int dx = integer("x_shift", true), dy = integer("y_shift", true);
+        const int ex = integer("x_expand", true), ey = integer("y_expand", true);
+        roi.bounds = {x1 + dx - ex, x2 + dx + ex, y1 + dy - ey, y2 + dy + ey};
+        const auto add = field("add").toLower();
+        if (!add.isEmpty() && add != "0" && add != "1" && add != "false" && add != "true")
+            fail(line, QCoreApplication::translate("CrystalRoi", "文本 ROI 的 add 值无效。"));
+        roi.enabled = add != "0" && add != "false";
+        rows.append(std::move(roi));
+    }
+    if (rows.isEmpty())
+        fail(1, QCoreApplication::translate("CrystalRoi", "文本 ROI 没有数据行。"));
+    return rows;
+}
+
+bool hasLegacyVuLayout(const QVector<TextRoi> &rows) {
+    const auto has = [&](const char *id, const char *label, bool empty) {
+        return std::any_of(rows.cbegin(), rows.cend(), [&](const TextRoi &r) {
+            return r.id == QString::fromLatin1(id) && r.label == QString::fromLatin1(label) && r.empty == empty;
+        });
+    };
+    // This legacy layout is documented in docs/imaging-migration.md.
+    return has("32", "VU-B3", false) && has("35", "VU-C3", false) && has("38", "VU-C3", false) &&
+           has("41", "VU-E3", false) && (has("31", "VU-A3", true) || has("44", "VU-A3", true));
+}
+} // namespace
 
 QVector<QPoint> CrystalRoi::pixels() const {
     if (!mask.isEmpty())
@@ -95,6 +193,61 @@ int CrystalRois::count(RoiState s) const {
         if (r.state == s)
             ++n;
     return n;
+}
+
+QByteArray CrystalRois::convertTextFiles(const QStringList &files, const QVector<QSize> &sizes, QStringList *notes) {
+    const auto tr = [](const char *text) { return QCoreApplication::translate("CrystalRoi", text); };
+    if (files.isEmpty() || sizes.size() != 2)
+        throw std::runtime_error(tr("请选择文本 ROI，并提供两台探测器的尺寸。").toStdString());
+    CrystalRois converted;
+    QHash<QString, int> indices;
+    for (int i = 0; i < converted.items().size(); ++i) {
+        indices.insert(converted.items()[i].label, i);
+        converted.invalidate(i);
+    }
+
+    QStringList messages;
+    QSet<int> mapped;
+    for (const auto &file : files) {
+        const auto rows = readTextRois(file);
+        const bool legacyVuLayout = hasLegacyVuLayout(rows);
+        for (const auto &roi : rows) {
+            auto label = roi.label;
+            if (legacyVuLayout && roi.id == "35" && roi.label == "VU-C3") {
+                label = "VU-A3";
+                messages.append(tr("%1 · 按旧成像映射将编号 35 的 VU-C3 修正为 VU-A3。").arg(roi.location));
+            }
+            const int index = indices.value(label, -1);
+            if (index < 0)
+                throw std::runtime_error(tr("%1 · 无法识别晶体 %2。").arg(roi.location, label).toStdString());
+            if (roi.empty)
+                continue;
+            if (mapped.contains(index))
+                throw std::runtime_error(tr("%1 · 晶体 %2 有多个非空 ROI，请先核对编号。")
+                                             .arg(roi.location, label).toStdString());
+            mapped.insert(index);
+            const QSize size = sizes[index < 60 ? 0 : 1];
+            const auto [x1, sourceX2, y1, sourceY2] = roi.bounds;
+            const int x2 = std::min(sourceX2, size.width()), y2 = std::min(sourceY2, size.height());
+            if (x1 < 0 || y1 < 0 || x2 <= x1 || y2 <= y1 ||
+                !converted.assign(index, QRect(x1, y1, x2 - x1, y2 - y1), size))
+                throw std::runtime_error(tr("%1 · 晶体 %2 的 ROI 无可用探测器范围。")
+                                             .arg(roi.location, label).toStdString());
+            if (x2 != sourceX2 || y2 != sourceY2)
+                messages.append(tr("%1 · %2 的矩形上限从 (%3, %4) 截为 (%5, %6)。")
+                                    .arg(roi.location, label).arg(sourceX2).arg(sourceY2).arg(x2).arg(y2));
+            if (!roi.enabled)
+                converted.invalidate(index);
+        }
+    }
+    if (converted.count(RoiState::Valid) == 0)
+        throw std::runtime_error(tr("文本 ROI 中没有可用晶体。").toStdString());
+    auto obj = QJsonDocument::fromJson(converted.serialize({}, sizes)).object();
+    obj["legacy_source_files"] = QJsonArray::fromStringList(files);
+    obj["legacy_conversion_notes"] = QJsonArray::fromStringList(messages);
+    if (notes)
+        *notes = messages;
+    return QJsonDocument(obj).toJson();
 }
 QByteArray CrystalRois::serialize(const QString &source, const QVector<QSize> &sizes) const {
     QJsonArray geometry, items;

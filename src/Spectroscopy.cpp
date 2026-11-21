@@ -564,7 +564,7 @@ QMap<QString, double> Spectroscopy::readAngles(const QString &file) {
     }
     return result;
 }
-static double analyzerAngle(const QString &label, double angle, double pitch) {
+double Spectroscopy::analyzerAngle(const QString &label, double angle, double pitch) {
     const QString module = label.section('-', 0, 0), crystal = label.section('-', 1, 1);
     if (crystal.size() != 2 || crystal[0] < 'A' || crystal[0] > 'E' || crystal[1] < '1' || crystal[1] > '3')
         return NAN;
@@ -705,7 +705,7 @@ SpectrumResult Spectroscopy::combine(const SpectrumSettings &s, const ElasticCal
 
 bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &s,
                               const ElasticCalibration &c, const QVector<SpectrumScan> &scans,
-                              const SpectrumResult &result, QString *error) {
+                              const SpectrumResult &result, QString *error, const QJsonObject &identity) {
     QString staging;
     try {
         if (result.total.isEmpty())
@@ -770,6 +770,7 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
         }
         write("spectrum_all_data.txt", table(allHeaders, all));
         auto hdfSpectrum = SpectrumProcessing::fromResult(result, c.adjusted, s.normalizeXrs);
+        hdfSpectrum.processing = identity;
         for (const auto &scan : scans)
             hdfSpectrum.sources.append(scan.file);
         SpectrumProcessing::save(staging + "/spectra.h5", hdfSpectrum);
@@ -854,6 +855,8 @@ bool Spectroscopy::saveResult(const QString &directory, const SpectrumSettings &
                          {"combination", "linear interpolation on common range; sum over scans and crystals, "
                                          "no averaging or extrapolation"},
                          {"scans", records}};
+        for (auto it = identity.constBegin(); it != identity.constEnd(); ++it)
+            info.insert(it.key(), it.value());
         auto infoBytes = QJsonDocument(info).toJson();
         write("spectrum_info.json", infoBytes);
         write("spectrum_info.txt", infoBytes);

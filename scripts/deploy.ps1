@@ -60,6 +60,9 @@ Copy-Item -LiteralPath "$projectRoot\third_party\eigen3\COPYING.MPL2", "$project
 $lucideNotices = Join-Path $OutputDirectory 'licenses\lucide'
 New-Item -ItemType Directory -Path $lucideNotices -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot\assets\lucide\LICENSE", "$projectRoot\assets\lucide\LICENSE.feather" -Destination $lucideNotices -Force
+$dabaxNotices = Join-Path $OutputDirectory 'licenses\dabax'
+New-Item -ItemType Directory -Path $dabaxNotices -Force | Out-Null
+Copy-Item -LiteralPath "$projectRoot\third_party\dabax\LICENSE", "$projectRoot\third_party\dabax\xraylib-LICENSE" -Destination $dabaxNotices -Force
 $imagingDocs = Join-Path $OutputDirectory 'docs'
 New-Item -ItemType Directory -Path $imagingDocs -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot\docs\imaging-migration.md", "$projectRoot\docs\imaging-comparison.json" -Destination $imagingDocs -Force

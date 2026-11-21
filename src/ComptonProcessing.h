@@ -1,7 +1,44 @@
 #pragma once
 #include "SpectrumProcessing.h"
+#include <array>
 
 using SpectrumWindows = QVector<QPair<double, double>>;
+enum class BackgroundComponent { Linear, HfCore, ComptonPeak, Asymmetry, Count };
+inline constexpr int backgroundComponentCount = int(BackgroundComponent::Count);
+struct StagedBackgroundSettings {
+    std::array<SpectrumWindows, backgroundComponentCount> windows;
+    SpectrumWindows protectedWindows;
+    QString hfTable, composition;
+    QStringList hfShells;
+    double asymmetryRise = 1., asymmetryDecay = 1.;
+};
+struct StagedSpectrumFit {
+    QMap<BackgroundComponent, CrystalBackground> terms;
+    CrystalBackground total;
+};
+struct StagedBackgroundResult {
+    QMap<QString, StagedSpectrumFit> spectra;
+    QMap<QString, QString> failures;
+    QJsonObject parameters;
+};
+QString backgroundComponentKey(BackgroundComponent);
+QString effectiveHfTable(const QString &path);
+QStringList backgroundHfShellSelection(const QString &text);
+struct HfShellInfo {
+    double bindingEv;
+    QString edge;
+};
+struct HfShellSelection {
+    QStringList identifiers, missing;
+};
+QMap<QString, HfShellInfo> backgroundHfShells(const QString &table, const QString &composition);
+HfShellSelection resolveHfShellSelection(const QMap<QString, HfShellInfo> &, const QStringList &);
+CrystalBackground fitBackgroundComponent(BackgroundComponent, const StagedBackgroundSettings &,
+                                         const QVector<double> &energy, const QVector<double> &residual,
+                                         SpectrumGeometry, const std::atomic_bool &stop);
+StagedSpectrumFit fitBackgroundStages(const StagedBackgroundSettings &, const QVector<double> &energy,
+                                      const QVector<double> &input, SpectrumGeometry, const std::atomic_bool &stop);
+CrystalBackground sumBackground(const QVector<double> &input, const QMap<BackgroundComponent, CrystalBackground> &);
 struct ComptonSettings {
     double highQMin = 9.5, coreScale = 1., valenceCutoffEv = 20.;
     QString hfTable, composition;
@@ -26,7 +63,7 @@ struct ComptonTransfer {
     double analyzerKev = NAN;
 };
 
-ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpectrum &stitched,
+ComptonResult analyzeCompton(const ProcessedSpectrum &wide, const ProcessedSpectrum &target,
                              const ComptonSettings &, const std::atomic_bool &stop);
 ComptonResult analyzeLinear(const ProcessedSpectrum &, const SpectrumWindows &, const std::atomic_bool &stop);
 ComptonTransfer transferCompton(const ProcessedSpectrum &wide, const QString &label,

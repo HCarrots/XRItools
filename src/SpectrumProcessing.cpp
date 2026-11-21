@@ -6,9 +6,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QTemporaryFile>
 #include <QTextStream>
 #include <QUuid>
 #include <algorithm>
+#include <limits>
 #include <numeric>
 
 namespace {
@@ -269,6 +271,213 @@ ProcessedSpectrum SpectrumProcessing::load(const QString &path, const SpectrumHd
     return result;
 }
 
+ProcessedSpectrum SpectrumProcessing::loadWideReference(const QString &path, const SpectrumHdfLayout &layout,
+                                                        const WideScanCalibration *inputs,
+                                                        const std::atomic_bool &stop) {
+    const auto suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == "txt" || suffix == "tsv")
+        return load(path, layout);
+    bool raw;
+    {
+        const ImagingH5 file(path);
+        const bool detectors = file.contains("/entry/data/D_LAMBDA") || file.contains("/entry/data/D_MINIPIX");
+        raw = detectors &&
+              !(file.contains(layout.energy) && file.contains(layout.labels) && file.contains(layout.intensity));
+    }
+    if (!raw)
+        return load(path, layout);
+    if (!inputs)
+        fail(QCoreApplication::translate("SpectrumProcessing", "读取原始宽谱前，请先完成第 3 步弹性标定。"));
+
+    const auto &settings = inputs->settings;
+    const auto &calibration = inputs->calibration;
+    const auto scans = Spectroscopy::extract(settings, calibration, {path}, stop);
+    const auto &scan = scans.first();
+    const auto &incident = scan.energyKev;
+    const bool descending = incident.first() > incident.last();
+    auto angles = inputs->angles;
+    if (angles.isEmpty())
+        angles = settings.angleSource == 2 ? settings.angles
+            : Spectroscopy::readAngles(settings.angleSource == 0 ? settings.elasticFile : path);
+
+    ProcessedSpectrum out;
+    out.sources = {path};
+    out.intensityUnit = settings.normalizeXrs ? "Intensity / |I0|" : "Counts";
+    for (qsizetype i = 0; i < calibration.fits.size(); ++i) {
+        checkCancelled(stop);
+        const auto &roi = calibration.adjusted.items()[i];
+        const auto &fit = calibration.fits[i];
+        const auto module = roi.label.section('-', 0, 0);
+        if (!fit.accepted || settings.excludedCrystals.contains(int(i)) || !settings.modules.contains(module) ||
+            (!inputs->labels.isEmpty() && !inputs->labels.contains(roi.label)))
+            continue;
+        auto values = settings.useFilter ? scan.filtered[i] : scan.raw[i];
+        auto &energy = out.crystalEnergyEv[roi.label];
+        energy.reserve(incident.size());
+        for (double sample : incident)
+            energy.append(1000. * (sample - fit.centerKev));
+        if (descending) {
+            std::reverse(energy.begin(), energy.end());
+            std::reverse(values.begin(), values.end());
+        }
+        out.crystals.insert(roi.label, std::move(values));
+        const double angle = angles.value(module, NAN);
+        double q = 0.;
+        for (double sample : incident)
+            q += Spectroscopy::momentum(roi.label, angle, sample, fit.centerKev, settings).first;
+        const double scattering = Spectroscopy::analyzerAngle(roi.label, angle, settings.modulePitchDegrees);
+        constexpr double radToDeg = 180. / 3.14159265358979323846;
+        out.geometry.insert(roi.label, {q / incident.size(), fit.centerKev, scattering * radToDeg});
+    }
+    if (out.crystals.isEmpty())
+        fail(QCoreApplication::translate("SpectrumProcessing", "原始宽谱没有通过当前 ROI 和弹性标定的晶体。"));
+    return out;
+}
+
+SpectrumSamples SpectrumProcessing::selectSamples(const ProcessedSpectrum &spectrum, const QStringList &labels,
+                                                  double lo, double hi) {
+    if (labels.isEmpty() || lo >= hi)
+        return {};
+    const auto &grid = spectrum.energyForCrystal(labels.first());
+    double start = lo, end = hi;
+    for (const auto &label : labels) {
+        const auto entry = spectrum.crystals.constFind(label);
+        const auto &axis = spectrum.energyForCrystal(label);
+        if (entry == spectrum.crystals.cend() || axis.isEmpty() || entry->size() != axis.size())
+            return {};
+        const auto first = std::lower_bound(axis.cbegin(), axis.cend(), lo);
+        const auto last = std::upper_bound(first, axis.cend(), hi);
+        if (first == last)
+            return {};
+        start = std::max(start, *first);
+        end = std::min(end, *(last - 1));
+    }
+    if (start > end)
+        return {};
+    const auto first = std::lower_bound(grid.cbegin(), grid.cend(), start) - grid.cbegin();
+    const auto last = std::upper_bound(grid.cbegin(), grid.cend(), end) - grid.cbegin();
+    SpectrumSamples out{grid.mid(first, last - first), {}};
+    if (labels.size() == 1) {
+        out.intensity = spectrum.crystals.value(labels.first()).mid(first, last - first);
+        return out;
+    }
+
+    out.intensity.fill(0., out.energyEv.size());
+    for (const auto &label : labels) {
+        const auto &axis = spectrum.energyForCrystal(label);
+        const auto &values = spectrum.crystals.constFind(label).value();
+        if (axis == grid) {
+            for (qsizetype i = 0; i < out.energyEv.size(); ++i)
+                out.intensity[i] += values[first + i];
+            continue;
+        }
+        // For aggregates only, sample the first crystal's measured grid in the shared interval.
+        // Both bracketing points belong to the selected energy window.
+        const auto begin = std::lower_bound(axis.cbegin(), axis.cend(), lo);
+        auto right = std::lower_bound(begin, axis.cend(), start);
+        for (qsizetype i = 0; i < out.energyEv.size(); ++i) {
+            const double e = out.energyEv[i];
+            while (right != axis.cend() && *right < e)
+                ++right;
+            if (right == axis.cend())
+                break; // The shared interval has already been intersected above.
+            const auto index = right - axis.cbegin();
+            if (*right == e) {
+                out.intensity[i] += values[index];
+            } else if (right != begin && *right <= hi) {
+                const double fraction = (e - *(right - 1)) / (*right - *(right - 1));
+                out.intensity[i] += (1. - fraction) * values[index - 1] + fraction * values[index];
+            } else {
+                out.intensity[i] = NAN;
+            }
+        }
+    }
+    return out;
+}
+
+ProcessedSpectrum SpectrumProcessing::spliceCompton(const ProcessedSpectrum &wide, const ProcessedSpectrum &near,
+                                                    bool averageNear, const std::atomic_bool &stop) {
+    if (wide.intensityUnit != near.intensityUnit)
+        fail(QCoreApplication::translate("SpectrumProcessing", "宽谱与近边谱的强度单位不一致。"));
+    struct Sample {
+        double energy, intensity;
+        int source;
+    };
+    QMap<QString, QVector<Sample>> samples;
+    ProcessedSpectrum out;
+    const auto divisor = averageNear ? std::max<qsizetype>(1, near.sources.size()) : 1;
+    for (auto it = wide.crystals.cbegin(); it != wide.crystals.cend(); ++it) {
+        checkCancelled(stop);
+        const auto &label = it.key();
+        const auto edge = near.crystals.constFind(label);
+        if (edge == near.crystals.cend())
+            continue;
+        const auto &ew = wide.energyForCrystal(label), &en = near.energyForCrystal(label);
+        if (ew.size() != it->size() || en.size() != edge->size())
+            fail(QCoreApplication::translate("SpectrumProcessing", "晶体 %1 的强度长度与能量轴不一致。").arg(label));
+        const auto first = std::find_if(edge->cbegin(), edge->cend(), [](double value) { return std::isfinite(value); });
+        if (first == edge->cend() ||
+            std::none_of(it->cbegin(), it->cend(), [](double value) { return std::isfinite(value); }))
+            continue;
+        const auto last = std::find_if(edge->crbegin(), edge->crend(), [](double value) { return std::isfinite(value); });
+        const double lo = en[first - edge->cbegin()], hi = en[last.base() - edge->cbegin() - 1];
+        auto &row = samples[label];
+        auto addWide = [&](qsizetype i) {
+            if (std::isfinite((*it)[i]))
+                row.append({ew[i], (*it)[i], 0});
+        };
+        const auto lower = std::lower_bound(ew.cbegin(), ew.cend(), lo - energyTolerance) - ew.cbegin();
+        const auto upper = std::upper_bound(ew.cbegin(), ew.cend(), hi + energyTolerance) - ew.cbegin();
+        for (qsizetype i = 0; i < lower; ++i)
+            addWide(i);
+        for (qsizetype i = 0; i < en.size(); ++i)
+            if (std::isfinite((*edge)[i]))
+                row.append({en[i], (*edge)[i] / divisor, 1});
+        for (qsizetype i = upper; i < ew.size(); ++i)
+            addWide(i);
+        if (out.energyEv.size() + row.size() > maxValues)
+            fail(QCoreApplication::translate("SpectrumProcessing", "拼接后的能量点或晶体数超出支持范围。"));
+        for (const auto &sample : row)
+            out.energyEv.append(sample.energy);
+
+        const auto fallback = near.geometry.value(label);
+        auto geometry = wide.geometry.value(label);
+        if (!(geometry.qMean > 0.))
+            geometry.qMean = fallback.qMean;
+        if (!(geometry.analyzerKev > 0.))
+            geometry.analyzerKev = fallback.analyzerKev;
+        if (!(geometry.angleDeg > 0. && geometry.angleDeg <= 180.))
+            geometry.angleDeg = fallback.angleDeg;
+        out.geometry.insert(label, geometry);
+    }
+    if (samples.isEmpty())
+        fail(QCoreApplication::translate("SpectrumProcessing", "宽谱与近边谱没有同时含有效数据的同名晶体。"));
+    std::sort(out.energyEv.begin(), out.energyEv.end());
+    out.energyEv.erase(std::unique(out.energyEv.begin(), out.energyEv.end()), out.energyEv.end());
+    const auto size = out.energyEv.size();
+    if (size < 2 || size > maxPoints || samples.size() > maxCrystals || size * samples.size() > maxValues)
+        fail(QCoreApplication::translate("SpectrumProcessing", "拼接后的能量点或晶体数超出支持范围。"));
+    for (auto it = samples.cbegin(); it != samples.cend(); ++it) {
+        checkCancelled(stop);
+        QVector<double> row(size, NAN);
+        QVector<int> origins(size, 0);
+        auto target = out.energyEv.cbegin();
+        for (const auto &sample : it.value()) {
+            target = std::lower_bound(target, out.energyEv.cend(), sample.energy);
+            const auto index = target - out.energyEv.cbegin();
+            row[index] = sample.intensity;
+            origins[index] = sample.source;
+        }
+        out.crystals.insert(it.key(), std::move(row));
+        out.pointSources.insert(it.key(), std::move(origins));
+    }
+    out.intensityUnit = wide.intensityUnit;
+    out.sources = {wide.sources.join(" | "), near.sources.join(" | ")};
+    out.processing = {{"compton_splice", "near_edge_replaces_overlap_without_interpolation"},
+                      {"near_edge_scan_divisor", double(divisor)}};
+    return out;
+}
+
 ProcessedSpectrum SpectrumProcessing::replaceEdges(const ProcessedSpectrum &wide,
                                                    const QVector<ProcessedSpectrum> &edges,
                                                    const std::atomic_bool &stop) {
@@ -448,11 +657,12 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         const double height = *extrema.second - *extrema.first;
         if (height < 1e-10)
             fail(QCoreApplication::translate("SpectrumProcessing", "所选区间没有可辨识的康普顿峰。"));
-        const Parameters lower{-INFINITY, 0., -1.5, std::log(1e-5), std::log(.51)};
-        const Parameters upper{INFINITY, 100., 1.5, std::log(5.), std::log(1000.)};
+        const Parameters lower{settings.zeroBaseline ? 0. : -INFINITY, 0., -1.5, std::log(1e-5), std::log(.51)};
+        const Parameters upper{settings.zeroBaseline ? 0. : INFINITY, 100., 1.5, std::log(5.), std::log(1000.)};
         for (double initialWidth : {.08, .25, .7}) {
             Parameters p;
-            p << *extrema.first, height, x[extrema.second - y.begin()], std::log(initialWidth), std::log(2.);
+            p << (settings.zeroBaseline ? 0. : *extrema.first), height, x[extrema.second - y.begin()],
+                std::log(initialWidth), std::log(2.);
             double error = squaredError(p), damping = 1e-3;
             for (int iteration = 0; iteration < 400; ++iteration) {
                 checkCancelled(stop);
@@ -464,7 +674,7 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
                     normal.noalias() += j * j.transpose();
                     gradient.noalias() += j * residual;
                 }
-                for (int k = 1; k < 5; ++k) {
+                for (int k = settings.zeroBaseline ? 0 : 1; k < 5; ++k) {
                     if ((p[k] <= lower[k] && gradient[k] < 0) || (p[k] >= upper[k] && gradient[k] > 0)) {
                         normal.row(k).setZero();
                         normal.col(k).setZero();
@@ -521,6 +731,9 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         result.fwhmEv = span * std::exp(best[3]);
         result.exponent = std::exp(best[4]);
         result.peakHeight = scale * best[1];
+    } else {
+        result.parameters["slope_per_ev"] = scale * slope / span;
+        result.parameters["intercept_at_zero"] = scale * (intercept - slope * origin / span);
     }
     for (qsizetype i = 0; i < energy.size(); ++i) {
         const double pos = (energy[i] - origin) / span;
@@ -532,7 +745,8 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
 }
 
 void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data,
-                              const QMap<QString, CrystalBackground> &backgrounds) {
+                              const QMap<QString, CrystalBackground> &backgrounds,
+                              const QMap<QString, QMap<QString, QVector<double>>> &components) {
     if (data.crystals.isEmpty() || data.energyEv.size() < 2)
         fail(QCoreApplication::translate("SpectrumProcessing", "没有可保存的谱学结果。"));
     if (QFileInfo::exists(path))
@@ -602,6 +816,11 @@ void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data
                     auto fit = backgrounds.constFind(label);
                     return fit == backgrounds.cend() ? QVector<double>(n, NAN) : fit->corrected;
                 });
+                for (auto term = components.cbegin(); term != components.cend(); ++term)
+                    matrix("background_" + term.key(), [&](const QString &label) {
+                        const auto row = term.value().constFind(label);
+                        return row == term.value().cend() ? QVector<double>(n, NAN) : *row;
+                    });
                 QJsonObject metadata;
                 for (auto fit = backgrounds.cbegin(); fit != backgrounds.cend(); ++fit) {
                     QJsonArray windows;
@@ -627,4 +846,71 @@ void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data
         QFile::remove(staging);
         throw;
     }
+}
+
+void SpectrumProcessing::saveText(const QString &path, const ProcessedSpectrum &data,
+                                  const QMap<QString, CrystalBackground> &backgrounds,
+                                  const QMap<QString, QMap<QString, QVector<double>>> &components) {
+    const auto count = data.energyEv.size();
+    if (data.crystals.isEmpty() || count < 2)
+        fail(QCoreApplication::translate("SpectrumProcessing", "没有可保存的谱学结果。"));
+    if (QFileInfo::exists(path))
+        fail(QCoreApplication::translate("SpectrumProcessing", "输出文件已存在，请使用新文件名。"));
+
+    QVector<QPair<QString, const QVector<double> *>> columns{{"Energy Transfer (eV)", &data.energyEv}};
+    for (auto input = data.crystals.cbegin(); input != data.crystals.cend(); ++input) {
+        const auto &label = input.key();
+        auto append = [&](const QString &field, const QVector<double> *samples) {
+            if (samples && samples->size() != count)
+                fail(QCoreApplication::translate("SpectrumProcessing", "晶体 %1 的强度长度与能量轴不一致。").arg(label));
+            columns.append({label + "_" + field, samples});
+        };
+        append("input", &input.value());
+        for (auto term = components.cbegin(); term != components.cend(); ++term) {
+            const auto row = term->constFind(label);
+            append("background_" + term.key(), row == term->cend() ? nullptr : &row.value());
+        }
+        const auto fit = backgrounds.constFind(label);
+        append("background_total", fit == backgrounds.cend() ? nullptr : &fit->background);
+        append("corrected", fit == backgrounds.cend() ? nullptr : &fit->corrected);
+    }
+
+    QTemporaryFile output(path + ".partial-XXXXXX");
+    auto writeError = [&] {
+        fail(QCoreApplication::translate("SpectrumProcessing", "无法完成文本文件写入：%1").arg(path));
+    };
+    if (!output.open())
+        writeError();
+    {
+        QTextStream stream(&output);
+        stream.setEncoding(QStringConverter::Utf8);
+        stream.setLocale(QLocale::c());
+        stream.setRealNumberPrecision(std::numeric_limits<double>::max_digits10);
+        for (qsizetype i = 0; i < columns.size(); ++i) {
+            if (i)
+                stream << '\t';
+            stream << columns[i].first;
+        }
+        stream << '\n';
+        for (qsizetype row = 0; row < count; ++row) {
+            for (qsizetype column = 0; column < columns.size(); ++column) {
+                if (column)
+                    stream << '\t';
+                const auto samples = columns[column].second;
+                const double value = samples ? (*samples)[row] : NAN;
+                if (std::isfinite(value))
+                    stream << value;
+                else
+                    stream << "nan";
+            }
+            stream << '\n';
+        }
+        stream.flush();
+        if (stream.status() != QTextStream::Ok || !output.flush())
+            writeError();
+    }
+    output.close();
+    if (!output.rename(path))
+        writeError();
+    output.setAutoRemove(false);
 }

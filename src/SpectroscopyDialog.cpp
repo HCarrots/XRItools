@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMetaProperty>
+#include <QUuid>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 
@@ -68,6 +69,30 @@ QVector<QSize> detectorSizes(const QString &elasticFile) {
 }
 QString absolutePath(const QDir &base, const QString &path) {
     return path.isEmpty() ? QString{} : QDir::cleanPath(base.absoluteFilePath(path));
+}
+QString fileToken(QString text, const QString &fallback) {
+    static const QRegularExpression unsupported("[^A-Za-z0-9_-]+");
+    static const QRegularExpression trim("_+$|^_+");
+    text = text.replace(unsupported, "_").left(40).remove(trim);
+    return text.isEmpty() ? fallback : text;
+}
+QStringList edgeElements() {
+    QFile table(effectiveHfTable({}));
+    if (!table.open(QIODevice::ReadOnly))
+        return {};
+    QTextStream stream(&table);
+    QStringList elements;
+    while (!stream.atEnd()) {
+        const auto line = stream.readLine().simplified();
+        if (line.startsWith("#S "))
+            elements.append(line.section(' ', -1));
+    }
+    elements.sort(Qt::CaseInsensitive);
+    return elements;
+}
+
+QString edgeGroupName(const QString &element, const QString &shell) {
+    return element + '_' + shell;
 }
 QMetaProperty configProperty(QWidget *editor) {
     if (auto combo = qobject_cast<QComboBox *>(editor)) {
@@ -161,6 +186,7 @@ SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *pare
         if (m_job == 2) {
             m_result = std::move(work.result);
             m_haveResult = true;
+            setEdgeStatus(EdgeStatus::Combined);
             refreshResult();
             m_tabs->setCurrentIndex(4);
             int count = 0;
@@ -209,9 +235,9 @@ void SpectroscopyDialog::buildUi() {
     m_tabs->setUsesScrollButtons(true);
     auto importConfig = WorkflowUi::button("folder-open", tr("载入已有方案…"));
     importConfig->setObjectName("ImportSpectrumConfig");
-    auto saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
-    saveConfig->setObjectName("SaveSpectrumConfig");
-    m_tabs->setCornerWidget(WorkflowUi::cornerTools({importConfig, saveConfig}));
+    m_saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
+    m_saveConfig->setObjectName("SaveSpectrumConfig");
+    m_tabs->setCornerWidget(WorkflowUi::cornerTools({importConfig, m_saveConfig}));
     connect(importConfig, &QPushButton::clicked, this, [this] {
         const auto path = QFileDialog::getOpenFileName(
             this, tr("载入已有方案"), WorkspacePaths::directory(Workflow::Spectroscopy, Kind::Config),
@@ -219,9 +245,10 @@ void SpectroscopyDialog::buildUi() {
         if (!path.isEmpty())
             importConfiguration(path);
     });
-    connect(saveConfig, &QPushButton::clicked, this, [this] {
-        const auto path = WorkspacePaths::saveFile(this, Workflow::Spectroscopy, Kind::Config, m_elasticFile->text(),
-                                                   tr("保存谱学配置"), "spectroscopy.config.json", "JSON (*.json)");
+    connect(m_saveConfig, &QPushButton::clicked, this, [this] {
+        const auto name = sampleStem() + "_spectroscopy_groups.config.json";
+        const auto path = WorkspacePaths::saveFile(this, Workflow::Spectroscopy, Kind::Config, {},
+                                                   tr("保存谱学配置"), name, "JSON (*.json)");
         if (!path.isEmpty())
             saveConfiguration(path);
     });
@@ -266,6 +293,35 @@ void SpectroscopyDialog::buildUi() {
     m_roiStatus = new QLabel;
     m_roiStatus->setWordWrap(true);
     fileForm->addRow(m_roiStatus);
+    m_hfComposition = new QLineEdit;
+    m_hfComposition->setObjectName("BackgroundHfComposition");
+    m_hfComposition->setPlaceholderText(tr("例如 Li:1, Ni:0.8, Co:0.1, Mn:0.1, O:2"));
+    fileForm->addRow(tr("元素与化学比"), m_hfComposition);
+    auto hfRow = new QWidget;
+    auto hfLayout = new QHBoxLayout(hfRow);
+    hfLayout->setContentsMargins(0, 0, 0, 0);
+    m_hfTable = new QLineEdit;
+    m_hfTable->setObjectName("BackgroundHfTable");
+    m_hfTable->setPlaceholderText(tr("内置默认表 · ComptonProfiles.dat"));
+    auto chooseTable = WorkflowUi::button("folder-open", tr("选择…"));
+    auto defaultTable = new QPushButton(tr("恢复默认"));
+    defaultTable->setObjectName("RestoreDefaultHfTable");
+    defaultTable->setAutoDefault(false);
+    defaultTable->setEnabled(false);
+    hfLayout->addWidget(m_hfTable, 1);
+    hfLayout->addWidget(chooseTable);
+    hfLayout->addWidget(defaultTable);
+    fileForm->addRow(tr("HF 壳层表"), hfRow);
+    connect(chooseTable, &QPushButton::clicked, this, [this] {
+        const auto path = QFileDialog::getOpenFileName(this, tr("选择 DABAX HF 壳层数据"),
+                                                       m_hfTable->text(), "DABAX (*.dat);;All files (*)");
+        if (!path.isEmpty())
+            m_hfTable->setText(path);
+    });
+    connect(defaultTable, &QPushButton::clicked, m_hfTable, &QLineEdit::clear);
+    connect(m_hfTable, &QLineEdit::textChanged, defaultTable, [defaultTable](const QString &path) {
+        defaultTable->setEnabled(!path.trimmed().isEmpty());
+    });
     connect(load, &QPushButton::clicked, this, [this] {
         auto path = QFileDialog::getOpenFileName(this, tr("载入共用 ROI 方案"),
                                                  WorkspacePaths::directory(Workflow::Roi, Kind::Config),
@@ -352,24 +408,105 @@ void SpectroscopyDialog::buildUi() {
 
     formLayout->addStretch();
     inputLayout->addWidget(scrollPanel(forms), 3);
-    auto scanGroup = new QGroupBox(tr("XRS 扫描（勾选参与本次提取的文件）"));
+    auto scanGroup = new QGroupBox(tr("XRS 扫描与元素分组"));
     auto sl = new QVBoxLayout(scanGroup);
+    auto sample = new QFormLayout;
+    m_sampleName = new QLineEdit;
+    m_sampleName->setObjectName("SpectroscopySampleName");
+    m_sampleName->setPlaceholderText(tr("留空时使用弹性扫描名"));
+    sample->addRow(tr("样品名称"), m_sampleName);
+    sl->addLayout(sample);
+
+    m_edgeTable = new QTableWidget(0, 3);
+    m_edgeTable->setObjectName("SpectroscopyEdgeGroups");
+    configureTable(m_edgeTable, {tr("元素边"), tr("已勾选 / 总数"), tr("状态")});
+    m_edgeTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_edgeTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_edgeTable->horizontalHeader()->setStretchLastSection(false);
+    m_edgeTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_edgeTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_edgeTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_edgeTable->setMinimumHeight(110);
+    m_edgeTable->setMaximumHeight(165);
+    sl->addWidget(m_edgeTable);
+    auto groupActions = new QHBoxLayout;
+    m_newEdge = WorkflowUi::button("plus", tr("新建分组…"));
+    m_newEdge->setObjectName("AddSpectroscopyEdgeGroup");
+    m_renameEdge = new QPushButton(tr("重命名…"));
+    m_removeEdge = new QPushButton(tr("删除分组…"));
+    for (auto action : {m_newEdge, m_renameEdge, m_removeEdge}) {
+        action->setAutoDefault(false);
+        groupActions->addWidget(action);
+    }
+    sl->addLayout(groupActions);
+    connect(m_sampleName, &QLineEdit::textChanged, this, &SpectroscopyDialog::refreshExportIdentity);
+    connect(m_edgeTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
+        switchEdgeGroup(row);
+    });
+    connect(m_newEdge, &QPushButton::clicked, this, &SpectroscopyDialog::chooseNewEdgeGroup);
+    connect(m_renameEdge, &QPushButton::clicked, this, [this] {
+        if (isBusy() || m_activeEdge < 0)
+            return;
+        bool accepted;
+        auto &group = m_edgeGroups[m_activeEdge];
+        const auto name = QInputDialog::getText(this, tr("重命名元素边分组"), tr("元素边名称，例如 O_K 或 Ni_L3"),
+                                                QLineEdit::Normal, group.name, &accepted).trimmed();
+        if (!accepted)
+            return;
+        if (!validEdgeName(name, m_activeEdge)) {
+            message(tr("请使用非空且未重复的分组名称。"), true);
+            return;
+        }
+        group.name = name;
+        refreshExportIdentity();
+        refreshEdgeGroups();
+    });
+    connect(m_removeEdge, &QPushButton::clicked, this, [this] {
+        if (isBusy() || m_activeEdge < 0)
+            return;
+        const auto name = m_edgeGroups[m_activeEdge].name;
+        if (QMessageBox::question(this, tr("删除元素边分组"),
+                                 tr("删除方案中的分组「%1」及其扫描配置？扫描和已保存的结果文件会保留。").arg(name),
+                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+        m_edgeGroups.removeAt(m_activeEdge);
+        m_activeEdge = -1;
+        applyEdgeConfiguration(m_edgeDraft);
+    });
+
+    auto hfShellForm = new QFormLayout;
+    auto hfShellRow = new QWidget;
+    auto hfShellLayout = new QHBoxLayout(hfShellRow);
+    hfShellLayout->setContentsMargins(0, 0, 0, 0);
+    m_hfShells = new QLineEdit;
+    m_hfShells->setObjectName("BackgroundHfShells");
+    m_hfShells->setPlaceholderText(tr("例如 O:K 或 C:1"));
+    m_hfShells->setToolTip(tr("新建分组时自动关联所选壳层。也可使用 HF 表中的编号，例如 C:1。"));
+    auto chooseShells = new QPushButton(tr("选壳层…"));
+    chooseShells->setObjectName("ChooseSpectrumHfShells");
+    chooseShells->setAutoDefault(false);
+    hfShellLayout->addWidget(m_hfShells, 1);
+    hfShellLayout->addWidget(chooseShells);
+    hfShellForm->addRow(tr("当前分组的扣除壳层"), hfShellRow);
+    sl->addLayout(hfShellForm);
+    connect(chooseShells, &QPushButton::clicked, this, &SpectroscopyDialog::chooseEdgeHfShells);
+
+    sl->addWidget(new QLabel(tr("当前分组的扫描")));
     m_files = new QListWidget;
     m_files->setObjectName("XrsFiles");
     m_files->setSelectionMode(QAbstractItemView::ExtendedSelection);
     sl->addWidget(m_files, 1);
     auto sb = new QHBoxLayout;
-    auto add = WorkflowUi::button("plus", tr("添加扫描…"));
-    auto remove = new QPushButton(tr("移除选中"));
-    sb->addWidget(add);
-    sb->addWidget(remove);
+    m_addScans = WorkflowUi::button("plus", tr("添加扫描…"));
+    m_removeScans = new QPushButton(tr("移除选中"));
+    sb->addWidget(m_addScans);
+    sb->addWidget(m_removeScans);
     sl->addLayout(sb);
-    auto scanNote = new QLabel(tr("支持多个 scan 文件。取消勾选可剔除整次扫描。grid_scan "
-                                  "使用成像流程。所有计算读取原文件，不修改源数据。"));
+    auto scanNote = new QLabel(tr("选择一个元素边分组，再勾选参与该组计算的扫描。"));
     scanNote->setWordWrap(true);
     sl->addWidget(scanNote);
     inputLayout->addWidget(scanGroup, 2);
-    connect(add, &QPushButton::clicked, this, [this] {
+    connect(m_addScans, &QPushButton::clicked, this, [this] {
         if (!m_availableFiles.isEmpty()) {
             QMenu menu(this);
             for (const auto &file : m_availableFiles) {
@@ -401,7 +538,9 @@ void SpectroscopyDialog::buildUi() {
                                                QFileInfo(m_elasticFile->text()).absolutePath(),
                                                "NeXus (*.nxs *.h5 *.hdf5)"));
     });
-    connect(remove, &QPushButton::clicked, this, [this] {
+    connect(m_removeScans, &QPushButton::clicked, this, [this] {
+        if (m_files->selectedItems().isEmpty())
+            return;
         for (auto item : m_files->selectedItems())
             delete m_files->takeItem(m_files->row(item));
         invalidate(1);
@@ -697,10 +836,19 @@ void SpectroscopyDialog::buildUi() {
     rs->setStretchFactor(1, 2);
     rs->setSizes({570, 335});
     m_tabs->addTab(resultPage, tr("5 原始谱结果"));
-    m_processing = new SpectrumProcessingPage;
-    m_tabs->addTab(m_processing, tr("6 可选拼接"));
-    m_tabs->addTab(m_processing->analysisPage(), tr("7 扣背底"));
-    m_tabs->addTab(m_processing->resultPage(), tr("8 能区结果"));
+    m_processing = new SpectrumProcessingPage(*m_hfTable, *m_hfComposition, *m_hfShells);
+    m_processing->setWideCalibration([this]() -> std::optional<WideScanCalibration> {
+        if (!m_haveCalibration)
+            return std::nullopt;
+        WideScanCalibration context{m_haveResult ? m_resultSettings : settings(), m_calibration, {}, m_result.angles};
+        for (qsizetype i = 0; i < m_result.included.size(); ++i)
+            if (m_result.included[i])
+                context.labels.append(m_calibration.adjusted.items()[i].label);
+        return context;
+    });
+    m_tabs->addTab(m_processing, tr("6 Compton 峰分析"));
+    m_tabs->addTab(m_processing->analysisPage(), tr("7 背景分析"));
+    m_tabs->addTab(m_processing->resultPage(), tr("8 近边结构结果分析"));
     auto batchSet = [this](Qt::CheckState state) {
         bool changed = false;
         for (const auto &index : m_inclusion->selectionModel()->selectedRows()) {
@@ -708,6 +856,10 @@ void SpectroscopyDialog::buildUi() {
             if (item && (item->flags() & Qt::ItemIsUserCheckable)) {
                 QSignalBlocker b(m_inclusion);
                 item->setCheckState(state);
+                if (state == Qt::Checked)
+                    m_configExclusions.remove(item->row());
+                else
+                    m_configExclusions.insert(item->row());
                 changed = true;
             }
         }
@@ -717,8 +869,13 @@ void SpectroscopyDialog::buildUi() {
     connect(include, &QPushButton::clicked, this, [batchSet] { batchSet(Qt::Checked); });
     connect(exclude, &QPushButton::clicked, this, [batchSet] { batchSet(Qt::Unchecked); });
     connect(m_inclusion, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
-        if (item->column() == 0)
+        if (item->column() == 0 && (item->flags() & Qt::ItemIsUserCheckable)) {
+            if (item->checkState() == Qt::Checked)
+                m_configExclusions.remove(item->row());
+            else
+                m_configExclusions.insert(item->row());
             invalidate(2);
+        }
     });
     connect(m_resultChoice, &QComboBox::currentIndexChanged, this, [this] { refreshResultCurve(); });
     m_status = new QLabel(tr("选择弹性扫描并载入 ROI，点击下一步计算掩膜。"));
@@ -755,16 +912,33 @@ void SpectroscopyDialog::buildUi() {
     close->setObjectName("CloseWorkflow");
     actions->addWidget(close);
     root->addLayout(actions);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int step) {
         if (m_processing->isBusy())
             m_nextPage = -1;
+        if (step == 5 && !m_updating && m_activeEdge >= 0 && m_haveResult)
+            m_processing->restoreWideIfNeeded();
         refreshActions();
     });
     connect(m_processing, &SpectrumProcessingPage::busyChanged, this, &SpectroscopyDialog::refreshState);
+    connect(m_processing, &SpectrumProcessingPage::analysisInputReady, this, [this] {
+        if (m_tabs->currentIndex() == 5)
+            selectStep(6);
+    });
     connect(m_processing, &SpectrumProcessingPage::analysisFinished, this, [this](bool usable) {
         if (m_nextPage == 7 && usable)
             selectStep(7);
         m_nextPage = -1;
+    });
+    connect(m_processing, &SpectrumProcessingPage::analysisParametersEdited, this, [this] {
+        if (!m_updating && m_activeEdge >= 0 && m_edgeGroups[m_activeEdge].status != EdgeStatus::Pending)
+            setEdgeStatus(EdgeStatus::Combined);
+    });
+    connect(m_processing, &SpectrumProcessingPage::analysisBatchCompleted, this, [this](bool usable, bool partial) {
+        setEdgeStatus(!usable ? EdgeStatus::Combined : partial ? EdgeStatus::Partial : EdgeStatus::Completed);
+    });
+    connect(m_processing, &SpectrumProcessingPage::resultSaved, this, [this](const QString &format, const QString &path) {
+        if (m_activeEdge >= 0)
+            m_edgeGroups[m_activeEdge].lastSaved[format] = QFileInfo(path).absoluteFilePath();
     });
     connect(m_nextButton, &QPushButton::clicked, this, [this] {
         advanceToPage(m_tabs->currentIndex() + 1);
@@ -782,6 +956,8 @@ void SpectroscopyDialog::buildUi() {
     });
     // Invalidate only the affected stage. No stale calibration or result may be saved.
     connect(m_elasticFile, &QLineEdit::textChanged, this, [this] {
+        if (m_updating)
+            return;
         m_spectralMasks.clear();
         m_roiSizes.clear();
         m_configExclusions.clear();
@@ -792,6 +968,7 @@ void SpectroscopyDialog::buildUi() {
         m_rois = CrystalRois();
         m_roiPath->clear();
         m_projection.clear();
+        refreshExportIdentity();
         invalidate(prepareMaskStep);
     });
     auto projectionChanged = [this] {
@@ -915,45 +1092,215 @@ QMap<QString, QWidget *> SpectroscopyDialog::configurationFields() const {
     return fields;
 }
 
-bool SpectroscopyDialog::saveConfiguration(const QString &path) {
-    if (isBusy())
-        return false;
-    try {
-        const auto spectrum = settings();
-        const auto base = QDir::current();
-        const auto elastic = absolutePath(base, spectrum.elasticFile);
-        QJsonObject parameters;
+SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::captureEdgeConfiguration() const {
+    const auto spectrum = settings();
+    const auto base = QDir::current();
+    EdgeConfiguration out;
+    out.elasticFile = absolutePath(base, spectrum.elasticFile);
+    out.roiFile = absolutePath(base, m_roiPath->text().trimmed());
+    out.rois = m_rois;
+    out.sizes = m_roiSizes;
+    out.masks = m_spectralMasks;
+    out.exclusions = spectrum.excludedCrystals;
+    out.wideFile = m_processing->wideFile();
+    out.batchTargets = m_processing->batchSelection();
+    const auto fields = configurationFields();
+    for (auto it = fields.cbegin(); it != fields.cend(); ++it)
+        out.parameters[it.key()] = QJsonValue::fromVariant(configProperty(it.value()).read(it.value()));
+    out.parameters["hf_table"] = absolutePath(base, out.parameters.value("hf_table").toString().trimmed());
+    for (int i = 0; i < m_files->count(); ++i) {
+        const auto item = m_files->item(i);
+        out.scans.append({item->data(Qt::UserRole).toString(), item->checkState() == Qt::Checked});
+    }
+    for (int i = 0; i < spectrum.shifts.size(); ++i) {
+        const auto shift = spectrum.shifts[i], expansion = spectrum.expansions[i];
+        out.corrections.append(QJsonArray{shift.x(), shift.y(), expansion.x(), expansion.y()});
+    }
+    return out;
+}
+
+QJsonObject SpectroscopyDialog::writeEdgeConfiguration(const EdgeConfiguration &edge) const {
+    QJsonArray scans, exclusions;
+    for (const auto &[file, enabled] : edge.scans)
+        scans.append(QJsonObject{{"file", file}, {"enabled", enabled}});
+    for (int row = 0; row < m_corrections->rowCount(); ++row)
+        if (edge.exclusions.contains(row))
+            exclusions.append(row);
+    QJsonObject out{{"elastic_file", edge.elasticFile}, {"roi_file", edge.roiFile},
+                    {"wide_file", edge.wideFile}, {"background_batch_targets", edge.batchTargets},
+                    {"scans", scans}, {"parameters", edge.parameters},
+                    {"roi_corrections", edge.corrections}, {"excluded_crystals", exclusions}};
+    if (!edge.sizes.isEmpty()) {
+        out["roi_snapshot"] = QJsonDocument::fromJson(edge.rois.serialize(edge.elasticFile, edge.sizes)).object();
+        QJsonObject masks;
+        for (auto it = edge.masks.cbegin(); it != edge.masks.cend(); ++it)
+            masks[QString::number(it.key())] = it->provenance;
+        out["spectral_selections"] = masks;
+    }
+    return out;
+}
+
+SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::readEdgeConfiguration(const QJsonObject &config,
+                                                                                const QDir &base) const {
+    const auto invalid = [this](const QString &key) {
+        ImageUtil::fail(tr("谱学配置字段无效：%1").arg(key));
+    };
+    EdgeConfiguration out;
+    for (const auto &key : {"elastic_file", "roi_file"})
+        if (!config.value(key).isString())
+            invalid(key);
+    out.elasticFile = absolutePath(base, config.value("elastic_file").toString());
+    out.roiFile = absolutePath(base, config.value("roi_file").toString());
+    if (config.contains("wide_file") && !config.value("wide_file").isString())
+        invalid("wide_file");
+    out.wideFile = absolutePath(base, config.value("wide_file").toString());
+    out.batchTargets = config.value("background_batch_targets");
+    if (out.batchTargets.isArray()) {
+        for (const auto &target : out.batchTargets.toArray())
+            if (!target.isString() || target.toString().isEmpty())
+                invalid("background_batch_targets");
+    } else if (!(out.batchTargets.isNull() || out.batchTargets.isUndefined())) {
+        invalid("background_batch_targets");
+    }
+    if (out.batchTargets.isUndefined())
+        out.batchTargets = QJsonValue::Null;
+    const auto fields = configurationFields();
+    out.parameters = config.value("parameters").toObject();
+    if (!out.parameters.contains("normalize_near_edge_by_scan_count"))
+        out.parameters["normalize_near_edge_by_scan_count"] = false;
+    const auto defaults = SpectrumProcessingPage::backgroundConfigurationDefaults();
+    for (auto it = defaults.constBegin(); it != defaults.constEnd(); ++it)
+        if (!out.parameters.contains(it.key()))
+            out.parameters.insert(it.key(), it.value());
+    for (auto it = fields.cbegin(); it != fields.cend(); ++it)
+        if (!validConfigValue(it.value(), out.parameters.value(it.key())))
+            invalid(it.key());
+    out.parameters["hf_table"] = absolutePath(base, out.parameters.value("hf_table").toString());
+
+    if (!config.value("scans").isArray())
+        invalid("scans");
+    for (const auto &entry : config.value("scans").toArray()) {
+        const auto scan = entry.toObject();
+        const auto scanPath = scan.value("file").toString();
+        if (scanPath.isEmpty() || !scan.value("enabled").isBool())
+            invalid("scans");
+        out.scans.append({absolutePath(base, scanPath), scan.value("enabled").toBool()});
+    }
+    out.corrections = config.value("roi_corrections").toArray();
+    if (out.corrections.size() != m_corrections->rowCount())
+        invalid("roi_corrections");
+    for (const auto &entry : out.corrections) {
+        const auto row = entry.toArray();
+        if (row.size() != 4)
+            invalid("roi_corrections");
+        for (int col = 0; col < row.size(); ++col) {
+            const int v = row[col].toInt(-2049);
+            if (v < (col < 2 ? -2048 : 0) || v > 2048)
+                invalid("roi_corrections");
+        }
+    }
+    if (!config.value("excluded_crystals").isArray())
+        invalid("excluded_crystals");
+    for (const auto &entry : config.value("excluded_crystals").toArray()) {
+        const int row = entry.toInt(-1);
+        if (row < 0 || row >= m_corrections->rowCount())
+            invalid("excluded_crystals");
+        out.exclusions.insert(row);
+    }
+    if (config.contains("roi_snapshot")) {
+        const auto roi = config.value("roi_snapshot").toObject();
+        const auto geometry = roi.value("detector_sizes").toArray();
+        if (geometry.size() != 2)
+            invalid("roi_snapshot");
+        for (const auto &entry : geometry) {
+            const auto size = entry.toArray();
+            if (size.size() != 2 || size[0].toInt() <= 0 || size[1].toInt() <= 0)
+                invalid("roi_snapshot");
+            out.sizes.append({size[0].toInt(), size[1].toInt()});
+        }
+        if (QFileInfo(out.elasticFile).isFile())
+            out.sizes = detectorSizes(out.elasticFile);
+        QString error;
+        if (!out.rois.restore(QJsonDocument(roi).toJson(), out.sizes, &error))
+            ImageUtil::fail(error);
+        const auto records = config.value("spectral_selections").toObject();
+        for (auto it = records.constBegin(); it != records.constEnd(); ++it) {
+            bool ok;
+            const int row = it.key().toInt(&ok);
+            if (!ok || row < 0 || row >= out.rois.items().size() || out.rois.items()[row].mask.isEmpty() ||
+                !it.value().isObject())
+                invalid("spectral_selections");
+            out.masks.insert(row, {out.rois.items()[row].mask, it.value().toObject()});
+        }
+    }
+    return out;
+}
+
+void SpectroscopyDialog::applyEdgeConfiguration(const EdgeConfiguration &edge) {
+    {
+        const QScopedValueRollback updating(m_updating, true);
+        const QSignalBlocker blockFiles(m_files), blockCorrections(m_corrections);
+        m_processing->resetInputs();
+        m_elasticFile->setText(edge.elasticFile);
+        m_roiPath->setText(edge.roiFile);
+        m_rois = edge.rois;
+        m_roiSizes = edge.sizes;
+        m_spectralMasks = edge.masks;
+        m_configExclusions = edge.exclusions;
+        m_files->clear();
+        for (const auto &[file, enabled] : edge.scans)
+            appendScan(m_files, file, enabled);
         const auto fields = configurationFields();
         for (auto it = fields.cbegin(); it != fields.cend(); ++it)
-            parameters[it.key()] = QJsonValue::fromVariant(configProperty(it.value()).read(it.value()));
-        parameters["hf_table"] = absolutePath(base, parameters.value("hf_table").toString().trimmed());
-        QJsonArray scans, corrections, exclusions;
-        for (int i = 0; i < m_files->count(); ++i) {
-            const auto item = m_files->item(i);
-            scans.append(QJsonObject{{"file", item->data(Qt::UserRole).toString()},
-                                     {"enabled", item->checkState() == Qt::Checked}});
+            configProperty(it.value()).write(it.value(), edge.parameters.value(it.key()).toVariant());
+        for (int row = 0; row < edge.corrections.size(); ++row) {
+            const auto label = m_rois.items()[row].label;
+            m_corrections->item(row, 0)->setText(m_spectralMasks.contains(row) ? label + QStringLiteral(" ✓") : label);
+            const auto values = edge.corrections[row].toArray();
+            for (int col = 0; col < values.size(); ++col)
+                m_corrections->item(row, col + 1)->setText(QString::number(values[col].toInt()));
         }
-        for (int i = 0; i < spectrum.shifts.size(); ++i) {
-            const auto shift = spectrum.shifts[i], expansion = spectrum.expansions[i];
-            corrections.append(QJsonArray{shift.x(), shift.y(), expansion.x(), expansion.y()});
-            if (spectrum.excludedCrystals.contains(i))
-                exclusions.append(i);
+        m_processing->restoreEdgeInputs(edge.wideFile, edge.batchTargets);
+    }
+    m_projection.clear();
+    m_nextPage = -1;
+    selectStep(0);
+    invalidate(prepareMaskStep, true);
+    refreshExportIdentity();
+}
+
+QString SpectroscopyDialog::edgeStatusKey(EdgeStatus status) {
+    switch (status) {
+    case EdgeStatus::Pending: return "pending";
+    case EdgeStatus::Combined: return "raw_ready";
+    case EdgeStatus::Partial: return "partial";
+    case EdgeStatus::Completed: return "completed";
+    }
+    return {};
+}
+
+bool SpectroscopyDialog::saveConfiguration(const QString &path) {
+    if (isBusy() || m_edgeGroups.isEmpty())
+        return false;
+    try {
+        if (m_activeEdge >= 0)
+            m_edgeGroups[m_activeEdge].config = captureEdgeConfiguration();
+        QJsonArray groups;
+        for (const auto &group : std::as_const(m_edgeGroups)) {
+            auto snapshot = writeEdgeConfiguration(group.config);
+            snapshot["id"] = group.id;
+            snapshot["name"] = group.name;
+            snapshot["status"] = edgeStatusKey(group.status);
+            snapshot["last_saved_results"] = group.lastSaved;
+            if (!group.targetElement.isEmpty())
+                snapshot["target_edge"] = QJsonObject{{"element", group.targetElement}, {"shell", group.targetShell},
+                                                       {"subtraction_initialized", true}};
+            groups.append(snapshot);
         }
-        QJsonObject config{{"schema", "xri-spectroscopy-config"},
-                           {"version", 1},
-                           {"elastic_file", elastic},
-                           {"roi_file", absolutePath(base, m_roiPath->text().trimmed())},
-                           {"scans", scans},
-                           {"parameters", parameters},
-                           {"roi_corrections", corrections},
-                           {"excluded_crystals", exclusions}};
-        if (!m_roiSizes.isEmpty()) {
-            config["roi_snapshot"] = QJsonDocument::fromJson(m_rois.serialize(elastic, m_roiSizes)).object();
-            QJsonObject selections;
-            for (auto it = m_spectralMasks.cbegin(); it != m_spectralMasks.cend(); ++it)
-                selections[QString::number(it.key())] = it->provenance;
-            config["spectral_selections"] = selections;
-        }
+        const QJsonObject config{{"schema", "xri-spectroscopy-config"}, {"version", 2},
+                                 {"sample_name", m_sampleName->text().trimmed()},
+                                 {"active_group_id", m_activeEdge >= 0 ? m_edgeGroups[m_activeEdge].id : QString{}},
+                                 {"groups", groups}};
         ImageUtil::saveJson(path, config);
         message(tr("配置已保存：%1").arg(path));
         return true;
@@ -971,116 +1318,67 @@ bool SpectroscopyDialog::importConfiguration(const QString &path) {
         if (!file.open(QIODevice::ReadOnly))
             ImageUtil::fail(file.errorString());
         const auto config = QJsonDocument::fromJson(file.readAll()).object();
-        if (config.value("schema") != "xri-spectroscopy-config" || config.value("version").toInt() != 1)
+        const auto version = config.value("version").toInt();
+        if (config.value("schema") != "xri-spectroscopy-config" || (version != 1 && version != 2))
             ImageUtil::fail(tr("请选择有效的 XRI 谱学配置 JSON。"));
-        const auto invalid = [this](const QString &key) {
-            ImageUtil::fail(tr("谱学配置字段无效：%1").arg(key));
-        };
         const QDir base = QFileInfo(path).absoluteDir();
-        for (const auto &key : {"elastic_file", "roi_file"})
-            if (!config.value(key).isString())
-                invalid(key);
-        const auto elastic = absolutePath(base, config.value("elastic_file").toString());
-        const auto roiFile = absolutePath(base, config.value("roi_file").toString());
-        const auto fields = configurationFields();
-        auto parameters = config.value("parameters").toObject();
-        for (auto it = fields.cbegin(); it != fields.cend(); ++it)
-            if (!validConfigValue(it.value(), parameters.value(it.key())))
-                invalid(it.key());
-        parameters["hf_table"] = absolutePath(base, parameters.value("hf_table").toString());
-
-        QList<QPair<QString, bool>> scans;
-        if (!config.value("scans").isArray())
-            invalid("scans");
-        for (const auto &entry : config.value("scans").toArray()) {
-            const auto scan = entry.toObject();
-            const auto scanPath = scan.value("file").toString();
-            if (scanPath.isEmpty() || !scan.value("enabled").isBool())
-                invalid("scans");
-            scans.append({absolutePath(base, scanPath), scan.value("enabled").toBool()});
-        }
-        const auto corrections = config.value("roi_corrections").toArray();
-        if (corrections.size() != m_corrections->rowCount())
-            invalid("roi_corrections");
-        for (const auto &entry : corrections) {
-            const auto row = entry.toArray();
-            if (row.size() != 4)
-                invalid("roi_corrections");
-            for (int col = 0; col < row.size(); ++col) {
-                const int v = row[col].toInt(-2049);
-                if (v < (col < 2 ? -2048 : 0) || v > 2048)
-                    invalid("roi_corrections");
+        QList<EdgeGroup> groups;
+        int active = -1;
+        if (version == 1) {
+            groups.append(EdgeGroup{QUuid::createUuid().toString(QUuid::Id128), QStringLiteral("Default"),
+                                    readEdgeConfiguration(config, base)});
+            active = 0;
+        } else {
+            const auto records = config.value("groups").toArray();
+            if (records.isEmpty() || !config.value("active_group_id").isString() || !config.value("sample_name").isString())
+                ImageUtil::fail(tr("谱学方案中的元素分组无效。"));
+            const auto selected = config.value("active_group_id").toString();
+            QSet<QString> names, ids;
+            for (const auto &record : records) {
+                const auto snapshot = record.toObject();
+                const auto name = snapshot.value("name").toString().trimmed();
+                const auto id = snapshot.value("id").toString();
+                if (name.isEmpty() || id.isEmpty() || names.contains(name.toCaseFolded()) || ids.contains(id))
+                    ImageUtil::fail(tr("谱学方案中的元素分组无效。"));
+                names.insert(name.toCaseFolded());
+                ids.insert(id);
+                EdgeGroup group{id, name, readEdgeConfiguration(snapshot, base)};
+                if (snapshot.contains("target_edge")) {
+                    const auto target = snapshot.value("target_edge").toObject();
+                    group.targetElement = target.value("element").toString().trimmed();
+                    group.targetShell = target.value("shell").toString().trimmed();
+                    if (group.targetElement.isEmpty() || group.targetShell.isEmpty())
+                        ImageUtil::fail(tr("谱学方案中的元素分组无效。"));
+                    if (!target.value("subtraction_initialized").toBool() &&
+                        group.config.parameters.value("background_hf_shells").toString().trimmed().isEmpty())
+                        group.config.parameters["background_hf_shells"] = group.targetElement + ':' + group.targetShell;
+                }
+                const auto status = snapshot.value("status").toString();
+                for (const auto candidate : {EdgeStatus::Combined, EdgeStatus::Partial, EdgeStatus::Completed})
+                    if (status == edgeStatusKey(candidate))
+                        group.status = candidate;
+                const auto outputs = snapshot.value("last_saved_results").toObject();
+                for (auto it = outputs.constBegin(); it != outputs.constEnd(); ++it)
+                    if (it.value().isString())
+                        group.lastSaved[it.key()] = absolutePath(base, it.value().toString());
+                if (id == selected)
+                    active = groups.size();
+                groups.append(std::move(group));
             }
+            if (!selected.isEmpty() && active < 0)
+                ImageUtil::fail(tr("谱学方案中的元素分组无效。"));
         }
-        QSet<int> exclusions;
-        if (!config.value("excluded_crystals").isArray())
-            invalid("excluded_crystals");
-        for (const auto &entry : config.value("excluded_crystals").toArray()) {
-            const int row = entry.toInt(-1);
-            if (row < 0 || row >= m_corrections->rowCount())
-                invalid("excluded_crystals");
-            exclusions.insert(row);
-        }
-
-        CrystalRois rois;
-        QVector<QSize> sizes;
-        QMap<int, SpectralSelection> selections;
-        if (config.contains("roi_snapshot")) {
-            const auto roi = config.value("roi_snapshot").toObject();
-            const auto geometry = roi.value("detector_sizes").toArray();
-            if (geometry.size() != 2)
-                invalid("roi_snapshot");
-            for (const auto &entry : geometry) {
-                const auto size = entry.toArray();
-                if (size.size() != 2 || size[0].toInt() <= 0 || size[1].toInt() <= 0)
-                    invalid("roi_snapshot");
-                sizes.append({size[0].toInt(), size[1].toInt()});
-            }
-            if (QFileInfo(elastic).isFile())
-                sizes = detectorSizes(elastic);
-            QString error;
-            if (!rois.restore(QJsonDocument(roi).toJson(), sizes, &error))
-                ImageUtil::fail(error);
-            const auto records = config.value("spectral_selections").toObject();
-            for (auto it = records.constBegin(); it != records.constEnd(); ++it) {
-                bool ok;
-                const int row = it.key().toInt(&ok);
-                if (!ok || row < 0 || row >= rois.items().size() || rois.items()[row].mask.isEmpty() ||
-                    !it.value().isObject())
-                    invalid("spectral_selections");
-                selections.insert(row, {rois.items()[row].mask, it.value().toObject()});
-            }
-        }
-
-        {
-            const QScopedValueRollback updating(m_updating, true);
-            const QSignalBlocker blockFiles(m_files), blockCorrections(m_corrections);
-            m_processing->resetInputs();
-            m_elasticFile->setText(elastic);
-            m_roiPath->setText(roiFile);
-            m_rois = std::move(rois);
-            m_roiSizes = std::move(sizes);
-            m_spectralMasks = std::move(selections);
-            m_configExclusions = std::move(exclusions);
-            m_files->clear();
-            for (const auto &[scan, enabled] : scans)
-                appendScan(m_files, scan, enabled);
-            for (auto it = fields.cbegin(); it != fields.cend(); ++it)
-                configProperty(it.value()).write(it.value(), parameters.value(it.key()).toVariant());
-            for (int row = 0; row < corrections.size(); ++row) {
-                const auto label = m_rois.items()[row].label;
-                m_corrections->item(row, 0)->setText(m_spectralMasks.contains(row) ? label + QStringLiteral(" ✓")
-                                                                                 : label);
-                const auto values = corrections[row].toArray();
-                for (int col = 0; col < values.size(); ++col)
-                    m_corrections->item(row, col + 1)->setText(QString::number(values[col].toInt()));
-            }
-        }
-        m_projection.clear();
-        m_nextPage = -1;
-        selectStep(0);
-        invalidate(prepareMaskStep);
-        message(tr("已载入方案 %1。请核对文件路径，然后重新计算。").arg(path));
+        auto draft = groups.first().config;
+        draft.scans.clear();
+        draft.wideFile.clear();
+        draft.batchTargets = QJsonValue::Null;
+        draft.parameters["background_hf_shells"] = "";
+        m_edgeDraft = std::move(draft);
+        m_edgeGroups = std::move(groups);
+        m_activeEdge = active;
+        m_sampleName->setText(config.value("sample_name").toString());
+        applyEdgeConfiguration(m_activeEdge >= 0 ? m_edgeGroups[m_activeEdge].config : m_edgeDraft);
+        message(tr("已载入 %1 个元素分组：%2。").arg(m_edgeGroups.size()).arg(path));
         return true;
     } catch (const std::exception &e) {
         message(QString::fromUtf8(e.what()), true);
@@ -1088,9 +1386,260 @@ bool SpectroscopyDialog::importConfiguration(const QString &path) {
     }
 }
 
-void SpectroscopyDialog::invalidate(int stage) {
+bool SpectroscopyDialog::validEdgeName(const QString &name, int except) const {
+    if (name.isEmpty())
+        return false;
+    for (int i = 0; i < m_edgeGroups.size(); ++i)
+        if (i != except && m_edgeGroups[i].name.compare(name, Qt::CaseInsensitive) == 0)
+            return false;
+    return true;
+}
+
+void SpectroscopyDialog::chooseNewEdgeGroup() {
+    if (isBusy())
+        return;
+    const auto elements = edgeElements();
+    if (elements.isEmpty()) {
+        message(tr("无法从内置表读取元素列表。"), true);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("新建元素边分组"));
+    auto form = new QFormLayout(&dialog);
+    auto element = new QComboBox;
+    element->setObjectName("NewEdgeGroupElement");
+    element->setPlaceholderText(tr("选择元素"));
+    element->addItems(elements);
+    element->setCurrentIndex(-1);
+    auto shell = new QComboBox;
+    shell->setObjectName("NewEdgeGroupShell");
+    shell->setPlaceholderText(tr("选择目标壳层"));
+    // Names for the experimental absorption edge are independent of the HF table's numbered profiles.
+    shell->addItems({"K", "L1", "L2", "L3", "L23", "M1", "M2", "M3", "M23", "M4", "M5", "M45",
+                     "N1", "N2", "N3", "N23", "N4", "N5", "N45", "N6", "N7", "N67",
+                     "O1", "O2", "O3", "O23", "O4", "O5", "O45", "O6", "O7", "O67",
+                     "P1", "P2", "P3", "P23", "P4", "P5", "P45"});
+    shell->setCurrentIndex(-1);
+    auto preview = new QLabel(QStringLiteral("—"));
+    preview->setObjectName("NewEdgeGroupName");
+    form->addRow(tr("元素"), element);
+    form->addRow(tr("目标壳层"), shell);
+    form->addRow(tr("分组名称"), preview);
+    auto buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    auto create = buttons->button(QDialogButtonBox::Ok);
+    create->setText(tr("新建分组"));
+    create->setEnabled(false);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto updateName = [this, element, shell, preview, create] {
+        const bool selected = element->currentIndex() >= 0 && shell->currentIndex() >= 0;
+        const auto name = selected ? edgeGroupName(element->currentText(), shell->currentText()) : QString{};
+        const bool available = selected && validEdgeName(name);
+        preview->setText(!selected ? QStringLiteral("—") : available ? name : tr("%1（已存在）").arg(name));
+        create->setEnabled(available);
+    };
+    connect(element, &QComboBox::currentIndexChanged, &dialog, updateName);
+    connect(shell, &QComboBox::currentIndexChanged, &dialog, updateName);
+    if (dialog.exec() == QDialog::Accepted)
+        addEdgeGroup(element->currentText(), shell->currentText());
+}
+
+bool SpectroscopyDialog::addEdgeGroup(const QString &element, const QString &shell) {
+    if (isBusy())
+        return false;
+    const auto symbol = element.trimmed(), edgeLabel = shell.trimmed();
+    const auto title = edgeGroupName(symbol, edgeLabel);
+    if (symbol.isEmpty() || edgeLabel.isEmpty() || !validEdgeName(title)) {
+        message(tr("请使用非空且未重复的分组名称。"), true);
+        return false;
+    }
+    try {
+        auto edge = captureEdgeConfiguration();
+        if (m_activeEdge >= 0)
+            m_edgeGroups[m_activeEdge].config = edge;
+        else
+            m_edgeDraft = edge;
+        edge.scans.clear();
+        edge.wideFile.clear();
+        edge.batchTargets = QJsonValue::Null;
+        edge.parameters["background_hf_shells"] = symbol + ':' + edgeLabel;
+        m_edgeGroups.append(EdgeGroup{QUuid::createUuid().toString(QUuid::Id128), title, std::move(edge),
+                                      EdgeStatus::Pending, {}, symbol, edgeLabel});
+        m_activeEdge = m_edgeGroups.size() - 1;
+        applyEdgeConfiguration(m_edgeGroups[m_activeEdge].config);
+        message(tr("已新建分组「%1」，请添加该组的 XRS 扫描。").arg(title));
+        return true;
+    } catch (const std::exception &e) {
+        message(QString::fromUtf8(e.what()), true);
+        return false;
+    }
+}
+
+void SpectroscopyDialog::switchEdgeGroup(int index) {
+    if (index == m_activeEdge || m_updating)
+        return;
+    if (isBusy() || index < -1 || index >= m_edgeGroups.size()) {
+        refreshEdgeGroups();
+        return;
+    }
+    try {
+        auto edge = captureEdgeConfiguration();
+        if (m_activeEdge >= 0)
+            m_edgeGroups[m_activeEdge].config = std::move(edge);
+        else
+            m_edgeDraft = std::move(edge);
+        m_activeEdge = index;
+        applyEdgeConfiguration(index >= 0 ? m_edgeGroups[index].config : m_edgeDraft);
+        if (index >= 0)
+            message(tr("当前分组「%1」。点击下一步按该组方案计算。").arg(m_edgeGroups[index].name));
+        else
+            message(tr("请先选择元素边分组。"));
+    } catch (const std::exception &e) {
+        refreshEdgeGroups();
+        message(QString::fromUtf8(e.what()), true);
+    }
+}
+
+void SpectroscopyDialog::refreshEdgeGroups() {
+    QSignalBlocker block(m_edgeTable);
+    m_edgeTable->setRowCount(m_edgeGroups.size());
+    for (int row = 0; row < m_edgeGroups.size(); ++row) {
+        const auto &group = m_edgeGroups[row];
+        const bool active = row == m_activeEdge;
+        qsizetype checked = 0, count = 0;
+        if (active) {
+            count = m_files->count();
+            for (int i = 0; i < m_files->count(); ++i)
+                checked += m_files->item(i)->checkState() == Qt::Checked;
+        } else {
+            count = group.config.scans.size();
+            for (const auto &scan : group.config.scans)
+                checked += scan.second;
+        }
+        QString status;
+        switch (group.status) {
+        case EdgeStatus::Pending: status = tr("未处理"); break;
+        case EdgeStatus::Combined: status = tr("已叠加"); break;
+        case EdgeStatus::Partial: status = tr("部分完成"); break;
+        case EdgeStatus::Completed: status = tr("已完成"); break;
+        }
+        if (active && isBusy())
+            status = tr("处理中");
+        const QStringList values{group.name, QString("%1 / %2").arg(checked).arg(count), status};
+        for (int column = 0; column < values.size(); ++column) {
+            auto item = m_edgeTable->item(row, column);
+            if (!item) {
+                item = cell({});
+                m_edgeTable->setItem(row, column, item);
+            }
+            item->setText(values[column]);
+            if (column == 0)
+                item->setToolTip(group.name);
+            if (column == 2 && group.status != EdgeStatus::Pending)
+                item->setToolTip(tr("记录上次处理状态。切换分组或重新载入方案后，可按该组配置重新计算。"));
+            else if (column == 2)
+                item->setToolTip({});
+        }
+    }
+    if (m_activeEdge >= 0 && m_edgeTable->currentRow() != m_activeEdge)
+        m_edgeTable->setCurrentCell(m_activeEdge, 0);
+    else if (m_activeEdge < 0)
+        m_edgeTable->setCurrentCell(-1, -1);
+}
+
+void SpectroscopyDialog::setEdgeStatus(EdgeStatus status) {
+    if (m_activeEdge < 0 || m_edgeGroups[m_activeEdge].status == status)
+        return;
+    m_edgeGroups[m_activeEdge].status = status;
+    refreshEdgeGroups();
+}
+
+void SpectroscopyDialog::chooseEdgeHfShells() {
+    if (isBusy() || m_activeEdge < 0)
+        return;
+    try {
+        const auto bindings = backgroundHfShells(m_hfTable->text(), m_hfComposition->text().trimmed());
+        auto selected = resolveHfShellSelection(bindings, backgroundHfShellSelection(m_hfShells->text()));
+        selected.identifiers.sort();
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("选择「%1」要扣除的 HF 壳层").arg(m_edgeGroups[m_activeEdge].name));
+        auto layout = new QVBoxLayout(&dialog);
+        layout->addWidget(new QLabel(tr("勾选当前分组要扣除的壳层。")));
+        if (!selected.missing.isEmpty()) {
+            auto missing = new QLabel(tr("未在当前组分及 HF 表中找到：%1").arg(selected.missing.join(", ")));
+            missing->setWordWrap(true);
+            layout->addWidget(missing);
+        }
+        auto list = new QListWidget;
+        list->setObjectName("SpectroscopyHfShellChoices");
+        for (auto it = bindings.cbegin(); it != bindings.cend(); ++it) {
+            const auto label = it->edge.isEmpty() ? it.key() : it.key() + QStringLiteral(" · ") + it->edge;
+            auto item = new QListWidgetItem(tr("%1 · 结合能 %2 eV").arg(label, number(it->bindingEv)), list);
+            item->setData(Qt::UserRole, it.key());
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(selected.identifiers.contains(it.key()) ? Qt::Checked : Qt::Unchecked);
+        }
+        layout->addWidget(list);
+        auto buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        layout->addWidget(buttons);
+        if (dialog.exec() == QDialog::Accepted) {
+            QStringList shells;
+            for (int i = 0; i < list->count(); ++i)
+                if (const auto item = list->item(i); item->checkState() == Qt::Checked)
+                    shells.append(item->data(Qt::UserRole).toString());
+            if (shells != selected.identifiers)
+                m_hfShells->setText(shells.join(", "));
+        }
+    } catch (const std::exception &e) {
+        message(QString::fromUtf8(e.what()), true);
+    }
+}
+
+QString SpectroscopyDialog::sampleStem() const {
+    const auto elastic = QFileInfo(m_elasticFile->text().trimmed()).completeBaseName();
+    return fileToken(m_sampleName->text().trimmed(), fileToken(elastic, QStringLiteral("sample")));
+}
+
+QString SpectroscopyDialog::resultStem() const {
+    if (m_activeEdge < 0)
+        return {};
+    const auto &group = m_edgeGroups[m_activeEdge];
+    auto token = fileToken(group.name, "edge_" + fileToken(group.id, "group").left(8));
+    for (const auto &other : m_edgeGroups)
+        if (other.id != group.id && token.compare(fileToken(other.name, {}), Qt::CaseInsensitive) == 0) {
+            token += '_' + fileToken(group.id, "group").left(8);
+            break;
+        }
+    return sampleStem() + '_' + token;
+}
+
+QJsonObject SpectroscopyDialog::edgeIdentity() const {
+    if (m_activeEdge < 0)
+        return {};
+    const auto &group = m_edgeGroups[m_activeEdge];
+    const auto name = m_sampleName->text().trimmed();
+    QJsonObject identity{{"sample_name", name.isEmpty() ? sampleStem() : name},
+                         {"edge_group", group.name}, {"edge_group_id", group.id}};
+    if (!group.targetElement.isEmpty()) {
+        identity["target_element"] = group.targetElement;
+        identity["target_shell"] = group.targetShell;
+    }
+    return identity;
+}
+
+void SpectroscopyDialog::refreshExportIdentity() {
+    m_processing->setExportIdentity(resultStem(), edgeIdentity());
+}
+
+void SpectroscopyDialog::invalidate(int stage, bool preserveEdgeStatus) {
     if (m_updating || m_busy)
         return;
+    if (!preserveEdgeStatus)
+        setEdgeStatus(EdgeStatus::Pending);
     if (stage == prepareMaskStep)
         m_masks = {};
     if (stage <= 0) {
@@ -1136,9 +1685,23 @@ void SpectroscopyDialog::refreshState() {
         useRoiDraft(pending.first, pending.second);
     }
     refreshActions();
-    m_extractButton->setEnabled(!isBusy() && m_haveCalibration);
-    m_combineButton->setEnabled(!isBusy() && m_haveScans);
-    m_saveButton->setEnabled(!isBusy() && m_haveResult);
+    refreshEdgeGroups();
+    const bool idle = !isBusy(), hasEdge = m_activeEdge >= 0;
+    m_edgeTable->setEnabled(idle);
+    m_hfComposition->setEnabled(idle);
+    m_hfTable->parentWidget()->setEnabled(idle);
+    m_hfShells->parentWidget()->setEnabled(idle && hasEdge);
+    m_sampleName->setEnabled(idle);
+    m_newEdge->setEnabled(idle);
+    m_renameEdge->setEnabled(idle && hasEdge);
+    m_removeEdge->setEnabled(idle && hasEdge);
+    m_files->setEnabled(idle && hasEdge);
+    m_addScans->setEnabled(idle && hasEdge);
+    m_removeScans->setEnabled(idle && hasEdge && m_files->count() > 0);
+    m_saveConfig->setEnabled(idle && !m_edgeGroups.isEmpty());
+    m_extractButton->setEnabled(idle && hasEdge && m_haveCalibration);
+    m_combineButton->setEnabled(idle && hasEdge && m_haveScans);
+    m_saveButton->setEnabled(idle && hasEdge && m_haveResult);
     m_cancelButton->setEnabled(m_busy);
     m_roiStatus->setText(tr("有效 %1 · 失效 %2 · 待设置 %3 / 75")
                              .arg(m_rois.count(RoiState::Valid))
@@ -1193,25 +1756,43 @@ void SpectroscopyDialog::loadDraft() {
     else
         message(tr("此弹性文件尚无 ROI 草稿。请载入已有方案，或使用“选取 ROI”。"));
 }
+void SpectroscopyDialog::setAvailableFiles(const QStringList &files) {
+    m_availableFiles = files;
+    m_processing->setAvailableFiles(files);
+}
+
 void SpectroscopyDialog::addScans(const QStringList &files) {
-    if (m_busy)
+    if (isBusy() || files.isEmpty())
         return;
+    if (m_activeEdge < 0) {
+        message(tr("请先选择元素边分组。"), true);
+        return;
+    }
+    const int before = m_files->count();
     for (const auto &file : files) {
         auto path = QFileInfo(file).absoluteFilePath();
         bool duplicate = false;
-        for (int i = 0; i < m_files->count(); ++i)
-            if (QFileInfo(m_files->item(i)->data(Qt::UserRole).toString()).canonicalFilePath() ==
-                QFileInfo(path).canonicalFilePath())
+        const auto canonical = QFileInfo(path).canonicalFilePath();
+        for (int i = 0; i < m_files->count(); ++i) {
+            const auto existing = m_files->item(i)->data(Qt::UserRole).toString();
+            if (existing == path || (!canonical.isEmpty() && QFileInfo(existing).canonicalFilePath() == canonical))
                 duplicate = true;
+        }
         if (duplicate)
             continue;
         appendScan(m_files, path, true);
     }
-    invalidate(1);
+    if (m_files->count() != before)
+        invalidate(1);
 }
 void SpectroscopyDialog::runStep(int step) {
     if (isBusy() || step < prepareMaskStep || step > 2)
         return;
+    if (m_activeEdge < 0) {
+        message(tr("请先选择元素边分组。"), true);
+        selectStep(0);
+        return;
+    }
     if ((step == 1 && !m_haveCalibration) || (step == 2 && !m_haveScans)) {
         message(tr("请按顺序完成前面的处理步骤。"), true);
         return;
@@ -1223,7 +1804,7 @@ void SpectroscopyDialog::runStep(int step) {
             if (m_files->item(i)->checkState() == Qt::Checked)
                 files.append(m_files->item(i)->data(Qt::UserRole).toString());
         if (step == 1 && files.isEmpty()) {
-            message(tr("请先在“文件与参数”中添加并勾选 XRS 扫描。"), true);
+            message(tr("请为当前元素边分组添加并勾选 XRS 扫描。"), true);
             m_tabs->setCurrentIndex(0);
             return;
         }
@@ -1285,6 +1866,11 @@ void SpectroscopyDialog::runStep(int step) {
 void SpectroscopyDialog::advanceToPage(int target) {
     if (isBusy())
         return;
+    if (m_activeEdge < 0) {
+        message(tr("请先选择元素边分组。"), true);
+        selectStep(0);
+        return;
+    }
     m_nextPage = -1;
     if (target <= 5) {
         int job;
@@ -1297,8 +1883,6 @@ void SpectroscopyDialog::advanceToPage(int target) {
         else if (target >= 4 && !m_haveResult)
             job = 2;
         else {
-            if (target == 5)
-                m_processing->prepareStitching();
             selectStep(target);
             return;
         }
@@ -1307,12 +1891,14 @@ void SpectroscopyDialog::advanceToPage(int target) {
             m_nextPage = target;
         return;
     }
-    // Show the background controls while fitting so input errors can be corrected here.
-    if (target == 6)
-        selectStep(6);
-    if (m_processing->ensureAnalysis(target == 6)) {
+    if (target == 6) {
+        if (m_processing->prepareAnalysisInput())
+            selectStep(6);
+        return;
+    }
+    if (m_processing->ensureAnalysis()) {
         selectStep(target);
-    } else if (target == 7 && m_processing->isBusy()) {
+    } else if (m_processing->isBusy()) {
         m_nextPage = target;
     }
 }
@@ -1430,7 +2016,6 @@ void SpectroscopyDialog::refreshCalibration() {
             }
         m_fits->setCurrentCell(selected, 0);
     }
-    m_configExclusions.clear();
     m_updating = false;
     refreshImages();
     refreshElasticCurve();
@@ -1547,7 +2132,7 @@ void SpectroscopyDialog::refreshResult() {
         m_resultChoice->addItem(tr("全部单晶体谱"), -2);
         for (int r = 0; r < 75; ++r)
             if (m_result.included[r])
-                m_resultChoice->addItem(m_rois.items()[r].label + tr(" · 各扫描与叠加"), r);
+                m_resultChoice->addItem(m_rois.items()[r].label, r);
     }
     if (m_angleSource->currentIndex() != 2)
         for (auto it = m_result.angles.begin(); it != m_result.angles.end(); ++it)
@@ -1595,12 +2180,12 @@ void SpectroscopyDialog::refreshResultCurve() {
                             m_resultSettings.normalizeXrs ? "Summed intensity / |I0|" : "Summed counts");
 }
 void SpectroscopyDialog::save() {
-    if (!m_haveResult || m_busy)
+    if (!m_haveResult || isBusy() || m_activeEdge < 0)
         return;
     QString directory;
+    const auto name = resultStem() + "_raw";
     try {
-        const auto source = m_scans.isEmpty() ? m_resultSettings.elasticFile : m_scans.first().file;
-        directory = WorkspacePaths::newPath(Workflow::Spectroscopy, Kind::Result, source, "spectrum");
+        directory = WorkspacePaths::newPath(Workflow::Spectroscopy, Kind::Result, {}, name);
     } catch (const std::exception &error) {
         message(QString::fromUtf8(error.what()), true);
         return;
@@ -1610,12 +2195,13 @@ void SpectroscopyDialog::save() {
                                                                QFileInfo(m_elasticFile->text()).absolutePath());
         if (parent.isEmpty())
             return;
-        directory = QDir(parent).filePath("spectrum_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
+        directory = QDir(parent).filePath(name + '_' + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
     }
     QString error;
-    if (Spectroscopy::saveResult(directory, m_resultSettings, m_calibration, m_scans, m_result, &error))
+    if (Spectroscopy::saveResult(directory, m_resultSettings, m_calibration, m_scans, m_result, &error, edgeIdentity())) {
+        m_edgeGroups[m_activeEdge].lastSaved["raw"] = QFileInfo(directory).absoluteFilePath();
         message(tr("已保存谱学 HDF5、总谱、模组谱、单晶体谱、ROI、掩膜和完整参数：%1").arg(directory));
-    else
+    } else
         message(error, true);
 }
 
@@ -1626,10 +2212,10 @@ void SpectroscopyDialog::refreshActions() {
     m_previousButton->setVisible(step > 0);
     m_previousButton->setEnabled(!isBusy());
     m_nextButton->setVisible(step < m_tabs->count() - 1);
-    m_nextButton->setEnabled(!isBusy());
+    m_nextButton->setEnabled(!isBusy() && m_activeEdge >= 0);
     m_extractButton->setVisible(step == 3);
     m_fitElasticButton->setVisible(step == 2);
-    m_fitElasticButton->setEnabled(!isBusy());
+    m_fitElasticButton->setEnabled(!isBusy() && m_activeEdge >= 0);
     m_combineButton->setVisible(step == 4);
     m_saveButton->setVisible(step == 4);
     m_cancelButton->setVisible(m_busy);

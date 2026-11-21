@@ -1,6 +1,7 @@
 #include "CrystalRoi.h"
 #include "HdfFile.h"
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -122,6 +123,36 @@ int main(int argc, char **argv) {
            "reject invalid imported coordinates atomically");
     expect(!restored.restore(serialized, {QSize(256, 256), QSize(256, 256)}, &roiError),
            "reject detector geometry mismatch");
+    const auto textTable = [&](const QString &name, const QByteArray &data) {
+        const auto path = dir.filePath(name);
+        QFile text(path);
+        if (!text.open(QIODevice::WriteOnly) || text.write(data) != data.size())
+            throw std::runtime_error("Cannot write the text ROI fixture");
+        return path;
+    };
+    const auto lambda = textTable("lambda.tsv",
+        "\troi_label\tx1\tx2\ty1\ty2\tx_shift\ty_expand\n"
+        "31\tVU-A3\t0\t0\t0\t0\t0\t0\n"
+        "32\tVU-B3\t1\t4\t8\t12\t0\t0\n"
+        "35\tVU-C3\t13\t18\t20\t25\t2\t1\n"
+        "38\tVU-C3\t30\t34\t505\t520\t0\t0\n"
+        "41\tVU-E3\t40\t45\t55\t65\t0\t0\n");
+    const auto minipix = textTable("minipix.txt", "roi_label x1 x2 y1 y2 add\nVD-A1 0 7 2 8 1\n");
+    const auto converted = CrystalRois::convertTextFiles({lambda, minipix}, sizes);
+    expect(restored.restore(converted, sizes, &roiError) && restored.count(RoiState::Valid) == 5 &&
+               restored.count(RoiState::Invalid) == 70 && restored.items()[32].rect == QRect(15, 19, 5, 7) &&
+               restored.items()[38].rect == QRect(30, 505, 4, 11) &&
+               restored.items()[60].rect == QRect(0, 2, 7, 6) &&
+               QJsonDocument::fromJson(converted).object()["legacy_conversion_notes"].toArray().size() == 2,
+           "convert both text detectors with legacy label mapping, shifts, clipping and provenance");
+    const auto ambiguous = textTable("duplicate.tsv", "roi_label x1 x2 y1 y2\nVU-C3 1 4 4 8\nVU-C3 8 12 2 7\n");
+    bool rejectedDuplicate = false;
+    try {
+        CrystalRois::convertTextFiles({ambiguous}, sizes);
+    } catch (const std::exception &) {
+        rejectedDuplicate = true;
+    }
+    expect(rejectedDuplicate, "reject an undocumented duplicate crystal rather than guessing an assignment");
     rois.clear(0);
     expect(rois.items()[0].state == RoiState::Pending && rois.items()[0].rect.isEmpty(),
            "clear ROI for manual reselection");

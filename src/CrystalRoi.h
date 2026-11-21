@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QRect>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 enum class RoiState { Pending, Valid, Invalid };
@@ -25,6 +26,8 @@ class CrystalRois {
     void invalidate(int row);
     void clear(int row);
     int count(RoiState state) const;
+    static QByteArray convertTextFiles(const QStringList &files, const QVector<QSize> &sizes,
+                                       QStringList *notes = nullptr);
     QByteArray serialize(const QString &source, const QVector<QSize> &sizes) const;
     bool restore(const QByteArray &json, const QVector<QSize> &sizes, QString *error);
 
