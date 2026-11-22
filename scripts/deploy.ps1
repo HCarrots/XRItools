@@ -66,6 +66,10 @@ Copy-Item -LiteralPath "$projectRoot\third_party\dabax\LICENSE", "$projectRoot\t
 $imagingDocs = Join-Path $OutputDirectory 'docs'
 New-Item -ItemType Directory -Path $imagingDocs -Force | Out-Null
 Copy-Item -LiteralPath "$projectRoot\docs\imaging-migration.md", "$projectRoot\docs\imaging-comparison.json" -Destination $imagingDocs -Force
-Copy-Item -LiteralPath "$projectRoot\examples\DT_Be_ROI.txt" -Destination $OutputDirectory -Force
-Copy-Item -LiteralPath "$projectRoot\examples\imaging.15469.json" -Destination $OutputDirectory -Force
+foreach ($example in @('DT_Be_ROI.txt', 'imaging.15469.json')) {
+    $source = Join-Path "$projectRoot\examples" $example
+    if (Test-Path -LiteralPath $source -PathType Leaf) {
+        Copy-Item -LiteralPath $source -Destination $OutputDirectory -Force
+    }
+}
 Write-Host "Ready: $OutputDirectory\XRI.exe"

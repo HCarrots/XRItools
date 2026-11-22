@@ -1,8 +1,8 @@
 #pragma once
 #include "Spectroscopy.h"
-#include <QCache>
 #include <QDialog>
 #include <QJsonArray>
+#include <QTemporaryDir>
 
 class QComboBox;
 class QSpinBox;
@@ -30,50 +30,68 @@ class SpectralMaskDialog : public QDialog {
     void keyPressEvent(QKeyEvent *event) override;
 
   private:
+    struct MaskOptions {
+        int component = 0;
+        int thresholdMode = 0;
+        double threshold = .2;
+        bool flip = false;
+    };
     struct Review {
-        PixelSpectra data;
+        QVector<QPoint> pixels;
+        QVector<double> energyKev;
         SpectralComponents result;
         QVector<int> rows;
         QJsonArray history;
-        int round, component, thresholdMode;
-        double threshold;
-        bool flip;
+        MaskOptions options;
+        QString error;
+        bool noComponent = false;
+    };
+    struct MaskPreview {
+        QVector<double> covariance;
+        QVector<int> selected;
+        double cutoff = 0.;
     };
     void switchCrystal(int index);
+    void showReview();
     void refreshDecisions();
     void recordDecision(bool useComponent);
+    void applyBatch();
     void resetDecisions();
     void editPreview();
     QMap<int, SpectralSelection> accepted;
-    QSet<int> declined, computed;
+    QSet<int> declined;
     bool switching = false;
     QVector<CrystalRoi> crystals;
     QMap<QString, QSize> sizes;
-    QCache<int, Review> reviews{128 * 1024}; // KiB of recently viewed pixel spectra
+    QMap<int, Review> reviews;
+    QTemporaryDir pixelCache;
+    QVector<QVector<double>> intensity;
     int row = -1;
-    bool autoDecompose = false;
     QListWidget *crystal;
     QPushButton *previous, *next;
     QLabel *position, *reviewProgress;
-    void calculate(bool nextRound);
-    void clearResult();
+    void calculate(bool refine);
+    bool calculateAll();
+    bool runDecomposition(const QVector<int> &targets, bool refine = false);
+    QString pixelCachePath(int crystalRow) const;
+    void cacheIntensity(int crystalRow, const QVector<QVector<double>> &values) const;
+    QVector<QVector<double>> loadIntensity(int crystalRow) const;
+    void clearPreview();
     void preview();
-    QJsonObject roundRecord() const;
-    QJsonArray history;
-    double cutoffValue = 0;
+    MaskOptions maskOptions() const;
+    void setThresholdMode(int mode, double value);
+    static MaskPreview selectPixels(const Review &, const MaskOptions &);
+    QJsonObject roundRecord(const Review &, const MaskOptions &, const MaskPreview &) const;
+    SpectralSelection selection(const Review &, const MaskOptions &, const MaskPreview &) const;
     SpectrumSettings settings;
     CrystalRoi roi;
-    QSize size;
-    PixelSpectra data;
-    SpectralComponents result;
-    QVector<int> rows, selected;
-    int round = 0;
+    MaskPreview currentMask;
     QComboBox *reference, *method, *component, *thresholdMode;
     QSpinBox *count;
     QDoubleSpinBox *threshold;
     QCheckBox *flip;
     QLabel *status;
-    QPushButton *iterate, *apply, *keepOriginal, *updateRoi;
+    QPushButton *decomposeAll, *iterate, *apply, *batchApply, *keepOriginal, *updateRoi;
     SpectrumPlot *curves, *scores, *comparison;
     ScientificPlot *map;
 };

@@ -15,6 +15,7 @@
 #include <numeric>
 
 namespace {
+constexpr qsizetype maxPixelSpectraValues = 8'000'000;
 [[noreturn]] void fail(const QString &message) {
     throw std::runtime_error(message.toUtf8().constData());
 }
@@ -75,7 +76,7 @@ void imageStats(DataSlice &image) {
 }
 SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, bool elastic,
                       const ElasticCalibration *calibration, bool projection, const std::atomic_bool &cancel,
-                      Spectroscopy::Progress progress, PixelSpectra *spectra = nullptr, int detector = -1) {
+                      Spectroscopy::Progress progress, QVector<PixelSpectra> *spectra = nullptr, int detector = -1) {
     checkCancel(cancel);
     if (HdfFile::formatFromFileName(file) == ScanFormat::GridScan)
         fail(QCoreApplication::translate("Spectroscopy", "grid_scan 属于成像数据，不能作为一维谱学扫描：%1").arg(file));
@@ -143,18 +144,25 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
         QSize size(int(node.dims[2]), int(node.dims[1]));
         if (calibration && calibration->sizes[d] != size)
             fail(QCoreApplication::translate("Spectroscopy", "XRS 探测器尺寸与弹性标定不一致。"));
-        QVector<int> offsets;
+        QVector<QVector<int>> offsets;
         if (spectra) {
-            if (size != spectra->detectorSize)
-                fail(QCoreApplication::translate("Spectroscopy", "参考扫描与 ROI 探测器尺寸不一致。"));
-            if (qint64(count) * spectra->pixels.size() > 8000000)
-                fail(QCoreApplication::translate("Spectroscopy", "像素谱矩阵过大，请缩小初始 ROI。"));
-            spectra->energyKev = scan.energyKev;
-            for (const auto &point : spectra->pixels) {
-                if (!QRect(QPoint(), size).contains(point))
-                    fail(QCoreApplication::translate("Spectroscopy", "ROI 超出参考扫描范围。"));
-                offsets.append(point.y() * size.width() + point.x());
-                spectra->intensity.append(QVector<double>(count));
+            offsets.reserve(spectra->size());
+            for (auto &crystal : *spectra) {
+                if (size != crystal.detectorSize)
+                    fail(QCoreApplication::translate("Spectroscopy", "参考扫描与 ROI 探测器尺寸不一致。"));
+                if (crystal.pixels.size() > maxPixelSpectraValues / count)
+                    fail(QCoreApplication::translate("Spectroscopy", "像素谱矩阵过大，请缩小初始 ROI。"));
+                crystal.energyKev = scan.energyKev;
+                QVector<int> indices;
+                indices.reserve(crystal.pixels.size());
+                crystal.intensity.reserve(crystal.pixels.size());
+                for (const auto &point : crystal.pixels) {
+                    if (!QRect(QPoint(), size).contains(point))
+                        fail(QCoreApplication::translate("Spectroscopy", "ROI 超出参考扫描范围。"));
+                    indices.append(point.y() * size.width() + point.x());
+                    crystal.intensity.append(QVector<double>(count));
+                }
+                offsets.append(std::move(indices));
             }
         }
         DataSlice image = projection ? imageData(detectorPath(d), size) : DataSlice{};
@@ -162,9 +170,14 @@ SpectrumScan loadScan(const QString &file, const SpectrumSettings &settings, boo
         auto process = [&](int index, QVector<double> &raw) {
             const double divisor = normalize ? scan.i0After[index] : 1;
             const double *pixels = raw.constData();
-            if (spectra)
-                for (int p = 0; p < offsets.size(); ++p)
-                    spectra->intensity[p][index] = pixels[offsets[p]] / divisor;
+            if (spectra) {
+                for (qsizetype r = 0; r < offsets.size(); ++r) {
+                    const auto &indices = offsets.at(r);
+                    auto &intensity = (*spectra)[r].intensity;
+                    for (qsizetype p = 0; p < indices.size(); ++p)
+                        intensity[p][index] = pixels[indices[p]] / divisor;
+                }
+            }
             if (projection) {
                 double *sum = image.values.data();
                 for (qsizetype k = 0; k < raw.size(); ++k) {
@@ -394,14 +407,62 @@ ElasticFit Spectroscopy::fitPeak(const QVector<double> &energy, const QVector<do
 PixelSpectra Spectroscopy::pixelSpectra(const QString &reference, const SpectrumSettings &settings,
                                         const CrystalRoi &roi, const QSize &size,
                                         const std::atomic_bool &cancel) {
-    if (roi.state != RoiState::Valid || !QRect(QPoint(), size).contains(roi.rect))
-        fail(QCoreApplication::translate("Spectroscopy", "请选择有效的晶体 ROI。"));
     PixelSpectra spectra;
-    spectra.detectorSize = size;
-    spectra.pixels = roi.pixels();
-    loadScan(reference, settings, false, nullptr, false, cancel, {}, &spectra,
-             roi.detector == "D_LAMBDA" ? 0 : 1);
+    visitPixelSpectra(reference, settings, {roi}, size, cancel,
+        [&](qsizetype, PixelSpectra data, const QString &error) {
+            if (!error.isEmpty())
+                fail(error);
+            spectra = std::move(data);
+        });
     return spectra;
+}
+
+void Spectroscopy::visitPixelSpectra(const QString &reference, const SpectrumSettings &settings,
+                                     const QVector<CrystalRoi> &rois, const QSize &size,
+                                     const std::atomic_bool &cancel, const PixelSpectraVisitor &visit) {
+    if (rois.isEmpty())
+        return;
+    checkCancel(cancel);
+    const int detector = rois.first().detector == "D_LAMBDA" ? 0 : 1;
+    const auto dims = HdfFile::inspect(reference, detectorPath(detector)).dims;
+    // Bound the pixel matrices when several ROIs share a pass through the detector frames.
+    const auto frames = std::max<quint64>(1, dims.value(0));
+    const auto pixelBudget = qsizetype(maxPixelSpectraValues / frames);
+    QVector<qsizetype> rows;
+    QVector<PixelSpectra> batch;
+    qsizetype pixelsInBatch = 0;
+    const auto flush = [&] {
+        if (batch.isEmpty())
+            return;
+        loadScan(reference, settings, false, nullptr, false, cancel, {}, &batch, detector);
+        for (qsizetype i = 0; i < batch.size(); ++i) {
+            checkCancel(cancel);
+            visit(rows[i], std::move(batch[i]), {});
+        }
+        rows.clear();
+        batch.clear();
+        pixelsInBatch = 0;
+    };
+    for (qsizetype i = 0; i < rois.size(); ++i) {
+        checkCancel(cancel);
+        const auto &roi = rois[i];
+        if (roi.detector != rois.first().detector || roi.state != RoiState::Valid ||
+            !QRect(QPoint(), size).contains(roi.rect)) {
+            visit(i, {}, QCoreApplication::translate("Spectroscopy", "请选择有效的晶体 ROI。"));
+            continue;
+        }
+        auto pixels = roi.pixels();
+        if (pixels.size() > pixelBudget) {
+            visit(i, {}, QCoreApplication::translate("Spectroscopy", "像素谱矩阵过大，请缩小初始 ROI。"));
+            continue;
+        }
+        if (pixelsInBatch + pixels.size() > pixelBudget)
+            flush();
+        pixelsInBatch += pixels.size();
+        rows.append(i);
+        batch.append(PixelSpectra{size, std::move(pixels), {}, {}});
+    }
+    flush();
 }
 
 ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const CrystalRois &rois,
@@ -412,8 +473,9 @@ ElasticCalibration Spectroscopy::calibrate(const SpectrumSettings &s, const Crys
 ElasticCalibration Spectroscopy::prepareMasks(const SpectrumSettings &s, const CrystalRois &rois,
                                               const std::atomic_bool &cancel, Progress progress,
                                               const QVector<DataSlice> &projection) {
-    if (!std::isfinite(s.filterFraction) || s.filterFraction < 0 || s.filterFraction > 1 ||
-        s.roiSize < 1 || s.roiSize > 2048)
+    const bool useSpectralMasks = s.useFilter && !s.spectralMasks.isEmpty();
+    if (!useSpectralMasks && (!std::isfinite(s.filterFraction) || s.filterFraction < 0 || s.filterFraction > 1 ||
+                              s.roiSize < 1 || s.roiSize > 2048))
         fail(QCoreApplication::translate("Spectroscopy", "掩膜或拟合参数无效。"));
     if (rois.count(RoiState::Pending))
         fail(QCoreApplication::translate("Spectroscopy", "请先完成 ROI：未设置的晶体应框选或标记失效。"));
@@ -446,13 +508,13 @@ ElasticCalibration Spectroscopy::prepareMasks(const SpectrumSettings &s, const C
         QRect bounds(0, 0, image.width, image.height), rect = roi.rect;
         if (rect.isEmpty() || !bounds.contains(rect))
             fail(QCoreApplication::translate("Spectroscopy", "ROI 超出当前探测器：%1").arg(roi.label));
-        const bool spectral = s.useFilter && s.spectralMasks.contains(i);
+        const bool spectral = useSpectralMasks && s.spectralMasks.contains(i);
         QSet<QPoint> selected;
         if (spectral) {
             const auto &points = s.spectralMasks.constFind(i).value().pixels;
             selected = QSet<QPoint>(points.cbegin(), points.cend());
         }
-        if (s.autoRoi && !spectral && roi.mask.isEmpty()) {
+        if (!useSpectralMasks && s.autoRoi && roi.mask.isEmpty()) {
             double maximum = -INFINITY;
             QPoint location;
             for (int y = rect.top(); y <= rect.bottom(); ++y)
@@ -474,14 +536,16 @@ ElasticCalibration Spectroscopy::prepareMasks(const SpectrumSettings &s, const C
         }
         const auto points = out.adjusted.items()[i].pixels();
         double maximum = -INFINITY;
-        for (const auto &p : points)
-            maximum = std::max(maximum, image.values[p.y() * image.width + p.x()]);
+        if (s.useFilter && !useSpectralMasks && roi.mask.isEmpty())
+            for (const auto &p : points)
+                maximum = std::max(maximum, image.values[p.y() * image.width + p.x()]);
         for (const auto &p : points) {
             int pixel = p.y() * image.width + p.x();
             out.pixels[i].append(pixel);
             ++rawUse[d][pixel];
             if (spectral ? selected.contains(p)
-                         : (!roi.mask.isEmpty() || image.values[pixel] > maximum * s.filterFraction)) {
+                         : (!s.useFilter || useSpectralMasks || !roi.mask.isEmpty() ||
+                            image.values[pixel] > maximum * s.filterFraction)) {
                 out.filteredPixels[i].append(pixel);
                 ++filteredUse[d][pixel];
             }
@@ -499,7 +563,7 @@ ElasticCalibration Spectroscopy::prepareMasks(const SpectrumSettings &s, const C
     }
     for (int i = 0; i < 75; ++i) {
         int d = i < 60 ? 0 : 1;
-        if (s.removeOverlap) {
+        if (!useSpectralMasks && s.removeOverlap) {
             auto remove = [&](QVector<int> &pixels, const QVector<int> &use) {
                 pixels.erase(
                     std::remove_if(pixels.begin(), pixels.end(), [&](int pixel) { return use[pixel] > 1; }),

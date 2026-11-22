@@ -203,12 +203,17 @@ int main(int argc, char **argv) {
                    "one surviving pixel cannot be decomposed into two components");
             auto options = s;
             options.spectralMasks[0].pixels = {{1, 1}};
+            options.filterFraction = 1.;
+            options.autoRoi = true;
+            options.roiSize = 1;
             const auto refined = Spectroscopy::calibrate(options, rois, cancel);
             auto target = Spectroscopy::extract(options, refined, {reverse}, cancel);
             expect(refined.pixels[0].size() == 4 && refined.filteredPixels[0] == QVector<int>{9} &&
                        refined.adjusted.items()[0].mask == options.spectralMasks[0].pixels &&
+                       refined.adjusted.items()[1].rect == rois.items()[1].rect &&
+                       refined.filteredPixels[1] == refined.pixels[1] &&
                        close(target[0].filtered[0][40], 12.5) && target[0].raw[0][40] > 12.5,
-                   "spectral mask preserves coarse comparison and transfers to independent target scan");
+                   "spectral masks ignore threshold and recentering, preserve other ROIs and transfer to XRS scans");
         }
         auto c = Spectroscopy::calibrate(s, rois, cancel);
         expect(c.fits[0].accepted && c.fits[1].accepted && c.fits[60].accepted && !c.fits[2].accepted,
@@ -459,12 +464,39 @@ int main(int argc, char **argv) {
         auto withGap = line;
         withGap[55] = NAN;
         StagedBackgroundSettings plan;
-        plan.windows[int(BackgroundComponent::Linear)] = {{0, 10}};
+        plan.windows[int(BackgroundComponent::Polynomial)] = {{0, 10}};
         plan.protectedWindows = {{4.8, 5.2}};
         const auto protectedLine = fitBackgroundStages(plan, energy, withGap, {}, cancel);
         expect(close(protectedLine.total.corrected[50], 13, 1e-9) &&
                    std::isnan(protectedLine.total.background[55]) && std::isnan(protectedLine.total.corrected[55]),
                "positive near-edge signal is excluded from the fit and masked samples stay masked");
+        auto curved = withGap;
+        for (qsizetype i = 0; i < energy.size(); ++i)
+            curved[i] += .07 * energy[i] * energy[i];
+        plan.polynomialOrder = 2;
+        const auto polynomial = fitBackgroundStages(plan, energy, curved, {}, cancel);
+        const auto polyFit = polynomial.terms.value(BackgroundComponent::Polynomial);
+        expect(close(polyFit.rSquared, 1.) && close(polynomial.total.corrected[50], 13.) &&
+                   close(polynomial.total.corrected[80], 0.) && std::isnan(polynomial.total.corrected[55]) &&
+                   polyFit.parameters.value("coefficients_ascending").toArray().size() == 3,
+               "a quadratic background fits protected windows and retains masked samples");
+        plan.polynomialOrder = 1;
+
+        const QVector<double> uniformEnergy{0., 1., 2., 3., 4., 5., 6.};
+        const QVector<double> impulse{0., 0., 0., 1., 0., 0., 0.};
+        const auto filtered = SpectrumProcessing::savitzkyGolay(uniformEnergy, impulse, 5, 2);
+        expect(close(filtered[3], 17. / 35.) && close(filtered[2], 12. / 35.),
+               "Savitzky–Golay uses the expected five-point quadratic weights");
+        const QVector<double> unevenEnergy{0., .7, 1.9, 3.4, 4., 6., 7.5, 8., 8.2, 10., 13., 14.};
+        QVector<double> unevenCurve;
+        for (const double e : unevenEnergy)
+            unevenCurve.append(e * e + (e < 8. ? 0. : 200.));
+        unevenCurve[0] = NAN;
+        const auto segmented = SpectrumProcessing::savitzkyGolay(unevenEnergy, unevenCurve, 7, 2, {7});
+        expect(std::isnan(segmented[0]) &&
+                   std::equal(segmented.cbegin() + 1, segmented.cend(), unevenCurve.cbegin() + 1,
+                              [](double a, double b) { return close(a, b); }),
+               "Savitzky–Golay preserves quadratic signals on irregular grids within each segment and preserves gaps");
         plan.protectedWindows.clear();
         plan.windows[int(BackgroundComponent::ComptonPeak)] = {{0, 10}};
         QVector<double> reduced;

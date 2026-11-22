@@ -71,8 +71,11 @@ struct SpectrumResult {
 class Spectroscopy {
   public:
     using Progress = std::function<void(const QString &, int)>;
+    using PixelSpectraVisitor = std::function<void(qsizetype, PixelSpectra, const QString &)>;
     static PixelSpectra pixelSpectra(const QString &reference, const SpectrumSettings &, const CrystalRoi &,
                                      const QSize &detectorSize, const std::atomic_bool &);
+    static void visitPixelSpectra(const QString &reference, const SpectrumSettings &, const QVector<CrystalRoi> &,
+                                  const QSize &detectorSize, const std::atomic_bool &, const PixelSpectraVisitor &);
     static ElasticCalibration calibrate(const SpectrumSettings &, const CrystalRois &,
                                         const std::atomic_bool &, Progress = {});
     static ElasticCalibration prepareMasks(const SpectrumSettings &, const CrystalRois &,

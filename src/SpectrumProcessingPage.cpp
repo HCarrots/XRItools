@@ -12,15 +12,24 @@ using WorkspacePaths::Kind;
 using WorkspacePaths::Workflow;
 
 const QString inputFilter = QStringLiteral("Spectra (*.h5 *.hdf5 *.nxs *.txt *.tsv);;All files (*)");
-constexpr auto linearKey = "low_q_linear_windows";
-constexpr auto defaultLinearWindows = "460:510";
+constexpr auto defaultPolynomialWindows = "460:510";
+constexpr int defaultSmoothingWindow = 7, defaultSmoothingOrder = 2;
 constexpr auto totalTarget = "total";
 constexpr int batchModuleRole = Qt::UserRole + 1;
+constexpr int resultDisplayRole = Qt::UserRole + 1;
 const std::array<QColor, backgroundComponentCount> backgroundColors{
     QColor("#d55e00"), QColor("#996025"), QColor("#8e5ab5"), QColor("#b83e78")};
 QDoubleSpinBox *numberBox(double min, double max, double value, int precision = 4) {
     auto box = new QDoubleSpinBox;
     box->setDecimals(precision);
+    box->setRange(min, max);
+    box->setValue(value);
+    box->setKeyboardTracking(false);
+    return box;
+}
+QSpinBox *integerBox(const QString &name, int min, int max, int value) {
+    auto box = new QSpinBox;
+    box->setObjectName(name);
     box->setRange(min, max);
     box->setValue(value);
     box->setKeyboardTracking(false);
@@ -78,9 +87,10 @@ SpectrumWindows parseWindows(const QString &text, const QString &label) {
 }
 } // namespace
 
-SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &composition, QLineEdit &hfShells,
-                                               QWidget *parent)
-    : QWidget(parent), m_hfTable(&hfTable), m_composition(&composition), m_hfShells(&hfShells) {
+SpectrumProcessingPage::SpectrumProcessingPage(QCheckBox &measureCompton, QLineEdit &hfTable, QLineEdit &composition,
+                                               QLineEdit &hfShells, QWidget *parent)
+    : QWidget(parent), m_measureCompton(&measureCompton), m_hfTable(&hfTable), m_composition(&composition),
+      m_hfShells(&hfShells) {
     auto input = new QVBoxLayout(this);
     WorkflowUi::compact(input);
     m_inputControls = new QWidget;
@@ -136,6 +146,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         bound->setSuffix(" eV");
     m_splice = WorkflowUi::button("layers", tr("Compton 峰拼接"));
     m_splice->setObjectName("SpliceComptonPeak");
+    m_applyFullScan = WorkflowUi::button("layers", tr("使用 Full Scan"));
+    m_applyFullScan->setObjectName("ApplyComptonFullScan");
     selection->addRow(tr("预览谱"), m_inputCrystal);
     selection->addRow(m_normalizeNear);
     selection->addRow(m_limitPeak);
@@ -144,6 +156,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     previewLayout->addLayout(selection);
     controls->addWidget(previewBox);
     controls->addWidget(m_splice);
+    controls->addWidget(m_applyFullScan);
     controls->addStretch();
 
     auto inputSplit = new QSplitter(Qt::Horizontal);
@@ -222,6 +235,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
 
     m_asymmetryRise = numberBox(.01, 100, 1., 3);
     m_asymmetryDecay = numberBox(.01, 100, 1., 3);
+    m_asymmetryRise->setKeyboardTracking(true);
+    m_asymmetryDecay->setKeyboardTracking(true);
 
     for (int i = 0; i < backgroundComponentCount; ++i) {
         const auto component = BackgroundComponent(i);
@@ -232,7 +247,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         auto command = new QHBoxLayout;
         m_enabledTerms[i] = new QCheckBox(tr("启用"));
         m_enabledTerms[i]->setObjectName("EnableBackground_" + key);
-        m_enabledTerms[i]->setChecked(component == BackgroundComponent::Linear);
+        m_enabledTerms[i]->setChecked(component == BackgroundComponent::Polynomial);
         m_termStatus[i] = textLabel();
         m_fitTerms[i] = WorkflowUi::button("chart-line", tr("拟合"));
         m_fitTerms[i]->setObjectName("FitBackground_" + key);
@@ -247,12 +262,12 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         m_windows[i] = new QLineEdit;
         m_windows[i]->setObjectName("BackgroundWindows_" + key);
         m_windows[i]->setPlaceholderText(tr("起点:终点，多段用逗号分隔"));
-        if (component == BackgroundComponent::Linear) {
-            m_windows[i]->setObjectName("LowMomentumFitWindows");
-            m_windows[i]->setText(defaultLinearWindows);
-        }
         fields->addRow(tr("拟合能区 / eV"), m_windows[i]);
-        if (component == BackgroundComponent::HfCore) {
+        if (component == BackgroundComponent::Polynomial) {
+            m_windows[i]->setText(defaultPolynomialWindows);
+            m_polynomialOrder = integerBox("BackgroundPolynomialOrder", 0, maxBackgroundPolynomialOrder, 1);
+            fields->addRow(tr("多项式阶数"), m_polynomialOrder);
+        } else if (component == BackgroundComponent::HfCore) {
             fields->addRow(textLabel(tr("在第 1 步设置元素与化学比、HF 壳层表和当前分组的扣除壳层。")));
         } else if (component == BackgroundComponent::Asymmetry) {
             fields->addRow(tr("上升宽度 / a.u."), m_asymmetryRise);
@@ -266,6 +281,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         };
         connect(m_enabledTerms[i], &QCheckBox::toggled, this, changed);
         connect(m_windows[i], &QLineEdit::textChanged, this, changed);
+        if (component == BackgroundComponent::Polynomial)
+            connect(m_polynomialOrder, &QSpinBox::valueChanged, this, changed);
         connect(m_fitTerms[i], &QPushButton::clicked, this, [this, component] { fitOne(component); });
     }
     m_batchTargets = new QListWidget;
@@ -290,18 +307,30 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     fitLayout->addWidget(WorkflowUi::disclosure(tr("批量目标"), batchControls));
     m_run = WorkflowUi::button("filter", tr("批量扣除"));
     m_run->setObjectName("RunMomentumBackground");
+    m_run->setAutoDefault(false);
     fitLayout->addStretch();
     auto scroll = new QScrollArea;
     scroll->setWidget(m_fitControls);
     scroll->setWidgetResizable(true);
     scroll->setMinimumWidth(340);
     scroll->setFrameShape(QFrame::NoFrame);
+    auto fitSidebar = new QWidget;
+    fitSidebar->setObjectName("BackgroundParameters");
+    auto sidebarLayout = new QVBoxLayout(fitSidebar);
+    sidebarLayout->setContentsMargins(0, 0, 0, 0);
+    sidebarLayout->addWidget(scroll, 1);
     auto backgroundSplit = new QSplitter(Qt::Horizontal);
     backgroundSplit->setChildrenCollapsible(false);
-    backgroundSplit->addWidget(scroll);
+    backgroundSplit->addWidget(fitSidebar);
     auto preview = new QWidget;
-    auto review = new QVBoxLayout(preview);
-    review->setContentsMargins(4, 0, 0, 0);
+    auto backgroundPreviewLayout = new QHBoxLayout(preview);
+    backgroundPreviewLayout->setContentsMargins(0, 0, 0, 0);
+    backgroundPreviewLayout->setSpacing(4);
+    auto toggle = WorkflowUi::sidePanelToggle(fitSidebar, tr("收起参数面板"), tr("展开参数面板"));
+    toggle->setObjectName("ToggleBackgroundParameters");
+    backgroundPreviewLayout->addWidget(toggle, 0, Qt::AlignTop);
+    auto review = new QVBoxLayout;
+    backgroundPreviewLayout->addLayout(review, 1);
     m_fitPlot = spectroscopyPlot("MomentumBackgroundDiagnostics");
     review->addWidget(m_fitPlot, 1);
     m_fitInfo = textLabel();
@@ -315,7 +344,6 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     m_cancelButton = WorkflowUi::button("square", tr("取消分析"));
     m_cancelButton->hide();
     runStatus->addWidget(m_cancelButton);
-    runStatus->addWidget(m_run);
     analysis->addLayout(runStatus);
 
     m_resultPage = new QWidget;
@@ -325,8 +353,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     auto resultControls = new QVBoxLayout(m_resultControls);
     resultControls->setContentsMargins(0, 0, 0, 0);
     auto resultOptions = new QGroupBox(tr("谱图设置"));
-    auto resultFields = new QFormLayout(resultOptions);
-    WorkflowUi::compact(resultFields);
+    m_resultFields = new QFormLayout(resultOptions);
+    WorkflowUi::compact(m_resultFields);
     m_resultChoice = new QComboBox;
     m_resultChoice->setObjectName("BackgroundResultSpectrum");
     m_resultView = new QComboBox;
@@ -338,11 +366,28 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     m_resultHi->setObjectName("CorrectedEnergyMaximum");
     for (auto bound : {m_resultLo, m_resultHi})
         bound->setSuffix(" eV");
-    resultFields->addRow(tr("结果谱"), m_resultChoice);
-    resultFields->addRow(tr("显示内容"), m_resultView);
-    resultFields->addRow(tr("能区下限"), m_resultLo);
-    resultFields->addRow(tr("能区上限"), m_resultHi);
+    m_resultFields->addRow(tr("结果谱"), WorkflowUi::spectrumChooser(
+        m_resultChoice, "NearEdgeSpectrum", tr("上一条谱"), tr("下一条谱")));
+    m_resultFields->addRow(tr("显示内容"), m_resultView);
+    m_resultFields->addRow(tr("能区下限"), m_resultLo);
+    m_resultFields->addRow(tr("能区上限"), m_resultHi);
     resultControls->addWidget(resultOptions);
+
+    auto smoothingOptions = new QGroupBox(tr("谱平滑"));
+    auto smoothingFields = new QFormLayout(smoothingOptions);
+    WorkflowUi::compact(smoothingFields);
+    m_smoothSpectrum = new QCheckBox(tr("Savitzky–Golay 平滑"));
+    m_smoothSpectrum->setObjectName("CompareSmoothedSpectrum");
+    m_smoothSpectrum->setToolTip(tr("叠加平滑曲线与未平滑结果谱进行比较。"));
+    m_smoothingWindow = integerBox("SpectrumSmoothingWindow", 5, 51, defaultSmoothingWindow);
+    m_smoothingWindow->setSingleStep(2);
+    m_smoothingOrder = integerBox("SpectrumSmoothingOrder", 1, 3, defaultSmoothingOrder);
+    m_smoothingWindow->setEnabled(false);
+    m_smoothingOrder->setEnabled(false);
+    smoothingFields->addRow(m_smoothSpectrum);
+    smoothingFields->addRow(tr("窗口点数（奇数）"), m_smoothingWindow);
+    smoothingFields->addRow(tr("多项式阶数"), m_smoothingOrder);
+    resultControls->addWidget(smoothingOptions);
 
     auto exportOptions = new QGroupBox(tr("保存当前能区"));
     auto exportLayout = new QVBoxLayout(exportOptions);
@@ -375,14 +420,16 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
 
     auto spliceSettingsChanged = [this] {
         resetSplice();
-        emit analysisParametersEdited();
+        emit comptonParametersEdited();
     };
     connect(m_acquisition, &QComboBox::currentIndexChanged, this, spliceSettingsChanged);
     auto wideMappingChanged = [this] {
         ++m_wideRevision;
         m_wide = {};
-        resetSplice();
-        emit analysisParametersEdited();
+        if (separateAcquisition()) {
+            resetSplice();
+            emit comptonParametersEdited();
+        }
     };
     for (auto edit : {m_energyPath, m_labelsPath, m_intensityPath, m_unit})
         connect(edit, &QLineEdit::textChanged, this, wideMappingChanged);
@@ -394,14 +441,29 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
             suggestion = QDir(WorkspacePaths::directory(Workflow::Spectroscopy, Kind::Result)).filePath("spectra.h5");
         const auto path = WorkflowUi::selectSource(this, m_availableFiles, suggestion,
                                                    tr("选择 Compton 宽谱文件"), inputFilter);
-        if (!path.isEmpty())
+        if (!path.isEmpty()) {
+            ++m_wideRevision;
+            m_wide = {};
+            m_wideFile.clear();
+            resetSplice();
+            emit comptonParametersEdited();
             loadWide(QFileInfo(path).absoluteFilePath());
+        }
     });
     connect(m_limitPeak, &QCheckBox::toggled, this, &SpectrumProcessingPage::refreshInput);
-    connect(m_normalizeNear, &QCheckBox::toggled, this, spliceSettingsChanged);
+    connect(m_normalizeNear, &QCheckBox::toggled, this, [this, spliceSettingsChanged] {
+        if (separateAcquisition())
+            spliceSettingsChanged();
+    });
     for (auto bound : {m_peakLo, m_peakHi})
         connect(bound, &QDoubleSpinBox::valueChanged, this, &SpectrumProcessingPage::refreshInput);
     connect(m_splice, &QPushButton::clicked, this, [this] { startSplice(); });
+    connect(m_applyFullScan, &QPushButton::clicked, this, [this] {
+        if (!separateAcquisition() && prepareAnalysisInput(false)) {
+            emit comptonInputApplied();
+            message(tr("已使用 Full Scan 作为背景分析输入。"));
+        }
+    });
     connect(m_scope, &QComboBox::currentIndexChanged, this, [this] {
         m_configuredBatchTargets.reset();
         refreshAnalysisInput();
@@ -448,6 +510,19 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
     connect(m_resultView, &QComboBox::currentIndexChanged, this, &SpectrumProcessingPage::refreshResult);
     for (auto spin : {m_resultLo, m_resultHi})
         connect(spin, &QDoubleSpinBox::valueChanged, this, [this] { refreshResult(); });
+    connect(m_smoothSpectrum, &QCheckBox::toggled, this, [this](bool enabled) {
+        m_smoothingWindow->setEnabled(enabled);
+        m_smoothingOrder->setEnabled(enabled);
+        refreshResult();
+    });
+    connect(m_smoothingWindow, &QSpinBox::valueChanged, this, [this](int points) {
+        if (points % 2 == 0) {
+            const QSignalBlocker block(m_smoothingWindow);
+            m_smoothingWindow->setValue(points + 1);
+        }
+        refreshResult();
+    });
+    connect(m_smoothingOrder, &QSpinBox::valueChanged, this, &SpectrumProcessingPage::refreshResult);
     connect(m_saveResult, &QPushButton::clicked, this, [this] { saveResult(ResultFormat::Hdf5); });
     connect(m_saveText, &QPushButton::clicked, this, [this] { saveResult(ResultFormat::Text); });
     connect(&m_watcher, &QFutureWatcher<Work>::finished, this, [this] {
@@ -459,7 +534,6 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
             result.message = tr("ROI 或谱学配置已更新，请重新读取原始宽谱。");
         }
         if (result.wide) {
-            const bool newSource = m_wideFile != result.wideFile;
             m_wideFile = result.wideFile;
             m_wide = std::move(*result.wide);
             if (!m_wide.wideCrystals.isEmpty()) {
@@ -468,13 +542,13 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
                 m_wide.sources = {m_wide.sources.value(0)};
             }
             resetSplice();
-            if (newSource)
-                emit analysisParametersEdited();
         }
         bool inputReady = false;
+        bool stitched = false;
         if (result.stitched) {
-            if (result.stitchRevision == m_stitchRevision) {
+            if (!m_cancel.load() && result.stitchRevision == m_stitchRevision) {
                 m_stitched = std::move(*result.stitched);
+                stitched = true;
                 refreshInput();
                 if (result.enterAnalysis)
                     inputReady = prepareAnalysisInput();
@@ -496,26 +570,7 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         }
         if (result.analysis) {
             m_analysis = std::move(*result.analysis);
-            const QSignalBlocker block(m_resultChoice);
-            m_resultChoice->clear();
-            if (m_scope->currentIndex() == PerCrystal && m_analysis.spectra.size() > 1) {
-                m_resultChoice->addItem(tr("全部晶体等权平均"), m_analysis.spectra.keys());
-                QMap<QString, QStringList> groups;
-                for (const auto &label : m_analysis.spectra.keys()) {
-                    const double q = m_analysisInput.geometry.value(label).qMean;
-                    if (!std::isfinite(q) || q <= 0)
-                        continue;
-                    const double lower = .5 * std::floor(q * 2);
-                    groups[tr("%1 · q %2–%3 Å⁻¹").arg(label.section('-', 0, 0))
-                               .arg(lower, 0, 'f', 1).arg(lower + .5, 0, 'f', 1)].append(label);
-                }
-                for (auto it = groups.cbegin(); it != groups.cend(); ++it)
-                    if (it->size() > 1)
-                        m_resultChoice->addItem(it.key(), it.value());
-            }
-            for (const auto &label : m_analysis.spectra.keys())
-                m_resultChoice->addItem(targetName(label), QStringList{label});
-            refreshResult();
+            refreshResultChoices();
         }
         if (result.term || result.analysis)
             refreshAnalysis();
@@ -526,6 +581,8 @@ SpectrumProcessingPage::SpectrumProcessingPage(QLineEdit &hfTable, QLineEdit &co
         m_cancelButton->hide();
         refreshButtons();
         emit busyChanged();
+        if (stitched)
+            emit comptonInputApplied();
         if (inputReady)
             emit analysisInputReady();
         if (result.analysis)
@@ -549,13 +606,18 @@ QJsonObject SpectrumProcessingPage::backgroundConfigurationDefaults() {
                          {"background_hf_shells", ""}, {"background_asymmetry_rise", 1.},
                          {"background_asymmetry_decay", 1.}, {"compton_acquisition", int(Continuous)},
                          {"compton_limit_preview", false}, {"compton_preview_min_ev", 0.},
-                         {"compton_preview_max_ev", 0.}, {"background_result_view", 0}};
+                         {"compton_preview_max_ev", 0.}, {"background_result_view", 0},
+                         {"background_polynomial_order", 1}, {"result_smoothing_enabled", false},
+                         {"result_smoothing_window_points", defaultSmoothingWindow},
+                         {"result_smoothing_order", defaultSmoothingOrder}};
+    // Plans created before this option always exposed step 6 and all background terms.
+    defaults["compton_measured"] = true;
     for (int i = 0; i < backgroundComponentCount; ++i) {
         const auto component = BackgroundComponent(i);
         const auto key = backgroundComponentKey(component);
-        defaults["background_enable_" + key] = component == BackgroundComponent::Linear;
-        if (component != BackgroundComponent::Linear)
-            defaults["background_windows_" + key] = "";
+        const bool polynomial = component == BackgroundComponent::Polynomial;
+        defaults["background_enable_" + key] = polynomial;
+        defaults["background_windows_" + key] = polynomial ? defaultPolynomialWindows : "";
     }
     return defaults;
 }
@@ -568,11 +630,13 @@ QMap<QString, QWidget *> SpectrumProcessingPage::configurationFields() const {
                                   {"external_energy_kev", m_kev},
                                   {"external_energy_first", m_energyFirst},
                                   {"normalize_near_edge_by_scan_count", m_normalizeNear},
+                                  {"compton_measured", m_measureCompton},
                                   {"compton_acquisition", m_acquisition},
                                   {"compton_limit_preview", m_limitPeak},
                                   {"compton_preview_min_ev", m_peakLo},
                                   {"compton_preview_max_ev", m_peakHi},
                                   {"background_scope", m_scope},
+                                  {"background_polynomial_order", m_polynomialOrder},
                                   {"background_protected_ev", m_protected},
                                   {"background_hf_shells", m_hfShells},
                                   {"background_asymmetry_rise", m_asymmetryRise},
@@ -580,14 +644,16 @@ QMap<QString, QWidget *> SpectrumProcessingPage::configurationFields() const {
                                   {"hf_table", m_hfTable},
                                   {"hf_composition", m_composition},
                                   {"background_result_view", m_resultView},
+                                  {"result_smoothing_enabled", m_smoothSpectrum},
+                                  {"result_smoothing_window_points", m_smoothingWindow},
+                                  {"result_smoothing_order", m_smoothingOrder},
                                   {"result_energy_min_ev", m_resultLo},
                                   {"result_energy_max_ev", m_resultHi}};
     for (int i = 0; i < backgroundComponentCount; ++i) {
         const auto component = BackgroundComponent(i);
         const auto key = backgroundComponentKey(component);
         fields["background_enable_" + key] = m_enabledTerms[i];
-        fields[component == BackgroundComponent::Linear ? QString(linearKey) : "background_windows_" + key] =
-            m_windows[i];
+        fields["background_windows_" + key] = m_windows[i];
     }
     return fields;
 }
@@ -622,9 +688,20 @@ void SpectrumProcessingPage::resetInputs() {
 }
 
 void SpectrumProcessingPage::restoreWideIfNeeded() {
-    if (!m_busy && m_acquisition->currentIndex() == Separate && m_wide.crystals.isEmpty() &&
+    if (!m_busy && separateAcquisition() && m_wide.crystals.isEmpty() &&
         !m_wideFile.isEmpty() && !m_current.crystals.isEmpty())
         loadWide(m_wideFile);
+}
+
+void SpectrumProcessingPage::updateComptonMeasurement(bool applyDefaults) {
+    if (applyDefaults) {
+        for (int i = int(BackgroundComponent::HfCore); i < backgroundComponentCount; ++i) {
+            const QSignalBlocker block(m_enabledTerms[i]);
+            m_enabledTerms[i]->setChecked(m_measureCompton->isChecked());
+        }
+    }
+    resetSplice();
+    emit analysisParametersEdited();
 }
 
 void SpectrumProcessingPage::loadWide(const QString &path) {
@@ -659,7 +736,7 @@ void SpectrumProcessingPage::setCurrentResult(ProcessedSpectrum result) {
     resetSplice();
 }
 
-bool SpectrumProcessingPage::prepareAnalysisInput() {
+bool SpectrumProcessingPage::prepareAnalysisInput(bool allowSplice) {
     if (m_busy)
         return false;
     if (!m_analysisInput.crystals.isEmpty())
@@ -668,8 +745,10 @@ bool SpectrumProcessingPage::prepareAnalysisInput() {
         message(tr("请先在第 5 步生成原始谱。"), true);
         return false;
     }
-    const bool separate = m_acquisition->currentIndex() == Separate;
+    const bool separate = separateAcquisition();
     if (separate && m_stitched.crystals.isEmpty()) {
+        if (!allowSplice)
+            return false;
         if (m_wide.crystals.isEmpty()) {
             if (m_wideFile.isEmpty())
                 message(tr("请选择 Compton 宽谱文件。"), true);
@@ -692,6 +771,8 @@ bool SpectrumProcessingPage::ensureAnalysis() {
         refreshResult();
         return true;
     }
+    if (!m_measureCompton->isChecked() && m_analysisInput.crystals.isEmpty() && !prepareAnalysisInput())
+        return false;
     if (m_run->isEnabled())
         runBatch();
     else if (m_targets.isEmpty())
@@ -699,12 +780,16 @@ bool SpectrumProcessingPage::ensureAnalysis() {
     else if (!previewComplete())
         message(tr("请先逐项拟合当前预览谱中已启用的背景。"), true);
     else
-        message(tr("请勾选要批量扣除的谱。"), true);
+        message(tr("请勾选至少一条要处理的谱。"), true);
     return false;
 }
 
+bool SpectrumProcessingPage::separateAcquisition() const {
+    return m_measureCompton->isChecked() && m_acquisition->currentIndex() == Separate;
+}
+
 const ProcessedSpectrum &SpectrumProcessingPage::peakInput() const {
-    return m_acquisition->currentIndex() == Separate ? m_wide : m_current;
+    return separateAcquisition() ? m_wide : m_current;
 }
 
 QStringList SpectrumProcessingPage::previewCrystals(QStringList labels) const {
@@ -783,7 +868,7 @@ SpectrumHdfLayout SpectrumProcessingPage::hdfLayout() const {
 
 QString SpectrumProcessingPage::componentName(BackgroundComponent component) const {
     switch (component) {
-    case BackgroundComponent::Linear: return tr("线性背景");
+    case BackgroundComponent::Polynomial: return tr("多项式背景");
     case BackgroundComponent::HfCore: return tr("HF-core 拟合");
     case BackgroundComponent::ComptonPeak: return tr("Compton 峰拟合背景");
     case BackgroundComponent::Asymmetry: return tr("非对称函数修正");
@@ -801,32 +886,43 @@ QString SpectrumProcessingPage::targetName(const QString &key) const {
 }
 
 bool SpectrumProcessingPage::componentAvailable(BackgroundComponent component) const {
-    return m_scope->currentIndex() == PerCrystal ||
-           component == BackgroundComponent::Linear || component == BackgroundComponent::ComptonPeak;
+    return component == BackgroundComponent::Polynomial ||
+           (m_measureCompton->isChecked() &&
+            (m_scope->currentIndex() == PerCrystal || component == BackgroundComponent::ComptonPeak));
+}
+
+bool SpectrumProcessingPage::componentEnabled(BackgroundComponent component) const {
+    return componentAvailable(component) && m_enabledTerms[int(component)]->isChecked();
+}
+
+bool SpectrumProcessingPage::hasEnabledBackground() const {
+    for (int i = 0; i < backgroundComponentCount; ++i)
+        if (componentEnabled(BackgroundComponent(i)))
+            return true;
+    return false;
 }
 
 bool SpectrumProcessingPage::canFit(BackgroundComponent component) const {
     const int index = int(component);
-    if (m_busy || m_fitCrystal->currentIndex() < 0 || !componentAvailable(component) ||
-        !m_enabledTerms[index]->isChecked())
+    if (m_busy || m_fitCrystal->currentIndex() < 0 || !componentEnabled(component))
         return false;
     const auto preview = m_previews.constFind(m_fitCrystal->currentData().toString());
     if (preview != m_previews.cend() && preview->terms.contains(component))
         return false;
     for (int i = 0; i < index; ++i)
-        if (componentAvailable(BackgroundComponent(i)) && m_enabledTerms[i]->isChecked() &&
+        if (componentEnabled(BackgroundComponent(i)) &&
             (preview == m_previews.cend() || !preview->terms.contains(BackgroundComponent(i))))
             return false;
     return true;
 }
 
 bool SpectrumProcessingPage::previewComplete() const {
-    const auto preview = m_previews.constFind(m_fitCrystal->currentData().toString());
-    if (preview == m_previews.cend() || preview->terms.isEmpty())
+    if (m_fitCrystal->currentIndex() < 0)
         return false;
+    const auto preview = m_previews.constFind(m_fitCrystal->currentData().toString());
     for (int i = 0; i < backgroundComponentCount; ++i)
-        if (componentAvailable(BackgroundComponent(i)) && m_enabledTerms[i]->isChecked() &&
-            !preview->terms.contains(BackgroundComponent(i)))
+        if (componentEnabled(BackgroundComponent(i)) &&
+            (preview == m_previews.cend() || !preview->terms.contains(BackgroundComponent(i))))
             return false;
     return true;
 }
@@ -893,15 +989,17 @@ void SpectrumProcessingPage::chooseBatchModules() {
 
 StagedBackgroundSettings SpectrumProcessingPage::settings(int last) const {
     StagedBackgroundSettings out;
+    out.polynomialOrder = m_polynomialOrder->value();
     for (int i = 0; i <= last; ++i) {
         const auto component = BackgroundComponent(i);
-        if (!componentAvailable(component) || !m_enabledTerms[i]->isChecked())
+        if (!componentEnabled(component))
             continue;
         out.windows[i] = parseWindows(m_windows[i]->text(), componentName(component));
         if (out.windows[i].isEmpty())
             throw std::runtime_error(tr("请填写「%1」的拟合能区。").arg(componentName(component)).toUtf8().constData());
     }
-    out.protectedWindows = parseWindows(m_protected->text(), tr("保护能区"));
+    if (hasEnabledBackground())
+        out.protectedWindows = parseWindows(m_protected->text(), tr("保护能区"));
     out.hfTable = effectiveHfTable(m_hfTable->text());
     out.composition = m_composition->text().trimmed();
     out.hfShells = backgroundHfShellSelection(m_hfShells->text());
@@ -964,8 +1062,11 @@ void SpectrumProcessingPage::runBatch() {
                 metadata[key + "_fit_windows_ev"] = windows(parameters.windows[i]);
             }
         metadata["background_order"] = order;
-        start(tr("正在批量拟合并扣除背景…"),
-              [this, parameters, selected, metadata, rows = m_targets, target = m_analysisInput,
+        if (!parameters.windows[int(BackgroundComponent::Polynomial)].isEmpty())
+            metadata["background_polynomial_order"] = parameters.polynomialOrder;
+        const bool subtractBackground = !order.isEmpty();
+        start(subtractBackground ? tr("正在批量拟合并扣除背景…") : tr("正在整理原谱…"),
+              [this, parameters, selected, metadata, subtractBackground, rows = m_targets, target = m_analysisInput,
                revision = m_analysisRevision] {
                   Work result;
                   StagedBackgroundResult batch;
@@ -980,8 +1081,10 @@ void SpectrumProcessingPage::runBatch() {
                           batch.failures.insert(label, QString::fromUtf8(ex.what()));
                       }
                   }
-                  result.message = tr("批量扣除完成 · 成功 %1 条 · 失败 %2 条")
-                                       .arg(batch.spectra.size()).arg(batch.failures.size());
+                  result.message = subtractBackground
+                      ? tr("批量扣除完成 · 成功 %1 条 · 失败 %2 条")
+                            .arg(batch.spectra.size()).arg(batch.failures.size())
+                      : tr("已保留 %1 条原谱。").arg(batch.spectra.size());
                   result.error = !batch.failures.isEmpty();
                   result.analysis = std::move(batch);
                   result.analysisRevision = revision;
@@ -997,6 +1100,12 @@ void SpectrumProcessingPage::message(const QString &text, bool error) {
         label->setText(text);
         label->setStyleSheet(error ? "color:#a02020" : "");
     }
+    emit statusChanged(text, error);
+}
+
+void SpectrumProcessingPage::useGlobalStatus() {
+    for (auto label : m_status)
+        label->hide();
 }
 
 void SpectrumProcessingPage::start(const QString &text, std::function<Work()> job, bool cancellable) {
@@ -1046,7 +1155,7 @@ void SpectrumProcessingPage::resetAnalysis(int first) {
 
 void SpectrumProcessingPage::refreshInput() {
     const auto &wide = peakInput();
-    const bool separate = m_acquisition->currentIndex() == Separate;
+    const bool separate = separateAcquisition();
     const bool stitched = separate && !m_stitched.crystals.isEmpty();
     const auto nearScanCount = m_current.sources.size();
     const auto names = stitched ? m_stitched.crystals.keys() : wide.crystals.keys();
@@ -1056,6 +1165,7 @@ void SpectrumProcessingPage::refreshInput() {
     m_loadWide->setVisible(separate);
     m_loadWide->setToolTip(m_wideFile);
     m_splice->setVisible(separate);
+    m_applyFullScan->setVisible(!separate);
     m_normalizeNear->setVisible(separate);
     m_normalizeNear->setEnabled(nearScanCount > 1);
     m_limitPeak->setEnabled(!names.isEmpty());
@@ -1170,7 +1280,7 @@ void SpectrumProcessingPage::refreshTargets() {
                 result[i] += row[i];
         }
 
-        if (m_acquisition->currentIndex() != Separate || m_wide.crystalEnergyEv.isEmpty() ||
+        if (!separateAcquisition() || m_wide.crystalEnergyEv.isEmpty() ||
             m_current.energyEv.isEmpty() || labels.size() < 2)
             continue;
         // Wide scans have different native grids. Align the two wide flanks independently on
@@ -1219,11 +1329,13 @@ void SpectrumProcessingPage::refreshAnalysisInput() {
         m_resultLo->setValue(e.first());
         m_resultHi->setValue(e.last());
     }
-    if (target.crystals.isEmpty()) {
+    if (!m_measureCompton->isChecked() && target.crystals.isEmpty()) {
+        m_analysisInputInfo->setText(tr("请先在第 5 步生成原始谱。"));
+    } else if (target.crystals.isEmpty()) {
         m_analysisInputInfo->setText(tr("请在第 6 步点击「下一步」导入谱。"));
     } else {
-        const auto source = m_acquisition->currentIndex() == Separate
-            ? tr("第 6 步 Compton 拼接谱") : tr("第 6 步 Full Scan");
+        const auto source = !m_measureCompton->isChecked() ? tr("第 5 步原始谱")
+            : separateAcquisition() ? tr("第 6 步 Compton 拼接谱") : tr("第 6 步 Full Scan");
         m_analysisInputInfo->setText(tr("%1\n%2 个晶体 · %3 个能量点 · %4 至 %5 eV")
                                          .arg(source).arg(target.crystals.size()).arg(e.size())
                                          .arg(formatNumber(e.first()), formatNumber(e.last())));
@@ -1239,7 +1351,7 @@ void SpectrumProcessingPage::refreshAnalysis() {
         return;
     }
     const auto &energy = m_analysisInput.energyEv;
-    const auto draw = m_acquisition->currentIndex() == Separate
+    const auto draw = separateAcquisition()
         ? SpectrumCurve::Draw::Circles : SpectrumCurve::Draw::Samples;
     const auto backgroundDraw = draw == SpectrumCurve::Draw::Circles ? draw : SpectrumCurve::Draw::Line;
     QVector<SpectrumCurve> curves{{tr("输入谱"), energy, *input, QColor("#0072b2"), false, draw}};
@@ -1265,7 +1377,6 @@ void SpectrumProcessingPage::refreshAnalysis() {
         }
         if (fit->terms.size() > 1)
             curves.append({tr("总背景"), energy, fit->total.background, QColor("#555555"), true, backgroundDraw});
-        curves.append({tr("扣除后"), energy, fit->total.corrected, QColor("#009e73"), false, draw});
     }
     if (m_analysis.failures.contains(label))
         info.append(tr("批量扣除未完成：%1").arg(m_analysis.failures.value(label)));
@@ -1277,69 +1388,184 @@ QStringList SpectrumProcessingPage::resultLabels() const {
     return m_resultChoice->currentData().toStringList();
 }
 
+QMap<QString, QStringList> SpectrumProcessingPage::resultModules(const QStringList &labels) const {
+    QMap<QString, QStringList> modules;
+    if (m_scope->currentIndex() != TotalSpectrum)
+        for (const auto &label : labels)
+            modules[label.section('-', 0, 0)].append(label);
+    return modules;
+}
+
+void SpectrumProcessingPage::refreshResultChoices() {
+    {
+        const QSignalBlocker block(m_resultChoice);
+        m_resultChoice->clear();
+        auto labels = m_analysis.spectra.keys();
+        const int scope = m_scope->currentIndex();
+        if (scope == PerCrystal) {
+            const CrystalRois crystals;
+            QStringList ordered;
+            for (const auto &roi : crystals.items())
+                if (labels.removeOne(roi.label))
+                    ordered.append(roi.label);
+            labels = ordered + labels;
+        }
+        auto add = [&](const QString &title, const QStringList &members, ResultDisplay display = ResultDisplay::Single) {
+            m_resultChoice->addItem(title, members);
+            m_resultChoice->setItemData(m_resultChoice->count() - 1, int(display), resultDisplayRole);
+        };
+        if (labels.size() > 1) {
+            add(tr("总谱与各模组"), labels, ResultDisplay::TotalAndModules);
+            add(tr("各模组谱"), labels, ResultDisplay::Modules);
+            if (scope == PerCrystal)
+                add(tr("全部单晶体谱"), labels, ResultDisplay::Crystals);
+            add(tr("总谱"), labels);
+            if (scope == PerCrystal) {
+                const auto modules = resultModules(labels);
+                for (auto it = modules.cbegin(); it != modules.cend(); ++it)
+                    add(tr("%1 模组谱").arg(it.key()), it.value());
+            }
+        }
+        for (const auto &label : labels)
+            add(targetName(label), {label});
+        if (scope == PerCrystal && labels.size() > 1) {
+            add(tr("全部晶体等权平均"), labels, ResultDisplay::Average);
+            QMap<QString, QStringList> groups;
+            for (const auto &label : labels) {
+                const double q = m_analysisInput.geometry.value(label).qMean;
+                if (!std::isfinite(q) || q <= 0)
+                    continue;
+                const double lower = .5 * std::floor(q * 2);
+                groups[tr("%1 · q %2–%3 Å⁻¹").arg(label.section('-', 0, 0))
+                           .arg(lower, 0, 'f', 1).arg(lower + .5, 0, 'f', 1)].append(label);
+            }
+            for (auto it = groups.cbegin(); it != groups.cend(); ++it)
+                if (it->size() > 1)
+                    add(it.key(), it.value(), ResultDisplay::Average);
+        }
+    }
+    refreshResult();
+}
+
 void SpectrumProcessingPage::refreshResult() {
     const auto labels = resultLabels();
+    const auto display = ResultDisplay(m_resultChoice->currentData(resultDisplayRole).toInt());
+    const bool overview = display != ResultDisplay::Single && display != ResultDisplay::Average;
+    m_resultFields->setRowVisible(m_resultView, !overview);
     const double lo = m_resultLo->value(), hi = m_resultHi->value();
     const auto &target = m_analysisInput;
     const auto &axis = target.energyEv;
-    const bool stitched = m_acquisition->currentIndex() == Separate;
-    QVector<SpectrumCurve> curves;
-    QVector<double> x, corrected;
+    const bool smooth = m_smoothSpectrum->isChecked();
+    const auto draw = separateAcquisition() ? SpectrumCurve::Draw::Circles : SpectrumCurve::Draw::Samples;
+    const auto backgroundDraw = draw == SpectrumCurve::Draw::Circles ? draw : SpectrumCurve::Draw::Line;
+    QVector<SpectrumCurve> curves, smoothedCurves;
+    qsizetype seriesCount = 0, finite = 0, mostFinite = 0;
+    double peakEnergy = NAN, peakIntensity = -INFINITY;
     if (hi > lo && !labels.isEmpty()) {
         const auto first = std::lower_bound(axis.cbegin(), axis.cend(), lo) - axis.cbegin();
         const auto last = std::upper_bound(axis.cbegin(), axis.cend(), hi) - axis.cbegin();
-        x = axis.mid(first, last - first);
-        auto average = [&](const auto &values) {
-            QVector<double> y(x.size(), 0.);
-            for (const auto &label : labels) {
-                const auto &row = values(label);
-                for (qsizetype i = 0; i < y.size(); ++i)
-                    y[i] += row[first + i];
-            }
-            for (auto &value : y)
-                value /= labels.size();
-            return y;
-        };
+        const auto x = axis.mid(first, last - first);
+        QVector<qsizetype> segmentStarts;
+        if (smooth && target.processing.contains("compton_splice") && !m_current.energyEv.isEmpty()) {
+            const auto nearStart = std::lower_bound(axis.cbegin(), axis.cend(), m_current.energyEv.first());
+            const auto nearEnd = std::upper_bound(nearStart, axis.cend(), m_current.energyEv.last());
+            segmentStarts = {nearStart - axis.cbegin(), nearEnd - axis.cbegin()};
+        }
         auto spectrum = [&](const QString &label) -> const StagedSpectrumFit & {
             return m_analysis.spectra.constFind(label).value();
         };
-        corrected = average([&](const QString &label) -> const QVector<double> & {
-            return spectrum(label).total.corrected;
-        });
-        const auto draw = stitched ? SpectrumCurve::Draw::Circles : SpectrumCurve::Draw::Samples;
-        const auto backgroundDraw = stitched ? draw : SpectrumCurve::Draw::Line;
-        if (m_resultView->currentIndex() != 0) {
-            curves.append({tr("输入谱"), x, average([&](const QString &label) -> const QVector<double> & {
-                               return m_targets.constFind(label).value();
-                           }), QColor("#0072b2"), false, draw});
-            const auto &terms = spectrum(labels.first()).terms;
-            for (auto it = terms.cbegin(); it != terms.cend(); ++it) {
-                const auto term = it.key();
-                curves.append({componentName(term), x, average([&](const QString &label) -> const QVector<double> & {
-                                   return spectrum(label).terms.constFind(term)->background;
-                               }), backgroundColors[int(term)], false, backgroundDraw});
+        auto combine = [&](const QStringList &members, const auto &values, bool fullRange = false) {
+            const auto start = fullRange ? 0 : first;
+            const auto count = fullRange ? axis.size() : x.size();
+            if (members.size() == 1)
+                return values(members.first()).mid(start, count);
+            QVector<double> y(count, 0.);
+            for (const auto &label : members) {
+                const auto &row = values(label);
+                for (qsizetype i = 0; i < y.size(); ++i)
+                    y[i] += row[start + i];
             }
-            if (terms.size() > 1)
-                curves.append({tr("总背景"), x, average([&](const QString &label) -> const QVector<double> & {
-                                   return spectrum(label).total.background;
-                               }), QColor("#555555"), true, backgroundDraw});
+            if (display == ResultDisplay::Average)
+                for (auto &value : y)
+                    value /= members.size();
+            return y;
+        };
+        auto appendCorrected = [&](const QString &title, const QStringList &members, const QColor &color) {
+            auto y = combine(members, [&](const QString &label) -> const QVector<double> & {
+                return spectrum(label).total.corrected;
+            }, smooth);
+            if (smooth && !x.isEmpty()) {
+                auto filtered = SpectrumProcessing::savitzkyGolay(axis, y, m_smoothingWindow->value(),
+                                                                  m_smoothingOrder->value(), segmentStarts)
+                                    .mid(first, x.size());
+                auto filteredEnergy = x;
+                for (auto split = segmentStarts.crbegin(); split != segmentStarts.crend(); ++split) {
+                    if (*split > first && *split < last) {
+                        filteredEnergy.insert(*split - first, NAN);
+                        filtered.insert(*split - first, NAN);
+                    }
+                }
+                smoothedCurves.append({tr("%1 · 平滑").arg(title), std::move(filteredEnergy),
+                                       std::move(filtered), overview ? QColor{} : QColor("#d55e00"), true,
+                                       separateAcquisition() ? SpectrumCurve::Draw::Samples : SpectrumCurve::Draw::Line});
+            }
+            if (smooth)
+                y = y.mid(first, x.size());
+            qsizetype points = 0;
+            for (qsizetype i = 0; i < y.size(); ++i)
+                if (std::isfinite(y[i])) {
+                    ++points;
+                    if (y[i] > peakIntensity) {
+                        peakIntensity = y[i];
+                        peakEnergy = x[i];
+                    }
+                }
+            finite += points;
+            mostFinite = std::max(mostFinite, points);
+            ++seriesCount;
+            curves.append({title, x, std::move(y), color, false, draw});
+        };
+
+        if (overview) {
+            if (display == ResultDisplay::TotalAndModules)
+                appendCorrected(tr("Total"), labels, Qt::black);
+            if (display == ResultDisplay::Crystals) {
+                for (const auto &label : labels)
+                    appendCorrected(label, {label}, {});
+            } else {
+                const auto modules = resultModules(labels);
+                for (auto it = modules.cbegin(); it != modules.cend(); ++it)
+                    appendCorrected(it.key(), it.value(), {});
+            }
+        } else {
+            const auto &terms = spectrum(labels.first()).terms;
+            if (m_resultView->currentIndex() != 0 && !terms.isEmpty()) {
+                curves.append({tr("输入谱"), x, combine(labels, [&](const QString &label) -> const QVector<double> & {
+                                   return m_targets.constFind(label).value();
+                               }), QColor("#0072b2"), false, draw});
+                for (auto it = terms.cbegin(); it != terms.cend(); ++it) {
+                    const auto term = it.key();
+                    curves.append({componentName(term), x,
+                                   combine(labels, [&](const QString &label) -> const QVector<double> & {
+                                       return spectrum(label).terms.constFind(term)->background;
+                                   }), backgroundColors[int(term)], false, backgroundDraw});
+                }
+                if (terms.size() > 1)
+                    curves.append({tr("总背景"), x, combine(labels, [&](const QString &label) -> const QVector<double> & {
+                                       return spectrum(label).total.background;
+                                   }), QColor("#555555"), true, backgroundDraw});
+            }
+            appendCorrected(terms.isEmpty() ? tr("原谱") : tr("扣背底结果"), labels, QColor("#009e73"));
         }
-        curves.append({tr("扣背底结果"), x, corrected, QColor("#009e73"), false, draw});
     }
+    curves += smoothedCurves;
     m_resultPlot->setCurves(curves, m_resultChoice->currentText(), "Energy transfer (eV)", target.intensityUnit);
-    qsizetype peak = -1, finite = 0;
-    for (qsizetype i = 0; i < corrected.size(); ++i)
-        if (std::isfinite(corrected[i])) {
-            ++finite;
-            if (peak < 0 || corrected[i] > corrected[peak])
-                peak = i;
-        }
-    m_resultInfo->setText(peak < 0 ? tr("当前能区没有有效结果，请运行扣背底或调整能量范围。")
-                                   : tr("%1 条谱 · %2 个有效能量点 · 最大采样点 %3 eV，强度 %4")
-                                         .arg(labels.size()).arg(finite)
-                                         .arg(formatNumber(x[peak]), formatNumber(corrected[peak])));
+    m_resultInfo->setText(finite == 0 ? tr("当前能区没有有效结果，请运行扣背底或调整能量范围。")
+                                    : tr("%1 条谱 · %2 个有效能量点 · 最大采样点 %3 eV，强度 %4")
+                                          .arg(seriesCount).arg(finite)
+                                          .arg(formatNumber(peakEnergy), formatNumber(peakIntensity)));
     for (auto button : {m_saveResult, m_saveText})
-        button->setEnabled(!m_busy && finite >= 2);
+        button->setEnabled(!m_busy && mostFinite >= 2);
 }
 
 void SpectrumProcessingPage::saveResult(ResultFormat format) {
@@ -1421,6 +1647,7 @@ void SpectrumProcessingPage::saveResult(ResultFormat format) {
 void SpectrumProcessingPage::refreshButtons() {
     m_splice->setEnabled(!m_busy && m_stitched.crystals.isEmpty() &&
                         !m_wide.crystals.isEmpty() && !m_current.crystals.isEmpty());
+    m_applyFullScan->setEnabled(!m_busy && !m_current.crystals.isEmpty());
     const auto label = m_fitCrystal->currentData().toString();
     const int previewIndex = m_fitCrystal->currentIndex();
     m_previousPreview->setEnabled(!m_busy && previewIndex > 0);
@@ -1438,8 +1665,11 @@ void SpectrumProcessingPage::refreshButtons() {
         m_enabledTerms[i]->setEnabled(available);
         m_termControls[i]->setVisible(available && enabled);
         m_fitTerms[i]->setEnabled(canFit(component));
-        m_termStatus[i]->setText(!available ? tr("仅分晶体可用") : !enabled ? QString()
-                                     : fitted ? tr("已拟合") : tr("待拟合"));
+        m_termStatus[i]->setText(!available ? (m_measureCompton->isChecked() ? tr("仅分晶体可用") : QString())
+                                     : !enabled ? QString() : fitted ? tr("已拟合") : tr("待拟合"));
     }
+    const bool subtractBackground = hasEnabledBackground();
+    m_run->setText(subtractBackground ? tr("批量扣除") : tr("使用原谱"));
+    m_resultView->setItemText(0, subtractBackground ? tr("扣除后") : tr("原谱"));
     m_run->setEnabled(!m_busy && previewComplete() && !batchTargets().isEmpty());
 }

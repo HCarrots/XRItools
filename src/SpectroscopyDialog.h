@@ -7,6 +7,7 @@
 class QTabWidget;
 class QDir;
 class QLineEdit;
+class QMenu;
 class QComboBox;
 class QCheckBox;
 class QDoubleSpinBox;
@@ -37,6 +38,7 @@ class SpectroscopyDialog : public QDialog {
         return m_haveResult;
     }
     QString statusText() const;
+    void useGlobalStatus();
     bool importConfiguration(const QString &path);
     bool saveConfiguration(const QString &path);
     bool loadRois(const QString &path);
@@ -51,19 +53,23 @@ class SpectroscopyDialog : public QDialog {
 
   signals:
     void roiRequested(const QString &file);
+    void statusChanged(const QString &text);
 
   private:
     enum class EdgeStatus { Pending, Combined, Partial, Completed };
+    enum class MaskSource { Current, Parameters, Spectral, Original };
     struct EdgeConfiguration {
         QString elasticFile, roiFile, wideFile;
         CrystalRois rois;
         QVector<QSize> sizes;
         QMap<int, SpectralSelection> masks;
         QSet<int> exclusions;
+        QSet<int> manualPages;
         QJsonObject parameters;
         QJsonArray corrections;
         QList<QPair<QString, bool>> scans;
         QJsonValue batchTargets;
+        bool originalRoiOnly = false;
     };
     struct EdgeGroup {
         QString id, name;
@@ -77,8 +83,9 @@ class SpectroscopyDialog : public QDialog {
         QVector<SpectrumScan> scans;
         SpectrumResult result;
         QString error;
+        MaskSource maskSource = MaskSource::Current;
     };
-    SpectrumSettings settings() const;
+    SpectrumSettings settings(MaskSource source = MaskSource::Current) const;
     QMap<QString, QWidget *> configurationFields() const;
     EdgeConfiguration captureEdgeConfiguration() const;
     EdgeConfiguration readEdgeConfiguration(const QJsonObject &, const QDir &) const;
@@ -89,6 +96,9 @@ class SpectroscopyDialog : public QDialog {
     void switchEdgeGroup(int index);
     void refreshEdgeGroups();
     void chooseEdgeHfShells();
+    void populateScanAddMenu(QMenu &menu);
+    void chooseBrowserScans(const QStringList &files);
+    QSet<QString> listedScanPaths() const;
     void setEdgeStatus(EdgeStatus);
     void refreshExportIdentity();
     QString sampleStem() const;
@@ -97,12 +107,19 @@ class SpectroscopyDialog : public QDialog {
     static QString edgeStatusKey(EdgeStatus);
     void buildUi();
     void invalidate(int stage, bool preserveEdgeStatus = false);
+    void calculationParametersEdited(int stage);
+    void processingParametersEdited(int page);
+    int firstManualPage() const;
+    QString manualCalculationHint(int page) const;
     void refreshState();
     void refreshActions();
     void advanceToPage(int target);
+    void runStep(int step, MaskSource source);
     void refreshCalibration();
     void editSpectralMask();
-    void updateMasks();
+    void maskParametersEdited();
+    void applySpectralMasks(QMap<int, SpectralSelection> masks);
+    void refreshSpectralMaskLabels();
     void refreshImages();
     void refreshElasticCurve();
     void refreshScanCurves();
@@ -114,6 +131,7 @@ class SpectroscopyDialog : public QDialog {
     CrystalRois m_rois;
     QVector<QSize> m_roiSizes;
     QSet<int> m_configExclusions;
+    QSet<int> m_manualPages;
     QMap<int, SpectralSelection> m_spectralMasks;
     ElasticCalibration m_masks, m_calibration;
     QVector<DataSlice> m_projection;
@@ -124,6 +142,7 @@ class SpectroscopyDialog : public QDialog {
     std::atomic_bool m_cancel{false};
     bool m_busy = false, m_updating = false, m_haveCalibration = false, m_haveScans = false,
          m_haveResult = false;
+    bool m_useOriginalRoi = false;
     int m_job = 0;
     int m_nextPage = -1;
     QStringList m_availableFiles;
@@ -133,10 +152,12 @@ class SpectroscopyDialog : public QDialog {
     QPair<QString, QString> m_pendingRoi;
     QPushButton *m_nextButton = nullptr, *m_previousButton = nullptr;
     QPushButton *m_fitElasticButton = nullptr;
+    QPushButton *m_calculateMaskButton = nullptr, *m_resetMaskButton = nullptr;
     QDoubleSpinBox *m_glitchDrop = nullptr;
     QTabWidget *m_tabs = nullptr;
     QLineEdit *m_elasticFile = nullptr, *m_roiPath = nullptr, *m_sampleName = nullptr;
     QLineEdit *m_hfTable = nullptr, *m_hfComposition = nullptr, *m_hfShells = nullptr;
+    QCheckBox *m_measureCompton = nullptr;
     QComboBox *m_elasticEnergy = nullptr, *m_xrsEnergy = nullptr, *m_elasticI0 = nullptr, *m_xrsI0 = nullptr,
               *m_model = nullptr;
     QCheckBox *m_normalizeElastic = nullptr, *m_normalizeXrs = nullptr, *m_repair = nullptr,

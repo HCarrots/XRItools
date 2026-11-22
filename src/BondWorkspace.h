@@ -18,6 +18,7 @@ class QPushButton;
 class QSpinBox;
 class QTabWidget;
 class QTableWidget;
+class QVBoxLayout;
 class ScientificPlot;
 class SpectrumPlot;
 
@@ -37,6 +38,8 @@ class BondWorkspace : public QWidget {
     void refreshOutputDestination();
     void openVolume(const QString &);
     bool isBusy() const;
+    QString statusText() const;
+    void useGlobalStatus();
     bool hasResult() const {
         return hasVolume();
     }
@@ -44,6 +47,7 @@ class BondWorkspace : public QWidget {
 
   signals:
     void roiRequested(const QString &file);
+    void statusChanged(const QString &text);
 
   private:
     struct Work {
@@ -78,7 +82,7 @@ class BondWorkspace : public QWidget {
     void startVolume();
     void saveResult();
     void installVolume(BondVolume);
-    QWidget *createReferenceMaps();
+    QWidget *createReferenceMaps(QWidget *controls);
     void fitReferenceMaps();
     void showReferenceMaps(const BondReferenceSlice &);
     void reportProgress(const QString &, int);
@@ -137,16 +141,17 @@ class BondWorkspace : public QWidget {
     QLabel *m_selectedEnergy = nullptr, *m_volumeQuality = nullptr;
     QLabel *m_spatialStatus = nullptr, *m_channelStatus = nullptr;
     QLabel *m_volumeFileStatus = nullptr, *m_stepHint = nullptr;
-    QLabel *m_workspaceOutput = nullptr;
     QPushButton *m_chooseOutput = nullptr;
     QProgressBar *m_progress = nullptr;
     QPushButton *m_cancel = nullptr, *m_run = nullptr, *m_nextAfterSpatial = nullptr,
-                *m_backToSpatial = nullptr, *m_confirmCrystals = nullptr, *m_calibrate = nullptr,
+                *m_previous = nullptr, *m_checkInputs = nullptr, *m_confirmCrystals = nullptr, *m_calibrate = nullptr,
+                *m_toFigures = nullptr, *m_saveVolume = nullptr,
                 *m_prepareChannels = nullptr, *m_applyProcessing = nullptr, *m_buildSurface = nullptr,
                 *m_fitReference = nullptr;
     QWidget *m_configTools = nullptr, *m_viewBar = nullptr, *m_singleEnergy = nullptr,
             *m_dualEnergy = nullptr, *m_integralBounds = nullptr, *m_xControl = nullptr,
             *m_spectralStyleControl = nullptr, *m_volumeSaveTools = nullptr;
+    QVBoxLayout *m_voxelControlsLayout = nullptr, *m_resultControlsLayout = nullptr;
     QTabWidget *m_plots = nullptr;
     QWidget *m_referencePage = nullptr, *m_mapControls = nullptr;
     std::array<QLineEdit *, 2> m_referenceFiles{};

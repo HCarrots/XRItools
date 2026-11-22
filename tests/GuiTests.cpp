@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDialogButtonBox>
@@ -26,6 +27,7 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QGraphicsView>
+#include <QGroupBox>
 #include <QImageReader>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -37,6 +39,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
@@ -46,6 +49,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
@@ -352,12 +356,18 @@ class GuiTests : public QObject {
         auto newGroup = spectrum.findChild<QPushButton *>("AddSpectroscopyEdgeGroup");
         auto tabs = spectrum.findChild<QTabWidget *>("SpectroscopySteps");
         QVERIFY(tabs);
+        auto measureCompton = tabs->widget(0)->findChild<QCheckBox *>("MeasureCompton");
+        auto advanced = tabs->widget(0)->findChild<QWidget *>("SpectroscopyAdvancedInputs");
+        QVERIFY(advanced);
+        auto advancedToggle = advanced->findChild<QToolButton *>();
+        QVERIFY(advancedToggle && !advancedToggle->isChecked());
+        auto enableHf = tabs->widget(6)->findChild<QCheckBox *>("EnableBackground_hf_core");
         auto hfTable = tabs->widget(0)->findChild<QLineEdit *>("BackgroundHfTable");
         auto composition = tabs->widget(0)->findChild<QLineEdit *>("BackgroundHfComposition");
         auto hfShells = tabs->widget(0)->findChild<QLineEdit *>("BackgroundHfShells");
         auto chooseHfShells = tabs->widget(0)->findChild<QPushButton *>("ChooseSpectrumHfShells");
         auto restoreHfTable = tabs->widget(0)->findChild<QPushButton *>("RestoreDefaultHfTable");
-        QVERIFY(hfTable && composition && hfShells && chooseHfShells && restoreHfTable);
+        QVERIFY(hfTable && composition && hfShells && chooseHfShells && restoreHfTable && measureCompton && enableHf);
         QVERIFY(!tabs->widget(6)->findChild<QLineEdit *>("BackgroundHfShells"));
         QVERIFY(!tabs->widget(6)->findChild<QLineEdit *>("BackgroundHfTable"));
         QVERIFY(!tabs->widget(6)->findChild<QLineEdit *>("BackgroundHfComposition"));
@@ -404,6 +414,15 @@ class GuiTests : public QObject {
         QVERIFY(chooseGroup("O", "K", true));
         QCOMPARE(groups->rowCount(), 1);
         QVERIFY(nextStep->isEnabled());
+        QVERIFY(!measureCompton->isChecked() && !tabs->isTabEnabled(5));
+        QVERIFY(!measureCompton->isVisible());
+        advancedToggle->click();
+        QVERIFY(measureCompton->isVisible());
+        QVERIFY(!composition->isEnabled() && !hfTable->isEnabled() && !chooseHfShells->isEnabled());
+        measureCompton->click();
+        QVERIFY(tabs->isTabEnabled(5) && composition->isEnabled() && hfTable->isEnabled());
+        QVERIFY(chooseHfShells->isEnabled() && enableHf->isChecked());
+        enableHf->setChecked(false);
         composition->setText("C:1, O:2");
         bool usedBundledTable = false;
         QTimer::singleShot(0, &spectrum, [&] {
@@ -431,14 +450,82 @@ class GuiTests : public QObject {
         chooseHfShells->click();
         QVERIFY(usedBundledTable);
         QCOMPARE(hfShells->text(), QStringLiteral("C:1"));
-        spectrum.addScans({scan, reverse});
         auto scans = spectrum.findChild<QListWidget *>("XrsFiles");
+        auto addScans = spectrum.findChild<QPushButton *>("AddSpectrumScans");
+        QVERIFY(scans && addScans);
+        spectrum.setAvailableFiles({scan, elastic, reverse, scan, temp.filePath("4_grid_scan_20261106000000_1.nxs")});
+        auto chooseScanAction = [&](const QString &name, bool fromList, const QStringList &selection = {}) {
+            QElapsedTimer elapsed;
+            elapsed.start();
+            bool actionChosen = false, pickerAccepted = selection.isEmpty();
+            QTimer drive;
+            connect(&drive, &QTimer::timeout, &spectrum, [&] {
+                if (auto *picker = qobject_cast<QDialog *>(QApplication::activeModalWidget()); picker != &spectrum &&
+                    picker && picker->objectName() == "SpectrumBrowserScanPicker") {
+                    auto *list = picker->findChild<QListWidget *>("BrowserSpectrumScans");
+                    auto *add = picker->findChild<QPushButton *>("AddSelectedBrowserScans");
+                    if (!actionChosen || elapsed.hasExpired(4000) || !list || !add || list->count() != 3 ||
+                        add->isEnabled()) {
+                        picker->reject();
+                        return;
+                    }
+                    for (int i = 0; i < list->count(); ++i)
+                        list->item(i)->setSelected(selection.contains(list->item(i)->data(Qt::UserRole).toString()));
+                    pickerAccepted = list->selectedItems().size() == selection.size() && add->isEnabled();
+                    if (pickerAccepted)
+                        add->click();
+                    else
+                        picker->reject();
+                    return;
+                }
+                auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                if (!menu)
+                    return;
+                if (elapsed.hasExpired(4000)) {
+                    menu->close();
+                    return;
+                }
+                for (auto *action : menu->actions()) {
+                    if (action->objectName() == name && action->isEnabled()) {
+                        actionChosen = true;
+                        QTimer::singleShot(0, menu, [menu, action] {
+                            menu->setActiveAction(action);
+                            QTest::keyClick(menu, Qt::Key_Return);
+                        });
+                        return;
+                    }
+                }
+                if (!selection.isEmpty() && !menu->actions().isEmpty() && menu->actions().first()->menu()) {
+                    menu->setActiveAction(menu->actions().first());
+                    QTest::keyClick(menu, Qt::Key_Right);
+                } else {
+                    menu->close();
+                }
+            });
+            drive.start(20);
+            if (fromList) {
+                const auto point = scans->count() ? scans->visualItemRect(scans->item(0)).center() : QPoint(5, 5);
+                QContextMenuEvent event(QContextMenuEvent::Mouse, point, scans->viewport()->mapToGlobal(point));
+                QApplication::sendEvent(scans->viewport(), &event);
+            } else {
+                addScans->click();
+            }
+            return actionChosen && pickerAccepted;
+        };
+        QVERIFY(chooseScanAction("ChooseBrowserSpectrumScans", false, {scan, reverse}));
         QCOMPARE(scans->count(), 2);
+        QCOMPARE(scans->item(0)->checkState(), Qt::Checked);
+        QCOMPARE(scans->item(1)->checkState(), Qt::Checked);
+        scans->selectAll();
+        QVERIFY(chooseScanAction("UncheckSelectedSpectrumScans", true));
+        QCOMPARE(groups->item(0, 1)->text(), QStringLiteral("0 / 2"));
+        QVERIFY(chooseScanAction("CheckSelectedSpectrumScans", true));
+        QCOMPARE(groups->item(0, 1)->text(), QStringLiteral("2 / 2"));
         scans->item(1)->setCheckState(Qt::Unchecked);
         spectrum.findChild<QComboBox *>("ElasticEnergy")->setEditText("/entry/energy_custom");
         spectrum.findChild<QDoubleSpinBox *>("GlitchDropPercent")->setValue(7.5);
         spectrum.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->setText("2");
-        spectrum.findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1,9:10");
+        spectrum.findChild<QLineEdit *>("BackgroundWindows_polynomial")->setText("0:1,9:10");
         spectrum.findChild<QComboBox *>("BackgroundScope")->setCurrentIndex(1);
         spectrum.findChild<QLineEdit *>("BackgroundProtectedWindows")->setText("4:6");
         spectrum.findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->setValue(2);
@@ -471,13 +558,16 @@ class GuiTests : public QObject {
         restoreHfTable->click();
         QVERIFY(hfTable->text().isEmpty());
         hfTable->setText(customHfTable);
-        spectrum.addScans({reverse});
+        QVERIFY(chooseScanAction("ChooseBrowserSpectrumScans", true, {reverse}));
         spectrum.findChild<QDoubleSpinBox *>("GlitchDropPercent")->setValue(3.5);
-        spectrum.findChild<QLineEdit *>("LowMomentumFitWindows")->setText("4:8");
+        spectrum.findChild<QLineEdit *>("BackgroundWindows_polynomial")->setText("4:8");
         spectrum.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->setText("4");
         QCOMPARE(groups->item(1, 0)->text(), QStringLiteral("Ni_L3"));
         QCOMPARE(groups->item(1, 1)->text(), QStringLiteral("1 / 1"));
+        measureCompton->click();
+        QVERIFY(!measureCompton->isChecked() && !tabs->isTabEnabled(5));
         groups->setCurrentCell(0, 0);
+        QVERIFY(measureCompton->isChecked() && !tabs->isTabEnabled(5) && !enableHf->isChecked());
         QCOMPARE(scans->count(), 2);
         QCOMPARE(groups->item(0, 1)->text(), QStringLiteral("1 / 2"));
         const auto screenshots = qEnvironmentVariable("XRI_SPECTROSCOPY_SCREENSHOTS");
@@ -506,11 +596,14 @@ class GuiTests : public QObject {
         QCOMPARE(restored.findChild<QComboBox *>("ElasticEnergy")->currentText(), QStringLiteral("/entry/energy_custom"));
         QCOMPARE(restored.findChild<QDoubleSpinBox *>("GlitchDropPercent")->value(), 7.5);
         QCOMPARE(restored.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->text(), QStringLiteral("2"));
-        QCOMPARE(restored.findChild<QLineEdit *>("LowMomentumFitWindows")->text(), QStringLiteral("0:1,9:10"));
+        QCOMPARE(restored.findChild<QLineEdit *>("BackgroundWindows_polynomial")->text(), QStringLiteral("0:1,9:10"));
         QCOMPARE(restored.findChild<QComboBox *>("BackgroundScope")->currentIndex(), 1);
         QCOMPARE(restored.findChild<QLineEdit *>("BackgroundProtectedWindows")->text(), QStringLiteral("4:6"));
         QCOMPARE(restored.findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->value(), 2.);
         auto *normalize = restored.findChild<QCheckBox *>("NormalizeComptonNearEdge");
+        auto *restoredMeasureCompton = restored.findChild<QCheckBox *>("MeasureCompton");
+        QVERIFY(restoredMeasureCompton && restoredMeasureCompton->isChecked());
+        QVERIFY(!restored.findChild<QCheckBox *>("EnableBackground_hf_core")->isChecked());
         QVERIFY(normalize->isChecked());
         auto restoredGroups = restored.findChild<QTableWidget *>("SpectroscopyEdgeGroups");
         QCOMPARE(restoredGroups->rowCount(), 2);
@@ -519,13 +612,14 @@ class GuiTests : public QObject {
         QCOMPARE(restored.findChild<QLineEdit *>("BackgroundHfShells")->text(), QStringLiteral("C:1"));
         QVERIFY(restored.findChild<QLineEdit *>("BackgroundHfTable")->text().isEmpty());
         restoredGroups->setCurrentCell(1, 0);
+        QVERIFY(!restoredMeasureCompton->isChecked());
         QCOMPARE(restored.findChild<QLineEdit *>("BackgroundHfComposition")->text(), QStringLiteral("Ni:1, O:2"));
         QCOMPARE(restored.findChild<QLineEdit *>("BackgroundHfShells")->text(), QStringLiteral("O:1"));
         QCOMPARE(restored.findChild<QLineEdit *>("BackgroundHfTable")->text(), customHfTable);
         QCOMPARE(restoredScans->count(), 1);
         QCOMPARE(restoredScans->item(0)->data(Qt::UserRole).toString(), reverse);
         QCOMPARE(restored.findChild<QDoubleSpinBox *>("GlitchDropPercent")->value(), 3.5);
-        QCOMPARE(restored.findChild<QLineEdit *>("LowMomentumFitWindows")->text(), QStringLiteral("4:8"));
+        QCOMPARE(restored.findChild<QLineEdit *>("BackgroundWindows_polynomial")->text(), QStringLiteral("4:8"));
         QCOMPARE(restored.findChild<QTableWidget *>("RoiCorrections")->item(0, 1)->text(), QStringLiteral("4"));
         restoredGroups->setCurrentCell(0, 0);
         QFile config(configPath);
@@ -569,10 +663,16 @@ class GuiTests : public QObject {
         legacy["schema"] = grouped.value("schema");
         legacy["version"] = 1;
         auto parameters = legacy.value("parameters").toObject();
+        parameters.remove("compton_measured");
         parameters.remove("normalize_near_edge_by_scan_count");
         parameters.remove("background_scope");
         parameters.remove("background_protected_ev");
         parameters.remove("hf_table");
+        parameters["background_enable_linear"] = false;
+        parameters["low_q_linear_windows"] = parameters.take("background_windows_polynomial");
+        for (const auto *key : {"background_enable_polynomial", "background_polynomial_order",
+                                "result_smoothing_enabled", "result_smoothing_window_points", "result_smoothing_order"})
+            parameters.remove(key);
         parameters["background_source"] = 1;
         legacy["parameters"] = parameters;
         QVERIFY(config.open(QIODevice::WriteOnly | QIODevice::Truncate));
@@ -580,8 +680,13 @@ class GuiTests : public QObject {
         config.close();
         QVERIFY(restored.importConfiguration(configPath));
         QCOMPARE(restoredGroups->rowCount(), 1);
+        QVERIFY(restoredMeasureCompton->isChecked());
         QVERIFY(restored.findChild<QLineEdit *>("BackgroundHfTable")->text().isEmpty());
         QVERIFY(!normalize->isChecked());
+        QVERIFY(!restored.findChild<QCheckBox *>("EnableBackground_polynomial")->isChecked());
+        QCOMPARE(restored.findChild<QLineEdit *>("BackgroundWindows_polynomial")->text(), QStringLiteral("0:1,9:10"));
+        QCOMPARE(restored.findChild<QSpinBox *>("BackgroundPolynomialOrder")->value(), 1);
+        QVERIFY(!restored.findChild<QCheckBox *>("CompareSmoothedSpectrum")->isChecked());
         QCOMPARE(restored.findChild<QComboBox *>("BackgroundScope")->currentIndex(), 0);
         QVERIFY(!restored.importConfiguration(roiPath));
         QCOMPARE(restoredScans->count(), 2);
@@ -699,7 +804,12 @@ class GuiTests : public QObject {
         QVERIFY(work && work->isVisible());
         auto tabs = work->findChild<QTabWidget *>("BondSteps");
         auto stepHint = work->findChild<QLabel *>("BondStepHint");
+        auto previous = work->findChild<QPushButton *>("PreviousBondStep");
+        auto *spatialSplit = work->findChild<QSplitter *>("BondSpatialSplitter");
+        auto *spatialToggle = work->findChild<QToolButton *>("BondSpatialSplitterToggle");
+        auto *fileStatus = work->findChild<QLabel *>("BondVolumeFileStatus");
         QVERIFY(tabs && stepHint);
+        QVERIFY(previous && spatialSplit && spatialToggle && fileStatus);
         for (int stage = 1; stage < tabs->count(); ++stage) {
             QVERIFY(tabs->isTabEnabled(stage));
             QTest::mouseClick(tabs->tabBar(), Qt::LeftButton, Qt::NoModifier,
@@ -757,8 +867,12 @@ class GuiTests : public QObject {
             auto next = work->findChild<QPushButton *>("ContinueBondSpatial");
             auto channels = work->findChild<QPushButton *>("PrepareBondChannels");
             auto channelTable = work->findChild<QTableWidget *>("BondChannelInputs");
+            auto buildSplit = work->findChild<QSplitter *>("BondVolumeBuildSplitter");
             auto saveVolume = work->findChild<QPushButton *>("SaveBondVolume");
-            QVERIFY(validate && run && confirm && calibrate && next && channels && channelTable && saveVolume);
+            QVERIFY(validate && run && confirm && calibrate && next && channels && channelTable && buildSplit && saveVolume);
+            QCOMPARE(buildSplit->orientation(), Qt::Horizontal);
+            QVERIFY(buildSplit->widget(0)->isAncestorOf(channels) && buildSplit->widget(0)->isAncestorOf(run));
+            QVERIFY(buildSplit->widget(1)->isAncestorOf(channelTable));
             QVERIFY(!run->isVisible());
             QCOMPARE(validate->text(), QStringLiteral("校验数据"));
             work->selectStage(BondWorkspace::Spatial);
@@ -771,8 +885,26 @@ class GuiTests : public QObject {
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QCOMPARE(tabs->currentIndex(), BondWorkspace::Spatial);
             QVERIFY(!import->isVisible() && !save->isVisible());
+            QCOMPARE(window.statusBar()->currentMessage(), work->statusText());
+            QCOMPARE(spatialSplit->orientation(), Qt::Horizontal);
+            QVERIFY(spatialSplit->widget(0)->isAncestorOf(work->findChild<QLineEdit *>("BondXStep")));
+            QVERIFY(spatialSplit->widget(1)->isAncestorOf(work->findChild<QTableWidget *>("BondSpatialCrystals")));
+            QTRY_VERIFY(spatialSplit->sizes().first() < spatialSplit->width() / 3);
+            const auto parameterWidth = spatialSplit->sizes().first();
+            auto *handle = spatialSplit->handle(1);
+            const auto center = handle->rect().center();
+            QTest::mousePress(handle, Qt::LeftButton, Qt::NoModifier, center);
+            QTest::mouseMove(handle, center + QPoint(100, 0));
+            QTest::mouseRelease(handle, Qt::LeftButton, Qt::NoModifier, center);
+            QTRY_VERIFY(spatialSplit->sizes().first() > parameterWidth + 40);
+            spatialSplit->setSizes({parameterWidth, spatialSplit->width() - parameterWidth});
+            spatialToggle->click();
+            QTRY_VERIFY(!spatialSplit->widget(0)->isVisible() && spatialToggle->isVisible());
+            spatialToggle->click();
+            QTRY_VERIFY(spatialSplit->widget(0)->isVisible());
             QVERIFY(calibrate->isEnabled() && !confirm->isEnabled() && !channels->isEnabled());
             QVERIFY(!next->isEnabled());
+            QCOMPARE(calibrate->parentWidget(), next->parentWidget());
             calibrate->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QVERIFY2(next->isEnabled(), qPrintable(work->findChild<QLabel *>("BondStatus")->text()));
@@ -784,16 +916,15 @@ class GuiTests : public QObject {
             next->click();
             QCOMPARE(tabs->currentIndex(), BondWorkspace::Crystals);
             auto crystalTable = work->findChild<QTableWidget *>("BondCrystalSelection");
-            auto backToSpatial = work->findChild<QPushButton *>("UpdateBondSpatial");
-            QVERIFY(crystalTable && crystalTable->rowCount() && backToSpatial);
+            QVERIFY(crystalTable && crystalTable->rowCount());
             auto crystal = crystalTable->item(0, 0);
             QVERIFY(crystal && crystal->checkState() == Qt::Checked);
             crystal->setCheckState(Qt::Unchecked);
             QCOMPARE(tabs->currentIndex(), BondWorkspace::Crystals);
-            QVERIFY(!confirm->isEnabled() && backToSpatial->isVisible());
+            QVERIFY(!confirm->isEnabled() && previous->isVisible());
             crystal->setCheckState(Qt::Checked);
             QVERIFY(!confirm->isEnabled());
-            backToSpatial->click();
+            previous->click();
             QCOMPARE(tabs->currentIndex(), BondWorkspace::Spatial);
             QVERIFY(!next->isEnabled());
             calibrate->click();
@@ -818,10 +949,16 @@ class GuiTests : public QObject {
             QCOMPARE(tabs->currentIndex(), BondWorkspace::Volume);
             QVERIFY(!stepHint->isVisible());
             QVERIFY(saveVolume->isVisible() && saveVolume->isEnabled());
+            QVERIFY(fileStatus->isVisible() && fileStatus->text().contains(QStringLiteral("尚未保存")));
+            QVERIFY(fileStatus->parentWidget() == work && fileStatus->y() > tabs->geometry().bottom());
+            QVERIFY(saveVolume->mapTo(work, QPoint{}).y() > tabs->geometry().bottom());
+            if (!dir.isEmpty())
+                QVERIFY(window.grab().save(QDir(dir).filePath("voxel-unsaved.png")));
             saveVolume->click();
             QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
             QVERIFY(work->hasResult() && QFile::exists(output->text()));
             QVERIFY(!saveVolume->isVisible());
+            QVERIFY(fileStatus->text().contains(QFileInfo(output->text()).fileName()));
             QVERIFY(QFile::exists(BondImaging::diagnosticPngPath(output->text())));
             QVERIFY(!HdfFile::inspect(output->text(), "/entry/bond/band_diagnostics/1_test/residual_pyz")
                          .dims.isEmpty());
@@ -839,7 +976,14 @@ class GuiTests : public QObject {
         auto source = work->findChild<QComboBox *>("BondViewSource");
         auto channel = work->findChild<QSpinBox *>("BondSpectrumChannel");
         auto plotTabs = work->findChild<QTabWidget *>("BondSpectralPlots");
-        QVERIFY(spectrum && slice && figure && style && source && channel && plotTabs);
+        auto voxelSplit = work->findChild<QSplitter *>("BondVoxelSplitter");
+        QVERIFY(spectrum && slice && figure && style && source && channel && plotTabs && voxelSplit);
+        auto voxelSettings = work->findChild<QGroupBox *>("BondVoxelPlotSettings");
+        QVERIFY(voxelSettings && voxelSettings->isAncestorOf(source) && voxelSettings->isAncestorOf(style));
+        QVERIFY(!voxelSplit->isAncestorOf(fileStatus) && fileStatus->isVisible());
+        QCOMPARE(voxelSplit->orientation(), Qt::Horizontal);
+        QVERIFY(voxelSplit->widget(0)->isAncestorOf(source) && voxelSplit->widget(0)->isAncestorOf(style));
+        QVERIFY(voxelSplit->widget(1)->isAncestorOf(slice) && voxelSplit->widget(1)->isAncestorOf(spectrum));
         QVERIFY(channel->isVisible() && !style->isVisible());
         QVERIFY(slice->data().finiteCount > 0);
         QVERIFY(spectrum->curves().size() == 1);
@@ -950,7 +1094,12 @@ class GuiTests : public QObject {
         auto ea = work->findChild<QDoubleSpinBox *>("BondEa");
         auto integralLo = work->findChild<QDoubleSpinBox *>("BondIntegralLo");
         auto integralHi = work->findChild<QDoubleSpinBox *>("BondIntegralHi");
-        QVERIFY(mode && map && montage && ea && integralLo && integralHi);
+        auto resultSplit = work->findChild<QSplitter *>("BondResultsSplitter");
+        auto figureTabs = work->findChild<QTabWidget *>("BondResultPlots");
+        QVERIFY(mode && map && montage && ea && integralLo && integralHi && resultSplit && figureTabs);
+        QCOMPARE(resultSplit->orientation(), Qt::Horizontal);
+        QVERIFY(resultSplit->widget(0)->isAncestorOf(mode) && resultSplit->widget(0)->isAncestorOf(channel));
+        QVERIFY(resultSplit->widget(1)->isAncestorOf(montage));
         QCOMPARE(mode->count(), 3);
         QVERIFY(channel->isVisible() && !ea->isVisible() && !integralLo->isVisible());
         const int previousChannel = channel->value();
@@ -985,18 +1134,21 @@ class GuiTests : public QObject {
         if (!dir.isEmpty())
             QVERIFY(window.grab().save(QDir(dir).filePath("integral-sections.png")));
         auto surface = work->findChild<QWidget *>("BondIsosurface");
-        QVERIFY(surface);
-        auto figureTabs = qobject_cast<QTabWidget *>(surface->parentWidget()->parentWidget()->parentWidget());
-        QVERIFY(figureTabs);
-        figureTabs->setCurrentIndex(1);
+        QVERIFY(surface && resultSplit->widget(1)->isAncestorOf(surface));
+        figureTabs->setCurrentWidget(surface);
         auto build = work->findChild<QPushButton *>("BuildBondSurface");
-        QVERIFY(build && build->isVisible());
+        QVERIFY(build && build->isVisible() && resultSplit->widget(0)->isAncestorOf(build));
+        QVERIFY(!work->findChild<QSpinBox *>("BondFirstZ")->isVisible());
         build->click();
         QTRY_VERIFY_WITH_TIMEOUT(!work->isBusy(), 10000);
         auto status = work->findChild<QLabel *>("BondStatus");
         QVERIFY(status->text().contains(QStringLiteral("三角形")));
         if (!dir.isEmpty())
             QVERIFY(window.grab().save(QDir(dir).filePath("integral-isosurface.png")));
+        work->selectStage(BondWorkspace::Volume);
+        plotTabs->setCurrentIndex(0);
+        QVERIFY(voxelSplit->widget(0)->isAncestorOf(channel) && channel->isVisible());
+        QCOMPARE(channel->value(), previousChannel);
     }
     void bondReferenceMaps() {
         QTemporaryDir temp;
@@ -1040,12 +1192,14 @@ class GuiTests : public QObject {
         QVERIFY(work->hasResult());
         work->selectStage(BondWorkspace::Results);
         auto run = work->findChild<QPushButton *>("FitBondReferenceMaps");
-        QVERIFY(run);
-        auto page = run->parentWidget();
-        auto figures = qobject_cast<QTabWidget *>(page->parentWidget()->parentWidget());
-        QVERIFY(figures);
+        auto page = work->findChild<QWidget *>("BondReferenceMaps");
+        auto figures = work->findChild<QTabWidget *>("BondResultPlots");
+        auto split = work->findChild<QSplitter *>("BondResultsSplitter");
+        QVERIFY(run && page && figures && split);
         figures->setCurrentWidget(page);
         QVERIFY(run->isVisible());
+        QVERIFY(split->widget(0)->isAncestorOf(run) && split->widget(1)->isAncestorOf(page));
+        QVERIFY(!work->findChild<QComboBox *>("BondViewSource")->isVisible());
         work->findChild<QLineEdit *>("BondMatrixReference")->setText(matrixPath);
         work->findChild<QLineEdit *>("BondTargetReference")->setText(targetPath);
         work->findChild<QDoubleSpinBox *>("BondReferenceAnalyzer")->setValue(analyzer);
@@ -1484,12 +1638,15 @@ class GuiTests : public QObject {
         auto dialog = window.findChild<ImagingDialog *>();
         QVERIFY(dialog);
         dialog->applyConfiguration(config);
+        auto *localStatus = dialog->findChild<QLabel *>("ImagingStatus");
+        QVERIFY(localStatus && localStatus->isHidden());
+        QCOMPARE(window.statusBar()->currentMessage(), dialog->statusText());
         auto steps = dialog->findChild<QTabWidget *>("ImagingSteps");
         auto avizo = dialog->findChild<QCheckBox *>("output.save_avizo");
         QVERIFY(steps && avizo && !avizo->isChecked());
         QCOMPARE(steps->tabText(3), QStringLiteral("4 剖面分析"));
         QCOMPARE(steps->tabText(4), QStringLiteral("5 三维模型"));
-        QCOMPARE(steps->tabText(5), QStringLiteral("6 诊断与日志"));
+        QCOMPARE(steps->tabText(5), QStringLiteral("6 日志"));
         auto buildModel = dialog->findChild<QPushButton *>("BuildImagingModel");
         auto saveGif = dialog->findChild<QPushButton *>("SaveImagingModelGif");
         QVERIFY(buildModel && !buildModel->isEnabled() && saveGif && !saveGif->isEnabled());
@@ -1515,6 +1672,30 @@ class GuiTests : public QObject {
         QTest::mouseClick(run, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 15000);
         QVERIFY2(dialog->hasResult(), qPrintable(dialog->statusText()));
+        dialog->selectStep(5);
+        auto *logSplit = steps->widget(5)->findChild<QSplitter *>("ImagingLogSplitter");
+        auto *logToggle = steps->widget(5)->findChild<QToolButton *>("ImagingLogSplitterToggle");
+        auto *logChoices = steps->widget(5)->findChild<QListWidget *>("ImagingLogSections");
+        auto *log = steps->widget(5)->findChild<QPlainTextEdit *>("ImagingLog");
+        auto *summary = steps->widget(5)->findChild<QPlainTextEdit *>("ImagingSummary");
+        QVERIFY(logSplit && logToggle && logChoices && log && summary);
+        QCOMPARE(logSplit->orientation(), Qt::Horizontal);
+        QVERIFY(logSplit->widget(0)->isAncestorOf(logChoices) && logSplit->widget(1)->isAncestorOf(log));
+        QCOMPARE(logChoices->currentRow(), 0);
+        QCOMPARE(logChoices->currentItem()->text(), QStringLiteral("运行日志"));
+        QVERIFY(log->isVisible() && log->isReadOnly() && log->toPlainText().contains("Completed:"));
+        const auto savedLog = log->toPlainText();
+        logChoices->setCurrentRow(1);
+        QVERIFY(!log->isVisible() && summary->isVisible() && summary->toPlainText().contains("shape_xyz"));
+        logToggle->click();
+        QTRY_VERIFY(!logChoices->isVisible());
+        QVERIFY(summary->isVisible());
+        logToggle->click();
+        QTRY_VERIFY(logChoices->isVisible());
+        logChoices->setCurrentRow(0);
+        if (const auto screenshots = qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS"); !screenshots.isEmpty())
+            QVERIFY(window.grab().save(screenshots + "/imaging-log.png"));
+        dialog->selectStep(3);
         {
             const auto outputDir = temp.filePath("output");
             ImagingH5 hdf(outputDir + "/reconstruction.h5");
@@ -1554,15 +1735,42 @@ class GuiTests : public QObject {
         auto image = dialog->findChild<ScientificPlot *>("ImagingVolume");
         QVERIFY(image && !image->data().values.isEmpty());
         QVERIFY(dialog->result().summary["tv_converged"].toBool());
+        auto profile = steps->widget(3)->findChild<QSplitter *>("ImagingProfileSplitter");
+        auto plane = dialog->findChild<QComboBox *>("ImagingPlane");
+        auto display = dialog->findChild<QComboBox *>("ImagingDisplay");
         auto slice = dialog->findChild<QSpinBox *>("ImagingSlice");
-        QVERIFY(slice);
+        QVERIFY(profile && plane && display && slice);
+        QCOMPARE(profile->orientation(), Qt::Horizontal);
+        QCOMPARE(profile->count(), 2);
+        QVERIFY(profile->widget(0)->isAncestorOf(plane) && profile->widget(0)->isAncestorOf(slice));
+        QVERIFY(profile->widget(1)->isAncestorOf(image));
+        auto profileToggle = profile->findChild<QToolButton *>("ImagingProfileSplitterToggle");
+        QVERIFY(profileToggle);
+        profileToggle->click();
+        QTRY_VERIFY(!profile->widget(0)->isVisible() && image->isVisible());
+        profileToggle->click();
+        QTRY_VERIFY(plane->isVisible());
+        plane->setCurrentText("XY");
+        display->setCurrentIndex(1);
+        QVERIFY(!slice->isEnabled() && !image->data().values.isEmpty());
+        display->setCurrentIndex(0);
+        QVERIFY(slice->isEnabled());
         slice->setValue(slice->maximum());
         QVERIFY(!image->data().values.isEmpty());
+        if (const auto screenshots = qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS"); !screenshots.isEmpty())
+            QVERIFY(dialog->grab().save(screenshots + "/profile-analysis.png"));
         dialog->selectStep(4);
+        auto modelSplit = steps->widget(4)->findChild<QSplitter *>("ImagingModelSplitter");
         auto model = dialog->findChild<QWidget *>("ImagingModel");
         auto modelSource = dialog->findChild<QComboBox *>("ImagingModelSource");
         auto threshold = dialog->findChild<QLineEdit *>("ImagingModelThreshold");
-        QVERIFY(model && modelSource && threshold && model->isVisible() && buildModel->isEnabled());
+        QVERIFY(modelSplit && model && modelSource && threshold && model->isVisible() && buildModel->isEnabled());
+        QCOMPARE(modelSplit->orientation(), Qt::Horizontal);
+        QCOMPARE(modelSplit->count(), 2);
+        QVERIFY(modelSplit->widget(0)->isAncestorOf(modelSource) &&
+                modelSplit->widget(0)->isAncestorOf(threshold) &&
+                modelSplit->widget(0)->isAncestorOf(saveGif));
+        QVERIFY(modelSplit->widget(1)->isAncestorOf(model));
         QCOMPARE(modelSource->count(), 3);
         const auto validThreshold = threshold->text();
         auto depth = dialog->findChild<QLabel *>("ImagingDepthReadout");
@@ -1578,11 +1786,17 @@ class GuiTests : public QObject {
         auto comparePsf = dialog->findChild<QPushButton *>("CompareImagingPsf");
         auto psfSelection = dialog->findChild<QLabel *>("ImagingPsfSelection");
         QVERIFY(comparePsf && comparePsf->isEnabled() && psfSelection);
+        dialog->selectStep(5);
+        QVERIFY(!comparePsf->isVisible());
+        logChoices->setCurrentRow(3);
+        QVERIFY(comparePsf->isVisible() && logSplit->widget(0)->isAncestorOf(comparePsf) && psfSelection->isVisible());
         comparePsf->click();
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 30000);
         QVERIFY(psfSelection->text().contains(QStringLiteral("本次标定比较推荐")));
         QVERIFY(QFileInfo::exists(temp.path() + "/output/psf_model_comparison.json"));
         QVERIFY(QFileInfo::exists(temp.path() + "/output/depth_validation.json"));
+        logChoices->setCurrentRow(0);
+        dialog->selectStep(4);
         threshold->setText("-1");
         buildModel->click();
         QVERIFY(!dialog->isBusy() && dialog->statusText().contains(QStringLiteral("阈值须介于")));
@@ -1590,14 +1804,19 @@ class GuiTests : public QObject {
         buildModel->click();
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
         QVERIFY2(dialog->statusText().contains(QStringLiteral("等值面已生成")), qPrintable(dialog->statusText()));
-        const QPoint origin = model->rect().center(), end = origin + QPoint(95, 30);
+        if (const auto screenshots = qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS"); !screenshots.isEmpty())
+            QVERIFY(dialog->grab().save(screenshots + "/model-analysis.png"));
+        // Start on the background so the gesture cannot select the projected depth axis.
+        const QPoint origin(24, 24), end = origin + QPoint(95, 30);
         const auto initial = model->grab().toImage();
+        const auto selectedDepth = depth->text();
         QTest::mousePress(model, Qt::LeftButton, Qt::NoModifier, origin);
         QMouseEvent drag(QEvent::MouseMove, end, model->mapToGlobal(end), Qt::NoButton, Qt::LeftButton,
                          Qt::NoModifier);
         QApplication::sendEvent(model, &drag);
         QTest::mouseRelease(model, Qt::LeftButton, Qt::NoModifier, end);
         QVERIFY(model->grab().toImage() != initial);
+        QCOMPARE(depth->text(), selectedDepth);
         QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, origin);
         QCOMPARE(model->grab().toImage(), initial);
 
@@ -1607,7 +1826,7 @@ class GuiTests : public QObject {
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 15000);
         QVERIFY2(dialog->statusText().contains(QStringLiteral("旋转 GIF 已保存")), qPrintable(dialog->statusText()));
         const auto viewAfterExport = model->grab().toImage();
-        QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, model->rect().center());
+        QTest::mouseDClick(model, Qt::LeftButton, Qt::NoModifier, origin);
         QCOMPARE(model->grab().toImage(), viewAfterExport);
         const auto gifPath = gifBase + ".gif";
         QVERIFY2(QFileInfo::exists(gifPath), qPrintable(dialog->statusText()));
@@ -1663,6 +1882,7 @@ class GuiTests : public QObject {
         file->setText(temp.path() + "/other.nxs");
         QVERIFY(!dialog->hasResult() && image->data().values.isEmpty());
         QVERIFY(dialog->loadResult(temp.path() + "/output"));
+        QCOMPARE(log->toPlainText(), savedLog);
         QVERIFY(dialog->hasResult());
         QVERIFY(depthReport->isEnabled() && depth->text().contains("FWHM"));
         QVERIFY(avizo->isChecked());
@@ -1892,17 +2112,28 @@ class GuiTests : public QObject {
         QTemporaryDir temp;
         const auto elastic = SpectrumFixture::create(temp.path(), true);
         const auto reference = SpectrumFixture::create(temp.path(), false);
-        SpectroscopyDialog workbench(elastic);
+        MainWindow window;
+        window.openFile(elastic);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isReading(), 10000);
+        auto &workbench = *window.openSpectroscopy();
         QVERIFY(workbench.loadRois(temp.filePath("test.roi.json")));
         QVERIFY(workbench.addEdgeGroup("O", "K"));
         workbench.addScans({reference});
         auto *advance = workbench.findChild<QPushButton *>("NextSpectrumStep");
+        auto *calculateMask = workbench.findChild<QPushButton *>("CalculateSpectrumMask");
+        auto *resetMask = workbench.findChild<QPushButton *>("ResetSpectrumMask");
+        auto *maskFraction = workbench.findChild<QDoubleSpinBox *>("MaskFilterFraction");
+        auto *localStatus = workbench.findChild<QLabel *>("SpectrumStatus");
         auto *pages = workbench.findChild<QTabWidget *>("SpectroscopySteps");
         auto *source = workbench.findChild<QComboBox *>("MaskPreviewSource");
-        QVERIFY(advance && pages && source);
+        QVERIFY(advance && pages && source && calculateMask && resetMask && maskFraction && localStatus);
+        QVERIFY(calculateMask->isHidden() && resetMask->isHidden() && localStatus->isHidden());
         advance->click();
         QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
         QCOMPARE(pages->currentIndex(), 1);
+        QVERIFY(calculateMask->isVisible() && calculateMask->geometry().right() < advance->geometry().left());
+        QVERIFY(resetMask->isVisible() && resetMask->geometry().right() < calculateMask->geometry().left());
+        QCOMPARE(window.statusBar()->currentMessage(), workbench.statusText());
         QVERIFY(!workbench.hasCalibration());
         QCOMPARE(source->currentIndex(), 1);
         auto *lambda = pages->widget(1)->findChild<ScientificPlot *>("LambdaMaskPreview");
@@ -1928,16 +2159,34 @@ class GuiTests : public QObject {
             auto *previous = dialog->findChild<QPushButton *>("PreviousSpectralCrystal");
             auto *next = dialog->findChild<QPushButton *>("NextSpectralCrystal");
             auto *apply = dialog->findChild<QPushButton *>("ApplySpectralMask");
+            auto *decomposeAll = dialog->findChild<QPushButton *>("DecomposeAllSpectralMasks");
+            auto *applyBatch = dialog->findChild<QPushButton *>("ApplyBatchSpectralMask");
             auto *threshold = dialog->findChild<QDoubleSpinBox *>("CovarianceThreshold");
+            auto *component = dialog->findChild<QComboBox *>("SampleComponent");
+            auto *thresholdMode = dialog->findChild<QComboBox *>("CovarianceThresholdMode");
             auto *picker = dialog->findChild<QListWidget *>("SpectralCrystal");
             auto *update = dialog->findChild<QPushButton *>("UpdateOriginalRoi");
             auto *keep = dialog->findChild<QPushButton *>("KeepOriginalRoi");
-            QVERIFY(picker && update && keep);
+            QVERIFY(picker && update && keep && decomposeAll && applyBatch && component && thresholdMode);
             QVERIFY(!update->isEnabled() && !keep->isEnabled() && !apply->isEnabled());
+            QVERIFY(decomposeAll->isEnabled() && !applyBatch->isEnabled());
             QCOMPARE(picker->count(), 3);
             QVERIFY(!previous->isEnabled());
             QCOMPARE(dialog->currentRow(), 0);
             dialog->findChild<QPushButton *>("DecomposePixels")->click();
+            QVERIFY(apply->isEnabled());
+            next->click();
+            QCOMPARE(dialog->currentRow(), 1);
+            QCOMPARE(component->count(), 0);
+            QVERIFY(!apply->isEnabled());
+            decomposeAll->click();
+            QVERIFY(apply->isEnabled() && !decomposeAll->isEnabled());
+            const auto movedReference = reference + ".cache-test";
+            QVERIFY(QFile::rename(reference, movedReference));
+            const auto restoreReference = qScopeGuard([&] { QFile::rename(movedReference, reference); });
+            previous->click();
+            QCOMPARE(dialog->currentRow(), 0);
+            QVERIFY(apply->isEnabled());
             auto *iterate = dialog->findChild<QPushButton *>("IterateSpectralMask");
             if (iterate->isEnabled())
                 iterate->click();
@@ -1966,23 +2215,36 @@ class GuiTests : public QObject {
                 QDir().mkpath(directory);
                 QVERIFY(dialog->grab().save(directory + "/crystal-navigation.png"));
             }
-            keep->click();
+            next->click();
             QCOMPARE(dialog->currentRow(), 60); // Cross from LAMBDA to MINIPIX, skipping invalid ROIs.
             QVERIFY(!next->isEnabled());
             QVERIFY(apply->isEnabled());
             QVERIFY(!update->isEnabled());
-            apply->click();
+            component->setCurrentIndex(1);
+            thresholdMode->setCurrentIndex(1);
+            threshold->setValue(-1e20);
+            QVERIFY(applyBatch->isEnabled());
+            applyBatch->click();
             QCOMPARE(dialog->currentRow(), 60);
-            const auto retained = dialog->selection().pixels;
-            revisedCount = retained.size();
             QVERIFY(update->isEnabled());
+            QCOMPARE(dialog->acceptedMasks().size(), 3);
+            QCOMPARE(dialog->acceptedMasks()[0].provenance, draft.provenance);
+            for (int r : {1, 60}) {
+                const auto batchRound = dialog->acceptedMasks()[r].provenance["rounds"].toArray().last().toObject();
+                QCOMPARE(batchRound["target_component_1based"].toInt(), 2);
+                QCOMPARE(batchRound["threshold_mode"].toString(), QStringLiteral("absolute"));
+            }
+            picker->setCurrentRow(1);
+            QCOMPARE(component->currentIndex(), 1);
+            QCOMPARE(threshold->value(), -1e20);
+            keep->click();
+            QVERIFY(!dialog->acceptedMasks().contains(1));
             picker->setCurrentRow(0);
             QVERIFY(update->isEnabled());
             threshold->setValue(.16);
             QVERIFY(!update->isEnabled());
-            auto *component = dialog->findChild<QComboBox *>("SampleComponent");
             component->setCurrentIndex(1);
-            dialog->findChild<QComboBox *>("CovarianceThresholdMode")->setCurrentIndex(1);
+            thresholdMode->setCurrentIndex(1);
             threshold->setValue(-1e20);
             QVERIFY(apply->isEnabled());
             apply->click();
@@ -1990,13 +2252,21 @@ class GuiTests : public QObject {
             QCOMPARE(dialog->acceptedMasks().size(), 2);
             QCOMPARE(dialog->acceptedMasks()[0].provenance["rounds"].toArray().last().toObject()
                          .value("target_component_1based").toInt(), 2);
-            QCOMPARE(dialog->acceptedMasks()[60].pixels, retained);
+            picker->setCurrentRow(2);
+            component->setCurrentIndex(0);
+            thresholdMode->setCurrentIndex(0);
+            threshold->setValue(.99);
+            revisedCount = dialog->selection().pixels.size();
+            QCOMPARE(revisedCount, 1);
+            apply->click();
+            QVERIFY(update->isEnabled());
             update->click();
             finished = true;
         });
         open->click();
         QVERIFY(finished);
         QCOMPARE(mini->data().sum, double(revisedCount));
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("参数暂停生效")));
         QVERIFY(!corrections->item(1, 0)->text().endsWith(QStringLiteral("✓")));
         for (const int row : {0, 60})
             QVERIFY(corrections->item(row, 0)->text().endsWith(QStringLiteral("✓")));
@@ -2005,19 +2275,20 @@ class GuiTests : public QObject {
         QVERIFY2(workbench.hasCalibration(), qPrintable(workbench.statusText()));
         QCOMPARE(pages->currentIndex(), 2);
         auto *fits = pages->widget(2)->findChild<QTableWidget *>();
-        QCOMPARE(fits->item(60, 1)->text(), QString("%1 / %1").arg(revisedCount));
-        QCOMPARE(fits->item(1, 1)->text(), QString("4 / 2"));
+        QCOMPARE(fits->item(60, 1)->text(), QString("4 / %1").arg(revisedCount));
+        QCOMPARE(fits->item(1, 1)->text(), QString("4 / 4"));
         workbench.selectStep(1);
         bool reviewedAgain = false;
         QTimer::singleShot(0, [&] {
             auto *dialog = workbench.findChild<SpectralMaskDialog *>();
             auto close = qScopeGuard([dialog] { dialog->reject(); });
             auto *run = dialog->findChild<QPushButton *>("DecomposePixels");
+            auto *runAll = dialog->findChild<QPushButton *>("DecomposeAllSpectralMasks");
             auto *keep = dialog->findChild<QPushButton *>("KeepOriginalRoi");
             auto *update = dialog->findChild<QPushButton *>("UpdateOriginalRoi");
             auto *referenceBox = dialog->findChild<QComboBox *>("SpectralReference");
             QVERIFY(!update->isEnabled());
-            run->click();
+            runAll->click();
             for (int i = 0; i < 3; ++i) {
                 QVERIFY(keep->isEnabled());
                 keep->click();
@@ -2031,6 +2302,119 @@ class GuiTests : public QObject {
         });
         open->click();
         QVERIFY(reviewedAgain && workbench.hasCalibration());
+
+        maskFraction->setValue(.05);
+        QCOMPARE(mini->data().sum, double(revisedCount));
+        QVERIFY(workbench.hasCalibration());
+        QVERIFY(!advance->isEnabled() && !pages->isTabEnabled(2));
+        advance->click();
+        QCOMPARE(pages->currentIndex(), 1);
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("当前使用谱分解掩膜")));
+        corrections->item(0, 1)->setText("invalid");
+        calculateMask->click();
+        QVERIFY(!workbench.isBusy() && workbench.hasCalibration() && !advance->isEnabled());
+        QCOMPARE(mini->data().sum, double(revisedCount));
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("ROI 修正必须为整数")));
+        corrections->item(0, 1)->setText("0");
+
+        auto *cancelMask = workbench.findChild<QPushButton *>("CancelSpectrumCalculation");
+        QVERIFY(cancelMask);
+        calculateMask->click();
+        QVERIFY(workbench.isBusy() && cancelMask->isEnabled());
+        cancelMask->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY(!advance->isEnabled() && workbench.hasCalibration());
+        QCOMPARE(mini->data().sum, double(revisedCount));
+
+        const auto plan = temp.filePath("spectral-mask-plan.json");
+        QVERIFY(workbench.saveConfiguration(plan));
+        auto verifySwitch = [&](const QString &configuration, bool pending) {
+            SpectroscopyDialog restored;
+            QVERIFY(restored.importConfiguration(configuration));
+            auto *restoredNext = restored.findChild<QPushButton *>("NextSpectrumStep");
+            auto *restoredTabs = restored.findChild<QTabWidget *>("SpectroscopySteps");
+            restoredNext->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!restored.isBusy(), 10000);
+            auto *restoredPreview = restored.findChild<ScientificPlot *>("MiniPixMaskPreview");
+            QCOMPARE(restoredTabs->currentIndex(), 1);
+            QCOMPARE(restoredNext->isEnabled(), !pending);
+            if (pending)
+                QVERIFY(restoredPreview->data().values.isEmpty() && !restoredTabs->isTabEnabled(2));
+            else
+                QCOMPARE(restoredPreview->data().sum, double(revisedCount));
+            restored.findChild<QPushButton *>("CalculateSpectrumMask")->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!restored.isBusy(), 10000);
+            QCOMPARE(restoredPreview->data().sum, 3.);
+            QVERIFY(restoredNext->isEnabled() && restoredTabs->isTabEnabled(2));
+        };
+        const auto roiPath = temp.filePath("test.roi.json");
+        const auto movedRoi = temp.filePath("moved.roi.json");
+        QVERIFY(QFile::rename(roiPath, movedRoi));
+        verifySwitch(plan, true);
+        QVERIFY(QFile::rename(movedRoi, roiPath));
+
+        QFile savedPlan(plan);
+        QVERIFY(savedPlan.open(QIODevice::ReadOnly));
+        auto oldPlan = QJsonDocument::fromJson(savedPlan.readAll()).object();
+        auto groups = oldPlan["groups"].toArray();
+        auto group = groups[0].toObject();
+        QVERIFY(group.contains("base_roi_snapshot"));
+        group.remove("base_roi_snapshot");
+        group.remove("manual_calculation_pending");
+        groups[0] = group;
+        oldPlan["groups"] = groups;
+        QFile legacy(temp.filePath("legacy-spectral-mask-plan.json"));
+        QVERIFY(legacy.open(QIODevice::WriteOnly));
+        QVERIFY(legacy.write(QJsonDocument(oldPlan).toJson()) > 0);
+        legacy.close();
+        verifySwitch(legacy.fileName(), false);
+
+        resetMask->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY(!workbench.hasCalibration() && advance->isEnabled());
+        QCOMPARE(lambda->data().sum, 8.);
+        QCOMPARE(mini->data().sum, 4.);
+        QCOMPARE(maskFraction->value(), .05);
+        QCOMPARE(source->currentText(), QStringLiteral("原始 ROI 区域"));
+        for (const int row : {0, 60})
+            QVERIFY(!corrections->item(row, 0)->text().endsWith(QStringLiteral("✓")));
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("当前使用原始 ROI")));
+        if (const auto screenshots = qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS"); !screenshots.isEmpty())
+            QVERIFY(window.grab().save(screenshots + "/reset-masks.png"));
+        const auto resetPlan = temp.filePath("original-roi-plan.json");
+        QVERIFY(workbench.saveConfiguration(resetPlan));
+        {
+            SpectroscopyDialog restored;
+            QVERIFY(restored.importConfiguration(resetPlan));
+            auto *next = restored.findChild<QPushButton *>("NextSpectrumStep");
+            next->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!restored.isBusy(), 10000);
+            QCOMPARE(restored.findChild<ScientificPlot *>("MiniPixMaskPreview")->data().sum, 4.);
+            next->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!restored.isBusy(), 10000);
+            QVERIFY2(restored.hasCalibration(), qPrintable(restored.statusText()));
+        }
+        advance->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY2(workbench.hasCalibration(), qPrintable(workbench.statusText()));
+        QCOMPARE(fits->item(60, 1)->text(), QStringLiteral("4 / 4"));
+        advance->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY2(workbench.hasScans(), qPrintable(workbench.statusText()));
+        workbench.selectStep(1);
+        calculateMask->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QVERIFY(!workbench.hasCalibration());
+        QCOMPARE(pages->currentIndex(), 1);
+        QVERIFY(advance->isEnabled() && pages->isTabEnabled(2));
+        QCOMPARE(mini->data().sum, 3.);
+        QCOMPARE(lambda->data().sum, 6.);
+        QVERIFY(!corrections->item(60, 0)->text().endsWith(QStringLiteral("✓")));
+        QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("已应用参数掩膜")));
+        resetMask->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!workbench.isBusy(), 10000);
+        QCOMPARE(mini->data().sum, 4.);
+        QCOMPARE(lambda->data().sum, 8.);
     }
     void spectroscopyWorkflow() {
         QTemporaryDir temp;
@@ -2066,9 +2450,15 @@ class GuiTests : public QObject {
         auto *elasticSplit = dialog->findChild<QSplitter *>("ElasticResultsSplitter");
         QVERIFY(elasticSplit && elasticSplit->orientation() == Qt::Horizontal);
         QVERIFY(fitPeak->isVisible() && fitPeak->x() < next->x());
+        auto *fitThreshold = dialog->findChild<QDoubleSpinBox *>("ElasticMinimumRSquared");
+        QVERIFY(fitThreshold);
+        fitThreshold->setValue(.75);
+        QVERIFY(!next->isEnabled() && !tabs->isTabEnabled(3));
+        dialog->selectStep(3);
+        QCOMPARE(tabs->currentIndex(), 2);
         fitPeak->click();
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
-        QVERIFY(dialog->hasCalibration() && fitPeak->isVisible());
+        QVERIFY(dialog->hasCalibration() && fitPeak->isVisible() && next->isEnabled());
         QVERIFY(extract->isEnabled());
         auto editor = window.openRoi(elastic, temp.path() + "/test.roi.json");
         QTRY_VERIFY_WITH_TIMEOUT(!editor->isLoading(), 10000);
@@ -2086,13 +2476,17 @@ class GuiTests : public QObject {
         QVERIFY(repair->isVisible() && drop->value() == 5. && !fitPeak->isVisible());
         QCOMPARE(plot->curves().size(), 3);
         repair->click();
-        QVERIFY(!dialog->hasScans() && !drop->isEnabled());
+        QVERIFY(!dialog->hasScans() && !drop->isEnabled() && !next->isEnabled());
         extract->click();
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY(next->isEnabled());
         QCOMPARE(plot->curves().size(), 2);
         QCOMPARE(plot->curves()[0].y, plot->curves()[1].y);
         repair->click();
-        QVERIFY(!dialog->hasScans());
+        QVERIFY(!dialog->hasScans() && !next->isEnabled());
+        extract->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY(next->isEnabled());
         QTest::mouseClick(next, Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
         QVERIFY2(dialog->hasResult(), qPrintable(dialog->statusText()));
@@ -2101,8 +2495,41 @@ class GuiTests : public QObject {
         QCOMPARE(tabs->currentIndex(), 4);
         QCOMPARE(plot->curves().size(), 3);
         QVERIFY(save->isEnabled());
+        auto *qMaximum = dialog->findChild<QDoubleSpinBox *>("SpectrumQMaximum");
+        QVERIFY(qMaximum);
+        qMaximum->setFocus();
+        QTest::keyClick(qMaximum, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClicks(qMaximum, "9.9");
+        QCOMPARE(qMaximum->value(), 9.9);
+        QVERIFY(!next->isEnabled() && !tabs->isTabEnabled(6) && !save->isEnabled());
+        combine->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QVERIFY(dialog->hasResult() && next->isEnabled());
         auto curve = dialog->findChild<SpectrumPlot *>("CombinedSpectrum");
         QVERIFY(curve && !curve->curves().isEmpty());
+        auto *rawChoice = dialog->findChild<QComboBox *>("RawResultSpectrum");
+        auto *rawPrevious = dialog->findChild<QToolButton *>("PreviousRawResultSpectrum");
+        auto *rawNext = dialog->findChild<QToolButton *>("NextRawResultSpectrum");
+        QVERIFY(rawChoice && rawPrevious && rawNext);
+        QVERIFY(!rawPrevious->isEnabled() && rawNext->isEnabled());
+        QCOMPARE(curve->curves().size(), dialog->result().modules.size() + 1);
+        rawNext->click();
+        QCOMPARE(rawChoice->currentText(), QStringLiteral("各模组谱"));
+        QCOMPARE(curve->curves().size(), dialog->result().modules.size());
+        for (const auto &module : curve->curves())
+            QCOMPARE(module.y, dialog->result().modules.value(module.name));
+        rawNext->click();
+        QCOMPARE(rawChoice->currentText(), QStringLiteral("全部单晶体谱"));
+        QCOMPARE(curve->curves().size(), 3);
+        rawPrevious->click();
+        QCOMPARE(rawChoice->currentText(), QStringLiteral("各模组谱"));
+        rawChoice->setCurrentIndex(rawChoice->findData("VB"));
+        QCOMPARE(curve->curves().size(), 1);
+        QCOMPARE(curve->curves().first().y, dialog->result().modules.value("VB"));
+        rawChoice->setCurrentIndex(rawChoice->count() - 1);
+        QVERIFY(rawPrevious->isEnabled() && !rawNext->isEnabled());
+        QCOMPARE(curve->curves().first().name, QStringLiteral("扫描叠加"));
+        rawChoice->setCurrentIndex(0);
         auto *splitter = dialog->findChild<QSplitter *>("SpectrumResultsSplitter");
         auto *toggle = dialog->findChild<QToolButton *>("ToggleSpectrumParameters");
         auto *parameters = dialog->findChild<QWidget *>("SpectrumResultParameters");
@@ -2135,9 +2562,12 @@ class GuiTests : public QObject {
         auto peakLo = dialog->findChild<QDoubleSpinBox *>("ComptonPeakMinimum");
         auto peakHi = dialog->findChild<QDoubleSpinBox *>("ComptonPeakMaximum");
         auto splice = dialog->findChild<QPushButton *>("SpliceComptonPeak");
+        auto fullScan = dialog->findChild<QPushButton *>("ApplyComptonFullScan");
         auto fitBackground = dialog->findChild<QPushButton *>("RunMomentumBackground");
         auto backgroundInput = dialog->findChild<QLabel *>("BackgroundInputInfo");
         auto backgroundPlot = dialog->findChild<SpectrumPlot *>("MomentumBackgroundDiagnostics");
+        auto backgroundSidebar = dialog->findChild<QWidget *>("BackgroundParameters");
+        auto toggleBackground = dialog->findChild<QToolButton *>("ToggleBackgroundParameters");
         auto corrected = dialog->findChild<SpectrumPlot *>("CorrectedCrystalSpectrum");
         auto scope = dialog->findChild<QComboBox *>("BackgroundScope");
         auto diagnostic = dialog->findChild<QComboBox *>("BackgroundDiagnosticCrystal");
@@ -2147,20 +2577,141 @@ class GuiTests : public QObject {
         auto batchModule = dialog->findChild<QPushButton *>("SelectBackgroundBatchModules");
         auto batchAll = dialog->findChild<QPushButton *>("SelectAllBackgroundTargets");
         auto batchInvert = dialog->findChild<QPushButton *>("InvertBackgroundTargets");
-        auto fitLinear = dialog->findChild<QPushButton *>("FitBackground_linear");
+        auto fitPolynomial = dialog->findChild<QPushButton *>("FitBackground_polynomial");
         auto fitCompton = dialog->findChild<QPushButton *>("FitBackground_compton_peak");
         auto enableCompton = dialog->findChild<QCheckBox *>("EnableBackground_compton_peak");
         auto enableAsym = dialog->findChild<QCheckBox *>("EnableBackground_asymmetry");
         auto enableHf = dialog->findChild<QCheckBox *>("EnableBackground_hf_core");
+        auto enablePolynomial = dialog->findChild<QCheckBox *>("EnableBackground_polynomial");
+        auto polynomialOrder = dialog->findChild<QSpinBox *>("BackgroundPolynomialOrder");
+        auto measureCompton = dialog->findChild<QCheckBox *>("MeasureCompton");
+        auto protectedWindows = dialog->findChild<QLineEdit *>("BackgroundProtectedWindows");
         auto backgroundResults = dialog->findChild<QComboBox *>("BackgroundResultView");
+        auto *nearChoice = dialog->findChild<QComboBox *>("BackgroundResultSpectrum");
+        auto *nearPrevious = dialog->findChild<QToolButton *>("PreviousNearEdgeSpectrum");
+        auto *nearNext = dialog->findChild<QToolButton *>("NextNearEdgeSpectrum");
+        auto *smoothSpectrum = dialog->findChild<QCheckBox *>("CompareSmoothedSpectrum");
+        auto *smoothingWindow = dialog->findChild<QSpinBox *>("SpectrumSmoothingWindow");
+        auto *smoothingOrder = dialog->findChild<QSpinBox *>("SpectrumSmoothingOrder");
         auto comptonWindows = dialog->findChild<QLineEdit *>("BackgroundWindows_compton_peak");
         QVERIFY(acquisition && peakSplit && loadWide && peakPlot && peakCrystal && peakCoverage && spliceInfo &&
                 normalizeNear && limitPeak && peakLo && peakHi && splice && fitBackground && corrected &&
-                backgroundInput && backgroundPlot && scope && diagnostic && fitLinear && fitCompton &&
-                enableCompton && enableAsym && enableHf && backgroundResults && comptonWindows);
+                backgroundInput && backgroundPlot && scope && diagnostic && fitPolynomial && fitCompton &&
+                enableCompton && enableAsym && enableHf && enablePolynomial && measureCompton && protectedWindows &&
+                backgroundResults && comptonWindows);
         QVERIFY(previousPreview && nextPreview && batchList && batchModule && batchAll && batchInvert);
+        QVERIFY(nearChoice && nearPrevious && nearNext && fullScan);
+        QVERIFY(polynomialOrder && smoothSpectrum && smoothingWindow && smoothingOrder);
+        QVERIFY(backgroundSidebar && toggleBackground);
+        QCOMPARE(fitBackground->parentWidget(), next->parentWidget());
+        QVERIFY(!fitBackground->isVisible());
         QVERIFY(!dialog->findChild<QPushButton *>("FitComptonPeak"));
         QVERIFY(!dialog->findChild<QComboBox *>("BackgroundSpectrumSource"));
+        auto finishBackgroundManually = [&] {
+            QVERIFY(!next->isEnabled() && !tabs->isTabEnabled(7) && fitBackground->isEnabled());
+            fitBackground->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+            QCOMPARE(tabs->currentIndex(), 6);
+            QVERIFY(next->isEnabled() && tabs->isTabEnabled(7));
+            next->click();
+        };
+
+        QVERIFY(!measureCompton->isChecked() && !tabs->isTabEnabled(5));
+        next->click();
+        QCOMPARE(tabs->currentIndex(), 6);
+        QVERIFY(backgroundInput->text().contains(QStringLiteral("第 5 步原始谱")));
+        QVERIFY(backgroundSidebar->isVisible() && fitBackground->isVisible());
+        QTRY_VERIFY(fitBackground->geometry().right() < next->geometry().left());
+        QCOMPARE(fitBackground->geometry().center().y(), next->geometry().center().y());
+        const int expandedPlotWidth = backgroundPlot->width();
+        toggleBackground->click();
+        QTRY_VERIFY(!backgroundSidebar->isVisible() && backgroundPlot->width() > expandedPlotWidth);
+        QVERIFY(toggleBackground->isVisible() && fitBackground->isVisible());
+        toggleBackground->click();
+        QTRY_VERIFY(backgroundSidebar->isVisible() && fitBackground->isVisible());
+        QVERIFY(!enableHf->isEnabled() && !enableAsym->isEnabled() && !enableCompton->isEnabled());
+        enablePolynomial->setChecked(false);
+        finishBackgroundManually();
+        QCOMPARE(tabs->currentIndex(), 7);
+        QVERIFY(!fitBackground->isVisible());
+        QCOMPARE(nearChoice->currentText(), QStringLiteral("总谱与各模组"));
+        QVERIFY(!nearPrevious->isEnabled() && nearNext->isEnabled() && !backgroundResults->isVisible());
+        QCOMPARE(corrected->curves().size(), 3);
+        QCOMPARE(corrected->curves().first().name, QStringLiteral("Total"));
+        QVERIFY(std::abs(corrected->curves().first().y[10] - dialog->result().total[10]) < 1e-8);
+        QVERIFY(!smoothingWindow->isEnabled() && !smoothingOrder->isEnabled());
+        const auto total = corrected->curves().first();
+        smoothSpectrum->setChecked(true);
+        QVERIFY(smoothingWindow->isEnabled() && smoothingOrder->isEnabled());
+        QCOMPARE(corrected->curves().size(), 6);
+        QCOMPARE(corrected->curves().first().y, total.y);
+        QCOMPARE(corrected->curves()[3].x, total.x);
+        QCOMPARE(corrected->curves()[3].name, QStringLiteral("Total · 平滑"));
+        const auto initiallySmoothed = corrected->curves()[3].y;
+        smoothingWindow->setValue(10);
+        QCOMPARE(smoothingWindow->value(), 11);
+        QVERIFY(corrected->curves()[3].y != initiallySmoothed);
+        smoothSpectrum->setChecked(false);
+        QCOMPARE(corrected->curves().size(), 3);
+        nearNext->click();
+        QCOMPARE(nearChoice->currentText(), QStringLiteral("各模组谱"));
+        QCOMPARE(corrected->curves().size(), 2);
+        for (const auto &module : corrected->curves())
+            QVERIFY(std::abs(module.y[10] - dialog->result().modules.value(module.name)[10]) < 1e-8);
+        nearNext->click();
+        QCOMPARE(nearChoice->currentText(), QStringLiteral("全部单晶体谱"));
+        QCOMPARE(corrected->curves().size(), 3);
+        QCOMPARE(corrected->curves()[0].name, QStringLiteral("VB-A1"));
+        QCOMPARE(corrected->curves()[0].y, dialog->result().crystals[0]);
+        nearPrevious->click();
+        QCOMPARE(nearChoice->currentText(), QStringLiteral("各模组谱"));
+        nearChoice->setCurrentIndex(nearChoice->findText(QStringLiteral("VB 模组谱")));
+        QCOMPARE(corrected->curves().size(), 1);
+        QCOMPARE(corrected->curves().first().y, dialog->result().modules.value("VB"));
+        QVERIFY(backgroundResults->isVisible());
+        nearChoice->setCurrentIndex(nearChoice->findText(QStringLiteral("全部晶体等权平均")));
+        QCOMPARE(corrected->curves().size(), 1);
+        QVERIFY(std::abs(corrected->curves().first().y[10] * 3. - dialog->result().total[10]) < 1e-8);
+
+        dialog->selectStep(6);
+        scope->setCurrentIndex(1);
+        finishBackgroundManually();
+        QCOMPARE(tabs->currentIndex(), 7);
+        QCOMPARE(nearChoice->currentText(), QStringLiteral("总谱与各模组"));
+        QCOMPARE(corrected->curves().size(), 3);
+        QCOMPARE(nearChoice->findText(QStringLiteral("全部单晶体谱")), -1);
+
+        dialog->selectStep(6);
+        scope->setCurrentIndex(2);
+        QCOMPARE(backgroundPlot->curves().size(), 1);
+        const auto raw = backgroundPlot->curves().first();
+        protectedWindows->setText("unused");
+        finishBackgroundManually();
+        QCOMPARE(tabs->currentIndex(), 7);
+        QCOMPARE(nearChoice->count(), 1);
+        QVERIFY(!nearPrevious->isEnabled() && !nearNext->isEnabled());
+        QCOMPARE(corrected->curves().size(), 1);
+        QCOMPARE(corrected->curves().first().name, QStringLiteral("原谱"));
+        QCOMPARE(corrected->curves().first().x, raw.x);
+        QCOMPARE(corrected->curves().first().y, raw.y);
+        auto previous = dialog->findChild<QPushButton *>("PreviousSpectrumStep");
+        QVERIFY(previous);
+        previous->click();
+        QCOMPARE(tabs->currentIndex(), 6);
+        previous->click();
+        QCOMPARE(tabs->currentIndex(), 4);
+
+        measureCompton->setChecked(true);
+        QCOMPARE(tabs->isTabEnabled(5), true);
+        scope->setCurrentIndex(0);
+        QVERIFY(!tabs->isTabEnabled(6));
+        QVERIFY(enableHf->isChecked() && enableAsym->isChecked() && enableCompton->isChecked());
+        enableHf->setChecked(false);
+        enableAsym->setChecked(false);
+        enableCompton->setChecked(false);
+        enablePolynomial->setChecked(true);
+        protectedWindows->clear();
+
         next->click();
         QCOMPARE(tabs->currentIndex(), 5);
         QCOMPARE(tabs->tabText(5), QStringLiteral("6 Compton 峰分析"));
@@ -2181,12 +2732,15 @@ class GuiTests : public QObject {
         const int crystal = peakCrystal->findData("crystal:VB-A1");
         QVERIFY(crystal >= 0);
         peakCrystal->setCurrentIndex(crystal);
-        dialog->findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1.5,8.5:10");
+        dialog->findChild<QLineEdit *>("BackgroundWindows_polynomial")->setText("0:1.5,8.5:10");
+        QVERIFY(!next->isEnabled() && !tabs->isTabEnabled(6) && fullScan->isEnabled());
+        fullScan->click();
+        QVERIFY(next->isEnabled());
         next->click();
         QCOMPARE(tabs->currentIndex(), 6);
         QCOMPARE(tabs->tabText(6), QStringLiteral("7 背景分析"));
-        QVERIFY(!fitBackground->isEnabled() && fitLinear->isEnabled() && corrected->curves().isEmpty());
-        QVERIFY(enableHf->isEnabled() && enableAsym->isEnabled());
+        QVERIFY(!fitBackground->isEnabled() && fitPolynomial->isEnabled() && corrected->curves().isEmpty());
+        QVERIFY(enableHf->isEnabled() && enableAsym->isEnabled() && enableCompton->isEnabled());
         QVERIFY(backgroundInput->text().contains("Full Scan"));
         QCOMPARE(backgroundPlot->curves().size(), 1);
         QCOMPARE(backgroundPlot->curves().first().x, dialog->result().energyTransferEv);
@@ -2240,7 +2794,7 @@ class GuiTests : public QObject {
             QCOMPARE(target->checkState(), target->data(Qt::UserRole).toString().startsWith("VB-")
                                               ? Qt::Unchecked : Qt::Checked);
         }
-        dialog->findChild<QLineEdit *>("LowMomentumFitWindows")->setText("0:1,9:10");
+        dialog->findChild<QLineEdit *>("BackgroundWindows_polynomial")->setText("0:1,9:10");
         scope->setCurrentIndex(1);
         QVERIFY(!enableHf->isEnabled() && !enableAsym->isEnabled() && enableCompton->isEnabled());
         diagnostic->setCurrentIndex(diagnostic->findData("VB"));
@@ -2249,17 +2803,22 @@ class GuiTests : public QObject {
         QCOMPARE(backgroundPlot->curves().first().y[10], dialog->result().total[10]);
         QVERIFY(!previousPreview->isEnabled() && !nextPreview->isEnabled() && !batchModule->isEnabled());
         QVERIFY(!enableHf->isEnabled() && !enableAsym->isEnabled() && enableCompton->isEnabled());
-        fitLinear->click();
+        fitPolynomial->click();
         QTRY_VERIFY_WITH_TIMEOUT(fitBackground->isEnabled(), 10000);
-        QCOMPARE(backgroundPlot->curves().size(), 3);
-        next->click();
-        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QCOMPARE(backgroundPlot->curves().size(), 2);
+        polynomialOrder->setValue(2);
+        QVERIFY(!fitBackground->isEnabled() && fitPolynomial->isEnabled() && !next->isEnabled());
+        QCOMPARE(backgroundPlot->curves().size(), 1);
+        fitPolynomial->click();
+        QTRY_VERIFY_WITH_TIMEOUT(fitBackground->isEnabled(), 10000);
+        finishBackgroundManually();
         QCOMPARE(tabs->currentIndex(), 7);
         dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMinimum")->setValue(2);
         dialog->findChild<QDoubleSpinBox *>("CorrectedEnergyMaximum")->setValue(4);
         QCOMPARE(corrected->curves().first().x.first(), 2.);
         QCOMPARE(corrected->curves().first().x.last(), 4.);
         dialog->selectStep(6);
+        polynomialOrder->setValue(1);
         scope->setCurrentIndex(0);
         QVERIFY(enableHf->isEnabled() && enableAsym->isEnabled() && !fitBackground->isEnabled());
         QVERIFY(corrected->curves().isEmpty());
@@ -2318,7 +2877,11 @@ class GuiTests : public QObject {
         if (!resultImages.isEmpty())
             QVERIFY(dialog->grab().save(resultImages + "/compton-splice.png"));
         normalizeNear->click();
-        QVERIFY(!spliceInfo->isVisible() && splice->isEnabled());
+        QVERIFY(!spliceInfo->isVisible() && splice->isEnabled() && !next->isEnabled());
+        splice->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 10000);
+        QCOMPARE(tabs->currentIndex(), 5);
+        QVERIFY(next->isEnabled());
         next->click();
         QTRY_COMPARE_WITH_TIMEOUT(tabs->currentIndex(), 6, 10000);
         QVERIFY(backgroundInput->text().contains(QStringLiteral("第 6 步 Compton 拼接谱")));
@@ -2337,27 +2900,38 @@ class GuiTests : public QObject {
         enableCompton->setChecked(true);
         comptonWindows->setText("100:300");
         QVERIFY(!fitCompton->isEnabled());
-        fitLinear->click();
+        fitPolynomial->click();
         QTRY_VERIFY_WITH_TIMEOUT(fitCompton->isEnabled(), 10000);
-        QCOMPARE(backgroundPlot->curves().size(), 3);
+        QCOMPARE(backgroundPlot->curves().size(), 2);
         fitCompton->click();
         QTRY_VERIFY_WITH_TIMEOUT(fitBackground->isEnabled(), 10000);
-        QCOMPARE(backgroundPlot->curves().size(), 5);
-        QCOMPARE(backgroundPlot->curves()[1].name, QStringLiteral("线性背景"));
+        QCOMPARE(backgroundPlot->curves().size(), 4);
+        QCOMPARE(backgroundPlot->curves()[1].name, QStringLiteral("多项式背景"));
         QCOMPARE(backgroundPlot->curves()[2].name, QStringLiteral("Compton 峰拟合背景"));
-        QVERIFY(std::abs(backgroundPlot->curves().last().y[expectedEnergy.indexOf(200.)]) < 1e-6);
+        QCOMPARE(backgroundPlot->curves().last().name, QStringLiteral("总背景"));
+        const auto peakIndex = expectedEnergy.indexOf(200.);
+        QVERIFY(peakIndex >= 0);
+        QVERIFY(std::abs(backgroundPlot->curves().first().y[peakIndex] -
+                         backgroundPlot->curves().last().y[peakIndex]) < 1e-6);
         comptonWindows->setText("100:299");
         QVERIFY(!fitBackground->isEnabled() && fitCompton->isEnabled());
-        QCOMPARE(backgroundPlot->curves().size(), 3);
+        QCOMPARE(backgroundPlot->curves().size(), 2);
         fitCompton->click();
         QTRY_VERIFY_WITH_TIMEOUT(fitBackground->isEnabled(), 10000);
         if (!resultImages.isEmpty())
             QVERIFY(dialog->grab().save(resultImages + "/staged-background.png"));
         fitBackground->click();
         QTRY_VERIFY_WITH_TIMEOUT(!corrected->curves().isEmpty(), 10000);
+        QCOMPARE(backgroundPlot->curves().size(), 4);
+        QCOMPARE(backgroundPlot->curves().last().name, QStringLiteral("总背景"));
         dialog->selectStep(7);
         backgroundResults->setCurrentIndex(1);
         QCOMPARE(corrected->curves().size(), 5);
+        QCOMPARE(corrected->curves()[3].name, QStringLiteral("总背景"));
+        QCOMPARE(corrected->curves().last().name, QStringLiteral("扣背底结果"));
+        for (qsizetype i = 0; i < corrected->curves().last().y.size(); ++i)
+            QVERIFY(std::abs(corrected->curves().last().y[i] -
+                             (corrected->curves().first().y[i] - corrected->curves()[3].y[i])) < 1e-9);
         QCOMPARE(tabs->tabText(7), QStringLiteral("8 近边结构结果分析"));
         auto resultColumns = dialog->findChild<QSplitter *>("NearEdgeResultSplitter");
         auto saveNearEdge = dialog->findChild<QPushButton *>("SaveNearEdgeHdf5");
@@ -2367,6 +2941,11 @@ class GuiTests : public QObject {
         QVERIFY(resultColumns->widget(0)->isAncestorOf(saveNearEdgeText));
         QVERIFY(resultColumns->widget(1)->isAncestorOf(corrected));
         QVERIFY(saveNearEdge->isEnabled() && saveNearEdgeText->isEnabled());
+        const auto unsmoothedResult = corrected->curves().last();
+        smoothSpectrum->setChecked(true);
+        QCOMPARE(corrected->curves().size(), 6);
+        QCOMPARE(corrected->curves().last().name, QStringLiteral("扣背底结果 · 平滑"));
+        QCOMPARE(corrected->curves()[4].y, unsmoothedResult.y);
         if (!resultImages.isEmpty())
             QVERIFY(dialog->grab().save(resultImages + "/near-edge-result.png"));
         {
@@ -2396,15 +2975,17 @@ class GuiTests : public QObject {
             QVERIFY(hdfFiles.first().contains("_O_K_near_edge_"));
             QFile textResult(exports.filePath(textFiles.first()));
             QVERIFY(textResult.open(QIODevice::ReadOnly));
-            QVERIFY(textResult.readLine().contains("VB-A1_background_compton_peak"));
+            const auto header = textResult.readLine();
+            QVERIFY(header.contains("VB-A1_background_compton_peak") && header.contains("VB-A1_background_polynomial"));
             const auto firstRow = textResult.readLine().trimmed().split('\t');
             SpectrumHdfLayout savedLayout;
             savedLayout.intensity = "/entry/spectrum/corrected";
             const auto saved = SpectrumProcessing::load(exports.filePath(hdfFiles.first()), savedLayout);
-            QCOMPARE(saved.energyEv, corrected->curves().last().x);
+            QCOMPARE(saved.energyEv, unsmoothedResult.x);
             QCOMPARE(firstRow.first().toDouble(), saved.energyEv.first());
             QVERIFY(saved.crystals.contains("VB-A1"));
             QCOMPARE(firstRow.last().toDouble(), saved.crystals.constFind("VB-A1")->first());
+            QCOMPARE(saved.crystals.value("VB-A1"), unsmoothedResult.y);
             QCOMPARE(edgeGroups->item(0, 2)->text(), QStringLiteral("已完成"));
             const auto groupedPath = temp.filePath("processed.config.json");
             QVERIFY(dialog->saveConfiguration(groupedPath));
@@ -2418,6 +2999,8 @@ class GuiTests : public QObject {
             QCOMPARE(outputs.value("near_edge_hdf5").toString(), exports.filePath(hdfFiles.first()));
             SpectroscopyDialog reopened;
             QVERIFY(reopened.importConfiguration(groupedPath));
+            QVERIFY(reopened.findChild<QCheckBox *>("CompareSmoothedSpectrum")->isChecked());
+            QCOMPARE(reopened.findChild<QSpinBox *>("SpectrumSmoothingWindow")->value(), 11);
             QCOMPARE(reopened.findChild<QTableWidget *>("SpectroscopyEdgeGroups")->item(0, 2)->text(),
                      QStringLiteral("已完成"));
             for (int step : {0, 1, 2}) {
@@ -2473,6 +3056,7 @@ class GuiTests : public QObject {
         auto dialog = window.openSpectroscopy();
         QVERIFY(dialog->loadRois(rois));
         QVERIFY(dialog->addEdgeGroup("C", "K"));
+        dialog->findChild<QCheckBox *>("MeasureCompton")->setChecked(true);
         dialog->runStep(0);
         QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 30000);
         QVERIFY2(dialog->hasCalibration(), qPrintable(dialog->statusText()));
@@ -2540,10 +3124,15 @@ class GuiTests : public QObject {
             const auto native = curve;
             const auto near = plot->curves().last();
             auto *next = dialog->findChild<QPushButton *>("NextSpectrumStep");
+            auto *splice = dialog->findChild<QPushButton *>("SpliceComptonPeak");
             auto *tabs = dialog->findChild<QTabWidget *>("SpectroscopySteps");
             auto *diagnostic = dialog->findChild<QComboBox *>("BackgroundDiagnosticCrystal");
             auto *input = dialog->findChild<SpectrumPlot *>("MomentumBackgroundDiagnostics");
-            QVERIFY(next && tabs && diagnostic && input);
+            QVERIFY(next && splice && tabs && diagnostic && input);
+            QVERIFY(!next->isEnabled());
+            splice->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->isBusy(), 30000);
+            QVERIFY(next->isEnabled());
             next->click();
             QTRY_COMPARE_WITH_TIMEOUT(tabs->currentIndex(), 6, 30000);
             QVERIFY(diagnostic->findText("VB-A1") >= 0);

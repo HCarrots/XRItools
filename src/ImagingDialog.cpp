@@ -29,13 +29,7 @@ void put(QJsonObject &c, const QString &path, const QJsonValue &value) {
     group[keys[1]] = value;
     c[keys[0]] = group;
 }
-QWidget *scrollBody(QWidget *body) {
-    auto scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidget(body);
-    return scroll;
-}
+using WorkflowUi::scrollBody;
 QTableWidgetItem *cell(const QString &s) {
     auto item = new QTableWidgetItem(s);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
@@ -134,6 +128,7 @@ ImagingDialog::ImagingDialog(const QString &sample, QWidget *parent)
         if (!work.error.isEmpty()) {
             m_excludeButton->setEnabled(false);
             m_includeButton->setEnabled(false);
+            m_log->appendPlainText(work.error);
             status(work.error, true);
             return;
         }
@@ -141,7 +136,9 @@ ImagingDialog::ImagingDialog(const QString &sample, QWidget *parent)
         refreshValidation();
         if (m_validateOnly) {
             m_tabs->setCurrentIndex(2);
-            status(tr("输入校验通过：薄膜与样品网格完整，能量范围匹配。输出目录须为尚不存在的新目录。"));
+            const auto message = tr("输入校验通过：薄膜与样品网格完整，能量范围匹配。输出目录须为尚不存在的新目录。");
+            m_log->appendPlainText(message);
+            status(message);
         } else {
             m_result = std::move(work.result);
             m_haveResult = true;
@@ -159,6 +156,9 @@ ImagingDialog::~ImagingDialog() {
 QString ImagingDialog::statusText() const {
     return m_status->text();
 }
+void ImagingDialog::useGlobalStatus() {
+    m_status->hide();
+}
 void ImagingDialog::status(const QString &message, bool error) {
     m_status->setText(message);
     refreshActions();
@@ -169,6 +169,7 @@ void ImagingDialog::status(const QString &message, bool error) {
         return;
     }
     m_status->setStyleSheet(error ? "color:#a02020;" : "");
+    emit statusChanged(message);
 }
 void ImagingDialog::selectStep(int step) {
     m_tabs->setCurrentIndex(std::clamp(step, 0, m_tabs->count() - 1));
@@ -236,6 +237,7 @@ void ImagingDialog::buildUi() {
     };
     m_inputs = new QWidget;
     auto inputLayout = new QHBoxLayout(m_inputs);
+    WorkflowUi::compact(inputLayout);
     WorkflowUi::compact(inputLayout);
     auto left = new QWidget;
     auto ll = new QVBoxLayout(left);
@@ -321,9 +323,10 @@ void ImagingDialog::buildUi() {
     rr->addWidget(boundary);
     rr->addStretch();
     inputLayout->addWidget(scrollBody(right), 2);
-    m_tabs->addTab(m_inputs, tr("1 文件与 ROI"));
+    m_tabs->addTab(m_inputs, tr("1 数据与 ROI"));
     m_parameters = new QWidget;
     auto pl = new QHBoxLayout(m_parameters);
+    WorkflowUi::compact(pl);
     auto psf = new QGroupBox(tr("晶体光斑模型（PSF）"));
     auto pf = new QFormLayout(psf);
     addFlag(pf, "psf.auto_select_model", tr("用薄箔留出误差自动选择模型"));
@@ -429,7 +432,14 @@ void ImagingDialog::buildUi() {
     auto volume = new QWidget;
     auto vl = new QVBoxLayout(volume);
     WorkflowUi::compact(vl);
-    auto tools = new QHBoxLayout;
+    auto profileControls = new QWidget;
+    auto controlsLayout = new QVBoxLayout(profileControls);
+    WorkflowUi::compact(controlsLayout);
+    auto profileSettings = new QGroupBox(tr("图像设置"));
+    auto fields = new QFormLayout(profileSettings);
+    WorkflowUi::compact(fields);
+    fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    fields->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_method = new QComboBox;
     m_method->addItem(tr("主结果"), 0);
     m_plane = new QComboBox;
@@ -443,28 +453,34 @@ void ImagingDialog::buildUi() {
     m_slice->setObjectName("ImagingSlice");
     m_slice->setKeyboardTracking(false);
     m_sliceLabel = new QLabel;
-    tools->addWidget(m_method);
-    tools->addWidget(m_plane);
-    tools->addWidget(m_display);
-    tools->addWidget(new QLabel(tr("切片索引")));
-    tools->addWidget(m_slice);
-    tools->addWidget(m_sliceLabel);
+    auto sliceFields = new QHBoxLayout;
+    sliceFields->addWidget(m_slice);
+    sliceFields->addWidget(m_sliceLabel, 1);
+    fields->addRow(tr("体数据"), m_method);
+    fields->addRow(tr("切片平面"), m_plane);
+    fields->addRow(tr("显示方式"), m_display);
+    fields->addRow(tr("切片索引"), sliceFields);
     auto log = new QCheckBox(tr("signed log1p 显示"));
-    tools->addWidget(log);
-    tools->addStretch();
-    m_openButton = new QPushButton(tr("在主窗口查看 HDF5"));
+    fields->addRow(log);
+    controlsLayout->addWidget(profileSettings);
+    m_openButton = WorkflowUi::button("folder-open", tr("在主窗口查看 HDF5"));
     m_openButton->setObjectName("OpenImagingHdf");
-    tools->addWidget(m_openButton);
-    vl->addLayout(tools);
+    controlsLayout->addWidget(m_openButton);
+    controlsLayout->addStretch();
+    auto profilePreview = new QWidget;
+    auto previewLayout = new QVBoxLayout(profilePreview);
+    previewLayout->setContentsMargins(0, 0, 0, 0);
     m_image = new ScientificPlot;
     m_image->setObjectName("ImagingVolume");
-    vl->addWidget(m_image, 1);
+    previewLayout->addWidget(m_image, 1);
     auto cursor = new QLabel(tr("在图像上移动鼠标查看坐标与数值；滚轮缩放，双击复位。"));
-    vl->addWidget(cursor);
+    cursor->setWordWrap(true);
+    previewLayout->addWidget(cursor);
     connect(m_image, &ScientificPlot::cursorChanged, cursor, &QLabel::setText);
     m_info = new QLabel(tr("完整重建完成后显示三维切片与投影。"));
     m_info->setWordWrap(true);
-    vl->addWidget(m_info);
+    previewLayout->addWidget(m_info);
+    vl->addWidget(WorkflowUi::analysisSplit("ImagingProfileSplitter", profileControls, profilePreview), 1);
     m_tabs->addTab(volume, tr("4 剖面分析"));
     connect(log, &QCheckBox::toggled, m_image, &ScientificPlot::setLogarithmic);
     for (auto c : {m_method, m_plane, m_display})
@@ -478,33 +494,36 @@ void ImagingDialog::buildUi() {
     auto modelPage = new QWidget;
     auto modelLayout = new QVBoxLayout(modelPage);
     WorkflowUi::compact(modelLayout);
-    auto modelTools = new QHBoxLayout;
+    auto modelControls = new QWidget;
+    auto modelTools = new QVBoxLayout(modelControls);
+    WorkflowUi::compact(modelTools);
+    auto modelSettings = new QGroupBox(tr("模型设置"));
+    auto modelFields = new QFormLayout(modelSettings);
+    WorkflowUi::compact(modelFields);
+    modelFields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    modelFields->setRowWrapPolicy(QFormLayout::WrapLongRows);
     m_modelSource = new QComboBox;
     m_modelSource->setObjectName("ImagingModelSource");
     m_modelLevel = new QLineEdit;
     m_modelLevel->setObjectName("ImagingModelThreshold");
-    m_modelLevel->setMaximumWidth(150);
     m_modelLevel->setToolTip(tr("输入相对密度，可使用科学计数法。"));
     m_modelRange = new QLabel;
+    m_modelRange->setWordWrap(true);
     m_buildModelButton = WorkflowUi::button("layers", tr("生成等值面"));
     m_buildModelButton->setObjectName("BuildImagingModel");
     m_saveModelGifButton = WorkflowUi::button("download", tr("保存旋转 GIF…"));
     m_saveModelGifButton->setObjectName("SaveImagingModelGif");
     m_saveModelGifButton->setAutoDefault(false);
     m_saveModelGifButton->setToolTip(tr("从当前视角绕 Z 轴旋转，只导出白底模型。"));
-    modelTools->addWidget(new QLabel(tr("体数据")));
-    modelTools->addWidget(m_modelSource);
-    modelTools->addWidget(new QLabel(tr("密度阈值")));
-    modelTools->addWidget(m_modelLevel);
-    modelTools->addWidget(m_buildModelButton);
-    modelTools->addWidget(m_modelRange);
-    modelTools->addStretch();
-    modelTools->addWidget(m_saveModelGifButton);
-    modelLayout->addLayout(modelTools);
-    m_model = new BondFigures;
-    m_model->setObjectName("ImagingModel");
-    m_model->setMesh({}, {}, {}, tr("完成重建或载入已有结果后，可以生成三维等值面。"));
-    modelLayout->addWidget(m_model, 1);
+    modelFields->addRow(tr("体数据"), m_modelSource);
+    modelFields->addRow(tr("密度阈值"), m_modelLevel);
+    modelFields->addRow(m_modelRange);
+    modelFields->addRow(m_buildModelButton);
+    modelFields->addRow(m_saveModelGifButton);
+    modelTools->addWidget(modelSettings);
+    auto depthSettings = new QGroupBox(tr("深度与低响应区"));
+    auto depthLayout = new QVBoxLayout(depthSettings);
+    WorkflowUi::compact(depthLayout);
     auto depthTools = new QHBoxLayout;
     m_showLow = new QCheckBox(tr("半透明标记低响应区"));
     m_showLow->setChecked(true);
@@ -521,16 +540,26 @@ void ImagingDialog::buildUi() {
     m_showDepth->setObjectName("ImagingDepthReport");
     for (auto button : {m_validateDepth, m_showDepth})
         button->setAutoDefault(false);
-    depthTools->addWidget(m_showLow);
+    depthTools->addWidget(m_showLow, 1);
     depthTools->addWidget(m_lowPercent);
-    depthTools->addStretch();
-    depthTools->addWidget(m_validateDepth);
-    depthTools->addWidget(m_showDepth);
-    modelLayout->addLayout(depthTools);
+    depthLayout->addLayout(depthTools);
+    depthLayout->addWidget(m_validateDepth);
+    depthLayout->addWidget(m_showDepth);
+    modelTools->addWidget(depthSettings);
+    modelTools->addStretch();
+
+    auto modelPreview = new QWidget;
+    auto modelPreviewLayout = new QVBoxLayout(modelPreview);
+    modelPreviewLayout->setContentsMargins(0, 0, 0, 0);
+    m_model = new BondFigures;
+    m_model->setObjectName("ImagingModel");
+    m_model->setMesh({}, {}, {}, tr("完成重建或载入已有结果后，可以生成三维等值面。"));
+    modelPreviewLayout->addWidget(m_model, 1);
     m_depthText = new QLabel;
     m_depthText->setObjectName("ImagingDepthReadout");
     m_depthText->setWordWrap(true);
-    modelLayout->addWidget(m_depthText);
+    modelPreviewLayout->addWidget(m_depthText);
+    modelLayout->addWidget(WorkflowUi::analysisSplit("ImagingModelSplitter", modelControls, modelPreview), 1);
     connect(m_showLow, &QCheckBox::toggled, this, &ImagingDialog::refreshDepth);
     connect(m_lowPercent, &QDoubleSpinBox::valueChanged, this, &ImagingDialog::refreshDepth);
     connect(m_model, &BondFigures::depthSelected, this, [this](int index) {
@@ -545,62 +574,110 @@ void ImagingDialog::buildUi() {
     connect(m_saveModelGifButton, &QPushButton::clicked, this, &ImagingDialog::saveModelGif);
     connect(m_modelLevel, &QLineEdit::returnPressed, this, &ImagingDialog::buildModel);
 
-    auto diagnostic = new QTabWidget;
+    auto logPage = new QWidget;
+    auto logLayout = new QVBoxLayout(logPage);
+    WorkflowUi::compact(logLayout);
+    auto logControls = new QWidget;
+    auto logSidebar = new QVBoxLayout(logControls);
+    WorkflowUi::compact(logSidebar);
+    auto choicesBox = new QGroupBox(tr("查看内容"));
+    auto choicesLayout = new QVBoxLayout(choicesBox);
+    WorkflowUi::compact(choicesLayout);
+    choicesLayout->setSizeConstraint(QLayout::SetMinAndMaxSize);
+    auto choices = new QListWidget;
+    choices->setObjectName("ImagingLogSections");
+    choices->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    choices->setUniformItemSizes(true);
+    choicesLayout->addWidget(choices);
+    logSidebar->addWidget(choicesBox);
+    auto diagnostic = new QStackedWidget;
+    diagnostic->setObjectName("ImagingLogViews");
+    auto addView = [&](QWidget *view, const QString &title) {
+        auto item = new QListWidgetItem(title, choices);
+        item->setToolTip(title);
+        const auto metrics = choices->fontMetrics();
+        item->setSizeHint({metrics.horizontalAdvance(title) + 10, metrics.height() + 8});
+        diagnostic->addWidget(view);
+    };
+    const auto monospace = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    m_log = new QPlainTextEdit;
+    m_log->setReadOnly(true);
+    m_log->setFont(monospace);
+    m_log->setMaximumBlockCount(5000);
+    m_log->setObjectName("ImagingLog");
+    m_log->setPlaceholderText(tr("运行校验或重建后显示日志。已有结果可读取随结果保存的日志。"));
+    addView(m_log, tr("运行日志"));
+    m_summary = new QPlainTextEdit;
+    m_summary->setObjectName("ImagingSummary");
+    m_summary->setReadOnly(true);
+    m_summary->setFont(monospace);
+    m_summary->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_summary->setPlaceholderText(tr("完成重建或载入已有结果后显示摘要。"));
+    addView(m_summary, tr("完整摘要"));
     m_sensitivity = new SpectrumPlot;
     m_sensitivity->setObjectName("ImagingSensitivity");
-    diagnostic->addTab(m_sensitivity, tr("X 灵敏度"));
+    addView(m_sensitivity, tr("X 灵敏度"));
     auto trajectories = new QWidget;
     auto tl = new QVBoxLayout(trajectories);
     WorkflowUi::compact(tl);
+    auto psfControls = new QGroupBox(tr("光斑模型"));
+    auto psfFields = new QFormLayout(psfControls);
+    WorkflowUi::compact(psfFields);
+    psfFields->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    psfFields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_psfChoice = new QComboBox;
     m_psfChoice->setMinimumContentsLength(12);
-    auto modelRow = new QHBoxLayout;
-    modelRow->addWidget(m_psfChoice);
-    m_comparePsf = new QPushButton(tr("用已有标定比较模型"));
+    psfFields->addRow(tr("晶体"), m_psfChoice);
+    m_comparePsf = WorkflowUi::button("chart-line", tr("用已有标定比较模型"));
     m_comparePsf->setObjectName("CompareImagingPsf");
     m_comparePsf->setAutoDefault(false);
-    modelRow->addWidget(m_comparePsf);
-    modelRow->addStretch();
-    tl->addLayout(modelRow);
+    psfFields->addRow(m_comparePsf);
+    logSidebar->addWidget(psfControls);
+    logSidebar->addStretch();
     connect(m_comparePsf, &QPushButton::clicked, this, [this] { runDiagnostic(DiagnosticTask::Models); });
     m_psfSelection = new QLabel;
     m_psfSelection->setObjectName("ImagingPsfSelection");
     m_psfSelection->setWordWrap(true);
     m_psfSelection->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    tl->addWidget(m_psfSelection);
     m_trajectory = new SpectrumPlot;
     tl->addWidget(m_trajectory, 1);
-    diagnostic->addTab(trajectories, tr("光斑模型与质心轨迹"));
+    tl->addWidget(m_psfSelection);
+    addView(trajectories, tr("光斑模型与质心轨迹"));
     m_spectrum = new SpectrumPlot;
-    diagnostic->addTab(m_spectrum, tr("Gram 特征值"));
+    addView(m_spectrum, tr("Gram 特征值"));
     auto boundaries = new QWidget;
     auto bl = new QVBoxLayout(boundaries);
+    WorkflowUi::compact(bl);
+    auto boundaryTools = new QGroupBox(tr("增益与边界稳定性"));
+    auto boundaryLayout = new QVBoxLayout(boundaryTools);
+    WorkflowUi::compact(boundaryLayout);
     auto guide = new QLabel(tr("按 X 灵敏度把晶体分成两组，在共同覆盖的深度范围内独立复算。比较锚点和 TV "
                                "强度对质心、半高厚度及局部突起的影响。"));
     guide->setWordWrap(true);
-    bl->addWidget(guide);
-    m_compareBounds = new QPushButton(tr("运行晶体分组与边界复算"));
+    boundaryLayout->addWidget(guide);
+    m_compareBounds = WorkflowUi::button("play", tr("运行晶体分组与边界复算"));
     m_compareBounds->setObjectName("ValidateImagingBoundaries");
-    m_showBounds = new QPushButton(tr("查看边界对照"));
+    m_showBounds = WorkflowUi::button("chart-line", tr("查看边界对照"));
     m_showBounds->setObjectName("ShowImagingBoundaries");
     for (auto button : {m_compareBounds, m_showBounds}) {
         button->setAutoDefault(false);
-        bl->addWidget(button, 0, Qt::AlignLeft);
+        boundaryLayout->addWidget(button, 0, Qt::AlignLeft);
     }
+    bl->addWidget(boundaryTools);
     bl->addStretch();
-    diagnostic->addTab(boundaries, tr("增益与边界稳定性"));
+    addView(boundaries, tr("增益与边界稳定性"));
     connect(m_compareBounds, &QPushButton::clicked, this,
             [this] { runDiagnostic(DiagnosticTask::Boundaries); });
     connect(m_showBounds, &QPushButton::clicked, this, &ImagingDialog::showBoundaryReport);
-    m_log = new QPlainTextEdit;
-    m_log->setReadOnly(true);
-    m_log->setMaximumBlockCount(5000);
-    m_log->setObjectName("ImagingLog");
-    diagnostic->addTab(m_log, tr("运行日志"));
-    m_summary = new QPlainTextEdit;
-    m_summary->setReadOnly(true);
-    diagnostic->addTab(m_summary, tr("完整摘要"));
-    m_tabs->addTab(diagnostic, tr("6 诊断与日志"));
+    choices->setFixedHeight(choices->count() * choices->sizeHintForRow(0) + 2 * choices->frameWidth());
+    connect(choices, &QListWidget::currentRowChanged, diagnostic, &QStackedWidget::setCurrentIndex);
+    connect(diagnostic, &QStackedWidget::currentChanged, psfControls, [diagnostic, trajectories, psfControls] {
+        psfControls->setVisible(diagnostic->currentWidget() == trajectories);
+    });
+    psfControls->hide();
+    choices->setCurrentRow(0);
+    logLayout->addWidget(WorkflowUi::analysisSplit("ImagingLogSplitter", logControls, diagnostic), 1);
+    m_tabs->addTab(logPage, tr("6 日志"));
     connect(m_psfChoice, &QComboBox::currentIndexChanged, this, [this] { refreshTrajectory(); });
     m_status = new QLabel(tr("可载入已有方案，或选择薄膜、样品和 ROI 后校验输入。"));
     m_status->setObjectName("ImagingStatus");
@@ -622,7 +699,7 @@ void ImagingDialog::buildUi() {
     m_nextButton = WorkflowUi::button("chevron-right", tr("下一步"));
     m_nextButton->setObjectName("NextImagingStep");
     actions->addWidget(m_previousButton);
-    actions->addWidget(m_status, 1);
+    actions->addStretch(1);
     actions->addWidget(m_progress);
     actions->addWidget(m_validateButton);
     actions->addWidget(m_runButton);
@@ -632,6 +709,7 @@ void ImagingDialog::buildUi() {
     close->setObjectName("CloseWorkflow");
     actions->addWidget(close);
     root->addLayout(actions);
+    root->addWidget(m_status);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this] { refreshActions(); });
     connect(m_nextButton, &QPushButton::clicked, this, [this] { selectStep(m_tabs->currentIndex() + 1); });
     connect(m_previousButton, &QPushButton::clicked, this,
@@ -763,7 +841,9 @@ void ImagingDialog::start(bool validateOnly) {
         m_progress->setValue(0);
         m_progress->show();
         m_log->clear();
-        status(validateOnly ? tr("正在校验输入…") : tr("正在运行完整成像流程…"));
+        const auto message = validateOnly ? tr("正在校验输入…") : tr("正在运行完整成像流程…");
+        m_log->appendPlainText(message);
+        status(message);
         auto progress = [this](const QString &text, int percent) {
             QMetaObject::invokeMethod(
                 this,
@@ -877,6 +957,14 @@ void ImagingDialog::refreshResult() {
     }
     m_depthIndex = int(m_relativeSensitivity.size()) / 2;
     m_openButton->setEnabled(true);
+    QFile log(m_result.directory + "/run.log");
+    if (log.open(QIODevice::ReadOnly)) {
+        constexpr qint64 logLimit = 1024 * 1024;
+        if (log.size() > logLimit && log.seek(log.size() - logLimit))
+            log.readLine();
+        m_log->setPlainText(QString::fromUtf8(log.read(logLimit)).trimmed());
+        m_log->moveCursor(QTextCursor::End);
+    }
     m_summary->setPlainText(QString::fromUtf8(QJsonDocument(m_result.summary).toJson()));
     for (auto *choice : {m_method, m_modelSource}) {
         QSignalBlocker block(choice);
@@ -1124,6 +1212,7 @@ void ImagingDialog::runDiagnostic(DiagnosticTask task) {
                     [this, s, pct] {
                         if (m_diagnosticTask != DiagnosticTask::None) {
                             m_status->setText(s);
+                            emit statusChanged(s);
                             m_progress->setValue(pct);
                         }
                     },
@@ -1576,6 +1665,7 @@ bool ImagingDialog::loadResult(const QString &directory) {
         }
         m_result = std::move(result);
         m_haveResult = true;
+        m_log->clear();
         refreshResult();
         m_tabs->setCurrentIndex(3);
         status(tr("已只读载入已有成像结果：%1").arg(directory));

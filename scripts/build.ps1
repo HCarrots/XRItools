@@ -40,18 +40,31 @@ $env:PATH = "$QtRoot\bin;$QtRoot\lib\qt6\bin;$Hdf5Root\bin;$ninja;$env:PATH"
 $env:QT_PLUGIN_PATH = "$QtRoot\plugins;$QtRoot\lib\qt6\plugins"
 $env:VSLANG = '1033'
 if (![IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory = Join-Path $projectRoot $BuildDirectory }
-& $cmake -S $projectRoot -B $BuildDirectory -G Ninja '-DCMAKE_BUILD_TYPE=Release' "-DCMAKE_PREFIX_PATH=$QtRoot" "-DHDF5_ROOT=$Hdf5Root" '-DHDF5_USE_STATIC_LIBRARIES=OFF'
+# Visual Studio updates can remove the versioned compiler recorded by CMake.
+$configureOptions = @()
+$cache = Join-Path $BuildDirectory 'CMakeCache.txt'
+if (Test-Path -LiteralPath $cache -PathType Leaf) {
+    $cachedTools = Select-String -LiteralPath $cache -Pattern '^CMAKE_(C_COMPILER|CXX_COMPILER|MAKE_PROGRAM):FILEPATH=(.+)$'
+    foreach ($tool in $cachedTools) {
+        if (!(Test-Path -LiteralPath $tool.Matches[0].Groups[2].Value -PathType Leaf)) {
+            Write-Host 'Refreshing the CMake cache because a cached build tool is missing.'
+            $configureOptions += '--fresh'
+            break
+        }
+    }
+}
+& $cmake @configureOptions -S $projectRoot -B $BuildDirectory -G Ninja '-DCMAKE_BUILD_TYPE=Release' "-DCMAKE_PREFIX_PATH=$QtRoot" "-DHDF5_ROOT=$Hdf5Root" '-DHDF5_USE_STATIC_LIBRARIES=OFF'
 if ($LASTEXITCODE) { throw 'CMake configuration failed.' }
 if ($Clean) {
     & $cmake --build $BuildDirectory --target clean
     if ($LASTEXITCODE) { throw 'Build cleanup failed.' }
 }
-& $cmake --build $BuildDirectory --parallel
+& $cmake --build $BuildDirectory
 if ($LASTEXITCODE) { throw 'Build failed.' }
 if ($Test) {
     & $ctest --test-dir $BuildDirectory --output-on-failure
     if ($LASTEXITCODE) { throw 'Regression tests failed.' }
 }
 if ($Run) {
-    Start-Process -FilePath (Join-Path $BuildDirectory 'XRI.exe') -ArgumentList ('"' + (Join-Path $projectRoot 'Data\15469_grid_scan_20261014231918_1.nxs') + '"') -WindowStyle Normal
+    & "$PSScriptRoot\run.ps1" -QtRoot $QtRoot -BuildDirectory $BuildDirectory
 }

@@ -3,13 +3,14 @@
 #include <array>
 
 using SpectrumWindows = QVector<QPair<double, double>>;
-enum class BackgroundComponent { Linear, HfCore, ComptonPeak, Asymmetry, Count };
+enum class BackgroundComponent { Polynomial, HfCore, ComptonPeak, Asymmetry, Count };
 inline constexpr int backgroundComponentCount = int(BackgroundComponent::Count);
 struct StagedBackgroundSettings {
     std::array<SpectrumWindows, backgroundComponentCount> windows;
     SpectrumWindows protectedWindows;
     QString hfTable, composition;
     QStringList hfShells;
+    int polynomialOrder = 1;
     double asymmetryRise = 1., asymmetryDecay = 1.;
 };
 struct StagedSpectrumFit {

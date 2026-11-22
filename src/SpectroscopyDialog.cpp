@@ -13,12 +13,18 @@
 #include <QUuid>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
+#include <algorithm>
 
 namespace {
 using WorkspacePaths::Kind;
 using WorkspacePaths::Workflow;
 
 constexpr int prepareMaskStep = -1;
+enum WorkflowPage { InputsPage, MasksPage, ElasticPage, XrsPage, RawPage, ComptonPage, BackgroundPage, NearEdgePage };
+constexpr auto manualCalculationKey = "manual_calculation_pending";
+const QStringList manualCalculationSteps{"masks", "elastic", "xrs", "combine", "compton", "background"};
+constexpr int pageForJob(int job) { return job + ElasticPage; }
+enum RawSpectrumView { TotalAndModules = -1, AllCrystals = -2, AllModules = -3 };
 QString number(double v) {
     return std::isfinite(v) ? QString::number(v, 'g', 9) : QStringLiteral("—");
 }
@@ -27,7 +33,6 @@ QDoubleSpinBox *realBox(double value, double lo, double hi, int decimals = 4) {
     b->setDecimals(decimals);
     b->setRange(lo, hi);
     b->setValue(value);
-    b->setKeyboardTracking(false);
     return b;
 }
 QComboBox *channelBox() {
@@ -66,6 +71,14 @@ QVector<QSize> detectorSizes(const QString &elasticFile) {
         sizes.append({int(node.dims[2]), int(node.dims[1])});
     }
     return sizes;
+}
+bool containsPixels(const CrystalRoi &roi, const QVector<QPoint> &pixels) {
+    if (roi.state != RoiState::Valid)
+        return false;
+    if (roi.mask.isEmpty())
+        return std::all_of(pixels.cbegin(), pixels.cend(), [&](const QPoint &p) { return roi.rect.contains(p); });
+    const QSet<QPoint> allowed(roi.mask.cbegin(), roi.mask.cend());
+    return std::all_of(pixels.cbegin(), pixels.cend(), [&](const QPoint &p) { return allowed.contains(p); });
 }
 QString absolutePath(const QDir &base, const QString &path) {
     return path.isEmpty() ? QString{} : QDir::cleanPath(base.absoluteFilePath(path));
@@ -120,6 +133,11 @@ void appendScan(QListWidget *list, const QString &path, bool enabled) {
     item->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
     list->addItem(item);
 }
+QString scanPathKey(const QString &path) {
+    const QFileInfo file(path);
+    const auto canonical = file.canonicalFilePath();
+    return canonical.isEmpty() ? file.absoluteFilePath() : canonical;
+}
 } // namespace
 
 SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *parent) : QDialog(parent) {
@@ -134,31 +152,45 @@ SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *pare
         m_busy = false;
         m_tabs->setEnabled(true);
         m_progress->hide();
-        if (!work.error.isEmpty()) {
+        if (!work.error.isEmpty() || m_cancel.load()) {
             m_nextPage = -1;
-            message(work.error, true);
+            message(work.error.isEmpty() ? tr("已取消。") : work.error, !work.error.isEmpty());
             refreshState();
             return;
+        }
+        if (m_job != 0)
+            m_manualPages.remove(pageForJob(m_job));
+        const bool replaceMasks = work.maskSource == MaskSource::Parameters || work.maskSource == MaskSource::Original;
+        if (replaceMasks) {
+            m_useOriginalRoi = work.maskSource == MaskSource::Original;
+            m_spectralMasks.clear();
+            refreshSpectralMaskLabels();
         }
         if (m_job <= 0) {
             m_masks = std::move(work.masks);
             m_projection = m_masks.images;
         }
         if (m_job == prepareMaskStep) {
+            if (replaceMasks)
+                invalidate(0);
             m_imageSource->setCurrentIndex(1);
             refreshImages();
-            selectStep(1);
-            message(tr("掩膜已计算。可修正像素，或点击下一步计算弹性标定。"));
+            selectStep(MasksPage);
+            message(m_useOriginalRoi ? tr("已重置掩膜，当前使用原始 ROI。可点击下一步计算弹性标定。")
+                    : m_spectralMasks.isEmpty() ? tr("已应用参数掩膜。可点击下一步计算弹性标定。")
+                                                : tr("当前使用谱分解掩膜。"));
         }
         if (m_job == 0) {
             m_calibration = std::move(work.calibration);
             m_haveCalibration = true;
             refreshCalibration();
-            m_tabs->setCurrentIndex(2);
+            selectStep(ElasticPage);
             int accepted = 0;
             for (auto &fit : m_calibration.fits)
                 if (fit.accepted)
                     ++accepted;
+            if (accepted > 0)
+                m_manualPages.remove(ElasticPage);
             message(tr("弹性标定完成：%1 / %2 个有效 ROI 通过拟合，重叠像素 %3。可在拟合表中查看未通过原因。")
                         .arg(accepted)
                         .arg(m_rois.count(RoiState::Valid))
@@ -175,7 +207,7 @@ SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *pare
             }
             refreshScanCurves();
             refreshImages();
-            m_tabs->setCurrentIndex(3);
+            selectStep(XrsPage);
             int count = 0;
             for (const auto &scan : m_scans)
                 count += scan.glitches.size();
@@ -188,7 +220,7 @@ SpectroscopyDialog::SpectroscopyDialog(const QString &initialFile, QWidget *pare
             m_haveResult = true;
             setEdgeStatus(EdgeStatus::Combined);
             refreshResult();
-            m_tabs->setCurrentIndex(4);
+            selectStep(RawPage);
             int count = 0;
             for (bool v : m_result.included)
                 count += v;
@@ -217,14 +249,21 @@ SpectroscopyDialog::~SpectroscopyDialog() {
     m_watcher.waitForFinished();
 }
 void SpectroscopyDialog::selectStep(int step) {
-    m_tabs->setCurrentIndex(std::clamp(step, 0, m_tabs->count() - 1));
+    if (step == ComptonPage && !m_measureCompton->isChecked())
+        step = RawPage;
+    m_tabs->setCurrentIndex(std::clamp(step, int(InputsPage), firstManualPage()));
 }
 QString SpectroscopyDialog::statusText() const {
     return m_status->text();
 }
+void SpectroscopyDialog::useGlobalStatus() {
+    m_status->hide();
+    m_processing->useGlobalStatus();
+}
 void SpectroscopyDialog::message(const QString &text, bool error) {
     m_status->setText(text);
     m_status->setStyleSheet(error ? "color: #a02020;" : "");
+    emit statusChanged(text);
 }
 
 void SpectroscopyDialog::buildUi() {
@@ -293,10 +332,16 @@ void SpectroscopyDialog::buildUi() {
     m_roiStatus = new QLabel;
     m_roiStatus->setWordWrap(true);
     fileForm->addRow(m_roiStatus);
+    auto compton = new QWidget;
+    auto comptonForm = new QFormLayout(compton);
+    WorkflowUi::compact(comptonForm);
+    m_measureCompton = new QCheckBox(tr("测量 Compton"));
+    m_measureCompton->setObjectName("MeasureCompton");
+    comptonForm->addRow(m_measureCompton);
     m_hfComposition = new QLineEdit;
     m_hfComposition->setObjectName("BackgroundHfComposition");
     m_hfComposition->setPlaceholderText(tr("例如 Li:1, Ni:0.8, Co:0.1, Mn:0.1, O:2"));
-    fileForm->addRow(tr("元素与化学比"), m_hfComposition);
+    comptonForm->addRow(tr("元素与化学比"), m_hfComposition);
     auto hfRow = new QWidget;
     auto hfLayout = new QHBoxLayout(hfRow);
     hfLayout->setContentsMargins(0, 0, 0, 0);
@@ -311,7 +356,7 @@ void SpectroscopyDialog::buildUi() {
     hfLayout->addWidget(m_hfTable, 1);
     hfLayout->addWidget(chooseTable);
     hfLayout->addWidget(defaultTable);
-    fileForm->addRow(tr("HF 壳层表"), hfRow);
+    comptonForm->addRow(tr("HF 壳层表"), hfRow);
     connect(chooseTable, &QPushButton::clicked, this, [this] {
         const auto path = QFileDialog::getOpenFileName(this, tr("选择 DABAX HF 壳层数据"),
                                                        m_hfTable->text(), "DABAX (*.dat);;All files (*)");
@@ -373,12 +418,20 @@ void SpectroscopyDialog::buildUi() {
     auto energyNote = new QLabel(tr("auto 使用实测能量通道；请确认能量单位为 keV。能量轴须严格单调。"));
     energyNote->setWordWrap(true);
     cf->addRow(energyNote);
-    formLayout->addWidget(WorkflowUi::disclosure(tr("高级：能量通道与 I0 归一化"), channels));
+    auto advanced = new QWidget;
+    auto advancedLayout = new QVBoxLayout(advanced);
+    WorkflowUi::compact(advancedLayout);
+    advancedLayout->addWidget(channels);
+    advancedLayout->addWidget(compton);
+    auto advancedSection = WorkflowUi::disclosure(tr("高级"), advanced);
+    advancedSection->setObjectName("SpectroscopyAdvancedInputs");
+    formLayout->addWidget(advancedSection);
     auto mask = new QGroupBox(tr("ROI 与像素掩膜"));
     auto mf = new QFormLayout(mask);
-    m_filter = new QCheckBox(tr("使用像素掩膜（优先采用谱分辨结果）"));
+    m_filter = new QCheckBox(tr("按参数筛选像素"));
     m_filter->setChecked(true);
     m_fraction = realBox(.15, 0, 1, 3);
+    m_fraction->setObjectName("MaskFilterFraction");
     m_fraction->setSingleStep(.01);
     m_auto = new QCheckBox(tr("在原 ROI 内寻找峰值并重定位"));
     m_roiSize = new QSpinBox;
@@ -400,6 +453,7 @@ void SpectroscopyDialog::buildUi() {
     m_centerMax = realBox(9.69, 0, 100, 6);
     m_fwhm = realBox(2, .001, 10000, 3);
     m_r2 = realBox(.8, 0, 1, 4);
+    m_r2->setObjectName("ElasticMinimumRSquared");
     ff->addRow(tr("峰形 + 常数背景"), m_model);
     ff->addRow(tr("中心下限 / keV"), m_centerMin);
     ff->addRow(tr("中心上限 / keV"), m_centerMax);
@@ -495,9 +549,11 @@ void SpectroscopyDialog::buildUi() {
     m_files = new QListWidget;
     m_files->setObjectName("XrsFiles");
     m_files->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_files->setContextMenuPolicy(Qt::CustomContextMenu);
     sl->addWidget(m_files, 1);
     auto sb = new QHBoxLayout;
     m_addScans = WorkflowUi::button("plus", tr("添加扫描…"));
+    m_addScans->setObjectName("AddSpectrumScans");
     m_removeScans = new QPushButton(tr("移除选中"));
     sb->addWidget(m_addScans);
     sb->addWidget(m_removeScans);
@@ -507,45 +563,51 @@ void SpectroscopyDialog::buildUi() {
     sl->addWidget(scanNote);
     inputLayout->addWidget(scanGroup, 2);
     connect(m_addScans, &QPushButton::clicked, this, [this] {
-        if (!m_availableFiles.isEmpty()) {
-            QMenu menu(this);
-            for (const auto &file : m_availableFiles) {
-                if (HdfFile::formatFromFileName(file) == ScanFormat::GridScan)
-                    continue;
-                auto action = menu.addAction(QFileInfo(file).fileName());
-                action->setData(file);
-            }
-            menu.addSeparator();
-            auto all = menu.addAction(tr("添加全部已导入的 scan 文件"));
-            auto disk = menu.addAction(tr("选择磁盘上的其他文件…"));
-            auto selected = menu.exec(QCursor::pos());
-            if (!selected)
-                return;
-            if (selected == all) {
-                QStringList scans;
-                for (const auto &file : m_availableFiles)
-                    if (HdfFile::formatFromFileName(file) == ScanFormat::Scan)
-                        scans.append(file);
-                addScans(scans);
-                return;
-            }
-            if (selected != disk) {
-                addScans({selected->data().toString()});
-                return;
-            }
+        QMenu menu(this);
+        populateScanAddMenu(menu);
+        menu.exec(m_addScans->mapToGlobal(m_addScans->rect().bottomLeft()));
+    });
+    connect(m_files, &QListWidget::customContextMenuRequested, this, [this](const QPoint &position) {
+        if (isBusy() || m_activeEdge < 0)
+            return;
+        if (auto *item = m_files->itemAt(position); item && !item->isSelected())
+            m_files->setCurrentItem(item, QItemSelectionModel::ClearAndSelect);
+        QMenu menu(this);
+        auto add = menu.addMenu(tr("添加扫描"));
+        populateScanAddMenu(*add);
+        menu.addSeparator();
+        const auto selected = m_files->selectedItems();
+        auto check = menu.addAction(tr("勾选所选扫描"));
+        check->setObjectName("CheckSelectedSpectrumScans");
+        auto uncheck = menu.addAction(tr("取消勾选所选扫描"));
+        uncheck->setObjectName("UncheckSelectedSpectrumScans");
+        check->setEnabled(std::any_of(selected.cbegin(), selected.cend(), [](const auto *item) {
+            return item->checkState() != Qt::Checked;
+        }));
+        uncheck->setEnabled(std::any_of(selected.cbegin(), selected.cend(), [](const auto *item) {
+            return item->checkState() != Qt::Unchecked;
+        }));
+        const auto action = menu.exec(m_files->viewport()->mapToGlobal(position));
+        if (action != check && action != uncheck)
+            return;
+        {
+            const QSignalBlocker block(m_files);
+            for (auto *item : m_files->selectedItems())
+                item->setCheckState(action == check ? Qt::Checked : Qt::Unchecked);
         }
-        addScans(QFileDialog::getOpenFileNames(this, tr("添加 XRS 扫描"),
-                                               QFileInfo(m_elasticFile->text()).absolutePath(),
-                                               "NeXus (*.nxs *.h5 *.hdf5)"));
+        calculationParametersEdited(1);
     });
     connect(m_removeScans, &QPushButton::clicked, this, [this] {
         if (m_files->selectedItems().isEmpty())
             return;
         for (auto item : m_files->selectedItems())
             delete m_files->takeItem(m_files->row(item));
-        invalidate(1);
+        if (m_haveScans)
+            calculationParametersEdited(1);
+        else
+            invalidate(1);
     });
-    connect(m_files, &QListWidget::itemChanged, this, [this] { invalidate(1); });
+    connect(m_files, &QListWidget::itemChanged, this, [this] { calculationParametersEdited(1); });
     m_tabs->addTab(inputs, tr("1 数据与 ROI"));
 
     auto masks = new QWidget;
@@ -569,12 +631,19 @@ void SpectroscopyDialog::buildUi() {
     auto *reset = WorkflowUi::button("rotate-ccw", tr("清除此晶体谱掩膜"));
     maskTools->addWidget(reset);
     connect(reset, &QPushButton::clicked, this, [this] {
+        if (isBusy())
+            return;
         const int r = m_corrections->currentRow();
-        if (m_spectralMasks.remove(r)) {
-            m_corrections->item(r, 0)->setText(m_rois.items()[r].label);
-            updateMasks();
-        } else
+        auto remaining = m_spectralMasks;
+        if (!remaining.remove(r)) {
             message(tr("请在表中选择已经应用谱掩膜的晶体。"));
+            return;
+        }
+        try {
+            applySpectralMasks(std::move(remaining));
+        } catch (const std::exception &error) {
+            message(QString::fromUtf8(error.what()), true);
+        }
     });
     maskTools->addStretch();
     maskTools->addWidget(saveRoi);
@@ -768,6 +837,7 @@ void SpectroscopyDialog::buildUi() {
     sf->addRow(moduleRow);
     m_qMin = realBox(0, 0, 100, 5);
     m_qMax = realBox(10, 0, 100, 5);
+    m_qMax->setObjectName("SpectrumQMaximum");
     m_step = realBox(.2, .000001, 10000, 6);
     sf->addRow(tr("Q 下限 / Å⁻¹"), m_qMin);
     sf->addRow(tr("Q 上限 / Å⁻¹"), m_qMax);
@@ -783,22 +853,9 @@ void SpectroscopyDialog::buildUi() {
     optionScroll->setMinimumWidth(300);
     optionScroll->setMaximumWidth(390);
     resLayout->addWidget(optionScroll);
-    auto *toggle = new QToolButton;
+    auto *toggle = WorkflowUi::sidePanelToggle(optionScroll, tr("收起参数面板"), tr("展开参数面板"));
     toggle->setObjectName("ToggleSpectrumParameters");
-    toggle->setCheckable(true);
-    toggle->setAutoRaise(true);
-    toggle->setIcon(WorkflowUi::icon("chevron-left"));
-    toggle->setIconSize({12, 12});
-    toggle->setFixedSize(18, 18);
-    toggle->setToolTip(tr("收起参数面板"));
-    toggle->setAccessibleName(toggle->toolTip());
     resLayout->addWidget(toggle, 0, Qt::AlignTop);
-    connect(toggle, &QToolButton::toggled, this, [this, optionScroll, toggle](bool collapsed) {
-        optionScroll->setVisible(!collapsed);
-        toggle->setIcon(WorkflowUi::icon(collapsed ? "chevron-right" : "chevron-left"));
-        toggle->setToolTip(collapsed ? tr("展开参数面板") : tr("收起参数面板"));
-        toggle->setAccessibleName(toggle->toolTip());
-    });
     auto rs = new QSplitter(Qt::Horizontal);
     rs->setObjectName("SpectrumResultsSplitter");
     rs->setChildrenCollapsible(false);
@@ -807,8 +864,10 @@ void SpectroscopyDialog::buildUi() {
     auto rb = new QVBoxLayout(plotPane);
     rb->setContentsMargins(0, 0, 0, 0);
     m_resultChoice = new QComboBox;
+    m_resultChoice->setObjectName("RawResultSpectrum");
     m_resultChoice->setMinimumContentsLength(16);
-    rb->addWidget(m_resultChoice, 0, Qt::AlignLeft);
+    rb->addWidget(WorkflowUi::spectrumChooser(m_resultChoice, "RawResultSpectrum", tr("上一条谱"), tr("下一条谱")),
+                  0, Qt::AlignLeft);
     m_resultPlot = new SpectrumPlot(nullptr, SpectrumPlot::Style::Spectroscopy);
     m_resultPlot->setObjectName("CombinedSpectrum");
     rb->addWidget(m_resultPlot, 1);
@@ -836,7 +895,7 @@ void SpectroscopyDialog::buildUi() {
     rs->setStretchFactor(1, 2);
     rs->setSizes({570, 335});
     m_tabs->addTab(resultPage, tr("5 原始谱结果"));
-    m_processing = new SpectrumProcessingPage(*m_hfTable, *m_hfComposition, *m_hfShells);
+    m_processing = new SpectrumProcessingPage(*m_measureCompton, *m_hfTable, *m_hfComposition, *m_hfShells);
     m_processing->setWideCalibration([this]() -> std::optional<WideScanCalibration> {
         if (!m_haveCalibration)
             return std::nullopt;
@@ -847,13 +906,14 @@ void SpectroscopyDialog::buildUi() {
         return context;
     });
     m_tabs->addTab(m_processing, tr("6 Compton 峰分析"));
+    m_tabs->setTabEnabled(5, false);
     m_tabs->addTab(m_processing->analysisPage(), tr("7 背景分析"));
     m_tabs->addTab(m_processing->resultPage(), tr("8 近边结构结果分析"));
     auto batchSet = [this](Qt::CheckState state) {
         bool changed = false;
         for (const auto &index : m_inclusion->selectionModel()->selectedRows()) {
             auto item = m_inclusion->item(index.row(), 0);
-            if (item && (item->flags() & Qt::ItemIsUserCheckable)) {
+            if (item && (item->flags() & Qt::ItemIsUserCheckable) && item->checkState() != state) {
                 QSignalBlocker b(m_inclusion);
                 item->setCheckState(state);
                 if (state == Qt::Checked)
@@ -864,7 +924,7 @@ void SpectroscopyDialog::buildUi() {
             }
         }
         if (changed)
-            invalidate(2);
+            calculationParametersEdited(2);
     };
     connect(include, &QPushButton::clicked, this, [batchSet] { batchSet(Qt::Checked); });
     connect(exclude, &QPushButton::clicked, this, [batchSet] { batchSet(Qt::Unchecked); });
@@ -874,7 +934,7 @@ void SpectroscopyDialog::buildUi() {
                 m_configExclusions.remove(item->row());
             else
                 m_configExclusions.insert(item->row());
-            invalidate(2);
+            calculationParametersEdited(2);
         }
     });
     connect(m_resultChoice, &QComboBox::currentIndexChanged, this, [this] { refreshResultCurve(); });
@@ -893,48 +953,71 @@ void SpectroscopyDialog::buildUi() {
     m_saveButton = WorkflowUi::button("save", tr("保存谱学结果…"));
     m_saveButton->setObjectName("SaveSpectrum");
     m_cancelButton = WorkflowUi::button("square", tr("取消计算"));
+    m_cancelButton->setObjectName("CancelSpectrumCalculation");
     m_previousButton = WorkflowUi::button("chevron-left", tr("上一步"));
     m_previousButton->setObjectName("PreviousSpectrumStep");
     m_nextButton = WorkflowUi::button("chevron-right", tr("下一步"));
     m_nextButton->setObjectName("NextSpectrumStep");
+    m_calculateMaskButton = WorkflowUi::button("filter", tr("计算掩膜"));
+    m_calculateMaskButton->setObjectName("CalculateSpectrumMask");
+    m_calculateMaskButton->setToolTip(tr("使用当前像素掩膜参数重新计算，替换谱分解掩膜。"));
+    m_resetMaskButton = WorkflowUi::button("rotate-ccw", tr("重置掩膜"));
+    m_resetMaskButton->setObjectName("ResetSpectrumMask");
+    m_resetMaskButton->setToolTip(tr("清除当前掩膜并恢复载入的原始 ROI 区域。"));
     m_fitElasticButton = WorkflowUi::button("crosshair", tr("计算弹性峰"));
     m_fitElasticButton->setObjectName("FitElasticPeaks");
     actions->addWidget(m_previousButton);
-    actions->addWidget(m_status, 1);
+    actions->addStretch();
     actions->addWidget(m_progress);
     actions->addWidget(m_extractButton);
     actions->addWidget(m_combineButton);
     actions->addWidget(m_saveButton);
     actions->addWidget(m_fitElasticButton);
+    actions->addWidget(m_resetMaskButton);
+    actions->addWidget(m_calculateMaskButton);
+    actions->addWidget(m_processing->backgroundRunButton());
     actions->addWidget(m_nextButton);
     actions->addWidget(m_cancelButton);
     auto close = new QPushButton(tr("关闭"));
     close->setObjectName("CloseWorkflow");
     actions->addWidget(close);
     root->addLayout(actions);
+    root->addWidget(m_status);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this](int step) {
         if (m_processing->isBusy())
             m_nextPage = -1;
-        if (step == 5 && !m_updating && m_activeEdge >= 0 && m_haveResult)
+        if (step == ComptonPage && !m_updating && m_activeEdge >= 0 && m_haveResult)
             m_processing->restoreWideIfNeeded();
+        if (step == BackgroundPage && !m_updating && m_haveResult && firstManualPage() >= BackgroundPage)
+            m_processing->prepareAnalysisInput(false);
         refreshActions();
+        if (!m_updating && !isBusy() && m_manualPages.contains(step))
+            message(manualCalculationHint(step));
     });
     connect(m_processing, &SpectrumProcessingPage::busyChanged, this, &SpectroscopyDialog::refreshState);
+    connect(m_processing, &SpectrumProcessingPage::statusChanged, this, &SpectroscopyDialog::message);
     connect(m_processing, &SpectrumProcessingPage::analysisInputReady, this, [this] {
-        if (m_tabs->currentIndex() == 5)
-            selectStep(6);
+        if (m_tabs->currentIndex() == ComptonPage)
+            selectStep(BackgroundPage);
     });
     connect(m_processing, &SpectrumProcessingPage::analysisFinished, this, [this](bool usable) {
-        if (m_nextPage == 7 && usable)
-            selectStep(7);
+        if (m_nextPage == NearEdgePage && usable)
+            selectStep(NearEdgePage);
         m_nextPage = -1;
     });
-    connect(m_processing, &SpectrumProcessingPage::analysisParametersEdited, this, [this] {
-        if (!m_updating && m_activeEdge >= 0 && m_edgeGroups[m_activeEdge].status != EdgeStatus::Pending)
-            setEdgeStatus(EdgeStatus::Combined);
+    connect(m_processing, &SpectrumProcessingPage::comptonParametersEdited, this,
+            [this] { processingParametersEdited(ComptonPage); });
+    connect(m_processing, &SpectrumProcessingPage::comptonInputApplied, this, [this] {
+        m_manualPages.remove(ComptonPage);
+        refreshActions();
     });
+    connect(m_processing, &SpectrumProcessingPage::analysisParametersEdited, this,
+            [this] { processingParametersEdited(BackgroundPage); });
     connect(m_processing, &SpectrumProcessingPage::analysisBatchCompleted, this, [this](bool usable, bool partial) {
+        if (usable)
+            m_manualPages.remove(BackgroundPage);
         setEdgeStatus(!usable ? EdgeStatus::Combined : partial ? EdgeStatus::Partial : EdgeStatus::Completed);
+        refreshActions();
     });
     connect(m_processing, &SpectrumProcessingPage::resultSaved, this, [this](const QString &format, const QString &path) {
         if (m_activeEdge >= 0)
@@ -942,6 +1025,22 @@ void SpectroscopyDialog::buildUi() {
     });
     connect(m_nextButton, &QPushButton::clicked, this, [this] {
         advanceToPage(m_tabs->currentIndex() + 1);
+    });
+    connect(m_calculateMaskButton, &QPushButton::clicked, this, [this] {
+        runStep(prepareMaskStep, MaskSource::Parameters);
+    });
+    connect(m_resetMaskButton, &QPushButton::clicked, this, [this] {
+        runStep(prepareMaskStep, MaskSource::Original);
+    });
+    connect(m_measureCompton, &QCheckBox::toggled, this, [this] {
+        m_processing->updateComptonMeasurement(!m_updating);
+        if (!m_updating) {
+            if (m_measureCompton->isChecked())
+                processingParametersEdited(ComptonPage);
+            else
+                m_manualPages.remove(ComptonPage);
+            refreshState();
+        }
     });
     connect(m_previousButton, &QPushButton::clicked, this,
             [this] { selectStep(m_tabs->currentIndex() - 1); });
@@ -958,55 +1057,61 @@ void SpectroscopyDialog::buildUi() {
     connect(m_elasticFile, &QLineEdit::textChanged, this, [this] {
         if (m_updating)
             return;
+        m_useOriginalRoi = false;
         m_spectralMasks.clear();
         m_roiSizes.clear();
         m_configExclusions.clear();
-        for (int r = 0; r < 75; ++r) {
-            QSignalBlocker block(m_corrections);
-            m_corrections->item(r, 0)->setText(m_rois.items()[r].label);
-        }
         m_rois = CrystalRois();
+        refreshSpectralMaskLabels();
         m_roiPath->clear();
         m_projection.clear();
         refreshExportIdentity();
-        invalidate(prepareMaskStep);
+        if (!m_masks.images.isEmpty())
+            calculationParametersEdited(prepareMaskStep);
+        else
+            invalidate(prepareMaskStep);
     });
     auto projectionChanged = [this] {
         m_projection.clear();
-        invalidate(prepareMaskStep);
+        calculationParametersEdited(prepareMaskStep);
     };
     for (auto c : {m_elasticEnergy, m_elasticI0})
         connect(c, &QComboBox::currentTextChanged, this, projectionChanged);
     connect(m_normalizeElastic, &QCheckBox::toggled, this, projectionChanged);
-    connect(m_model, &QComboBox::currentTextChanged, this, [this] { invalidate(0); });
+    connect(m_model, &QComboBox::currentTextChanged, this, [this] { calculationParametersEdited(0); });
     for (auto c : {m_xrsEnergy, m_xrsI0})
-        connect(c, &QComboBox::currentTextChanged, this, [this] { invalidate(1); });
+        connect(c, &QComboBox::currentTextChanged, this, [this] { calculationParametersEdited(1); });
     for (auto c : {m_filter, m_auto, m_overlap})
-        connect(c, &QCheckBox::toggled, this, &SpectroscopyDialog::updateMasks);
+        connect(c, &QCheckBox::toggled, this, &SpectroscopyDialog::maskParametersEdited);
     for (auto c : {m_normalizeXrs, m_repair})
-        connect(c, &QCheckBox::toggled, this, [this] { invalidate(1); });
-    connect(m_glitchDrop, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(1); });
+        connect(c, &QCheckBox::toggled, this, [this] { calculationParametersEdited(1); });
+    connect(m_glitchDrop, &QDoubleSpinBox::valueChanged, this, [this] { calculationParametersEdited(1); });
     for (auto b : {m_centerMin, m_centerMax, m_fwhm, m_r2})
-        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(0); });
-    connect(m_fraction, &QDoubleSpinBox::valueChanged, this, &SpectroscopyDialog::updateMasks);
-    connect(m_roiSize, &QSpinBox::valueChanged, this, &SpectroscopyDialog::updateMasks);
-    connect(m_corrections, &QTableWidget::itemChanged, this, &SpectroscopyDialog::updateMasks);
+        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { calculationParametersEdited(0); });
+    connect(m_fraction, &QDoubleSpinBox::valueChanged, this, &SpectroscopyDialog::maskParametersEdited);
+    connect(m_roiSize, &QSpinBox::valueChanged, this, &SpectroscopyDialog::maskParametersEdited);
+    connect(m_corrections, &QTableWidget::itemChanged, this, &SpectroscopyDialog::maskParametersEdited);
     connect(m_angleSource, &QComboBox::currentIndexChanged, this, [this] {
         for (auto b : m_angles)
             b->setEnabled(m_angleSource->currentIndex() == 2);
-        invalidate(2);
+        calculationParametersEdited(2);
     });
     for (auto b : m_angles)
-        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(2); });
+        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { calculationParametersEdited(2); });
     for (auto b : {m_diameter, m_distance, m_pitch, m_qMin, m_qMax, m_step})
-        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(2); });
+        connect(b, &QDoubleSpinBox::valueChanged, this, [this] { calculationParametersEdited(2); });
     for (auto c : m_modules)
-        connect(c, &QCheckBox::toggled, this, [this] { invalidate(2); });
+        connect(c, &QCheckBox::toggled, this, [this] { calculationParametersEdited(2); });
 }
 
-SpectrumSettings SpectroscopyDialog::settings() const {
+SpectrumSettings SpectroscopyDialog::settings(MaskSource source) const {
     SpectrumSettings s;
-    s.spectralMasks = m_spectralMasks;
+    const bool original = source == MaskSource::Original || (source == MaskSource::Current && m_useOriginalRoi);
+    const bool spectral = source == MaskSource::Spectral ||
+                          (source == MaskSource::Current && !original && !m_spectralMasks.isEmpty());
+    const bool parameters = !spectral && !original;
+    if (spectral)
+        s.spectralMasks = m_spectralMasks;
     s.excludedCrystals = m_configExclusions;
     s.elasticFile = m_elasticFile->text().trimmed();
     s.elasticEnergy = m_elasticEnergy->currentText().trimmed();
@@ -1017,27 +1122,30 @@ SpectrumSettings SpectroscopyDialog::settings() const {
     s.normalizeXrs = m_normalizeXrs->isChecked();
     s.repairGlitches = m_repair->isChecked();
     s.glitchDropFraction = m_glitchDrop->value() / 100.;
-    s.useFilter = m_filter->isChecked();
-    s.autoRoi = m_auto->isChecked();
-    s.removeOverlap = m_overlap->isChecked();
-    s.filterFraction = m_fraction->value();
-    s.roiSize = m_roiSize->value();
+    s.useFilter = spectral || (parameters && m_filter->isChecked());
+    s.autoRoi = parameters && m_auto->isChecked();
+    s.removeOverlap = parameters && m_overlap->isChecked();
+    s.filterFraction = parameters ? m_fraction->value() : 0.;
+    if (parameters)
+        s.roiSize = m_roiSize->value();
     s.fitModel = m_model->currentIndex();
     s.centerMin = m_centerMin->value();
     s.centerMax = m_centerMax->value();
     s.maxFwhmEv = m_fwhm->value();
     s.minRSquared = m_r2->value();
     for (int r = 0; r < 75; ++r) {
-        int values[4];
-        for (int c = 1; c < 5; ++c) {
-            bool ok = false;
-            values[c - 1] = m_corrections->item(r, c)->text().toInt(&ok);
-            if (!ok || std::abs(double(values[c - 1])) > 2048 || (c >= 3 && values[c - 1] < 0))
-                throw std::runtime_error(
-                    tr("ROI 修正必须为整数，偏移范围 ±2048，扩展范围 0 至 2048。").toUtf8().constData());
+        if (parameters) {
+            int values[4];
+            for (int c = 1; c < 5; ++c) {
+                bool ok = false;
+                values[c - 1] = m_corrections->item(r, c)->text().toInt(&ok);
+                if (!ok || std::abs(double(values[c - 1])) > 2048 || (c >= 3 && values[c - 1] < 0))
+                    throw std::runtime_error(
+                        tr("ROI 修正必须为整数，偏移范围 ±2048，扩展范围 0 至 2048。").toUtf8().constData());
+            }
+            s.shifts[r] = {values[0], values[1]};
+            s.expansions[r] = {values[2], values[3]};
         }
-        s.shifts[r] = {values[0], values[1]};
-        s.expansions[r] = {values[2], values[3]};
         auto item = m_inclusion->item(r, 0);
         if (item && (item->flags() & Qt::ItemIsUserCheckable) && item->checkState() != Qt::Checked)
             s.excludedCrystals.insert(r);
@@ -1093,7 +1201,7 @@ QMap<QString, QWidget *> SpectroscopyDialog::configurationFields() const {
 }
 
 SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::captureEdgeConfiguration() const {
-    const auto spectrum = settings();
+    const auto spectrum = settings(MaskSource::Parameters);
     const auto base = QDir::current();
     EdgeConfiguration out;
     out.elasticFile = absolutePath(base, spectrum.elasticFile);
@@ -1101,7 +1209,9 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::captureEdgeConfigurati
     out.rois = m_rois;
     out.sizes = m_roiSizes;
     out.masks = m_spectralMasks;
+    out.originalRoiOnly = m_useOriginalRoi;
     out.exclusions = spectrum.excludedCrystals;
+    out.manualPages = m_manualPages;
     out.wideFile = m_processing->wideFile();
     out.batchTargets = m_processing->batchSelection();
     const auto fields = configurationFields();
@@ -1120,21 +1230,38 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::captureEdgeConfigurati
 }
 
 QJsonObject SpectroscopyDialog::writeEdgeConfiguration(const EdgeConfiguration &edge) const {
-    QJsonArray scans, exclusions;
+    QJsonArray scans, exclusions, manualSteps;
     for (const auto &[file, enabled] : edge.scans)
         scans.append(QJsonObject{{"file", file}, {"enabled", enabled}});
     for (int row = 0; row < m_corrections->rowCount(); ++row)
         if (edge.exclusions.contains(row))
             exclusions.append(row);
+    for (int page = MasksPage; page <= BackgroundPage; ++page)
+        if (edge.manualPages.contains(page))
+            manualSteps.append(manualCalculationSteps.at(page - MasksPage));
     QJsonObject out{{"elastic_file", edge.elasticFile}, {"roi_file", edge.roiFile},
                     {"wide_file", edge.wideFile}, {"background_batch_targets", edge.batchTargets},
                     {"scans", scans}, {"parameters", edge.parameters},
                     {"roi_corrections", edge.corrections}, {"excluded_crystals", exclusions}};
+    if (!manualSteps.isEmpty())
+        out[manualCalculationKey] = manualSteps;
+    if (edge.originalRoiOnly)
+        out["original_roi_only"] = true;
     if (!edge.sizes.isEmpty()) {
-        out["roi_snapshot"] = QJsonDocument::fromJson(edge.rois.serialize(edge.elasticFile, edge.sizes)).object();
+        auto snapshot = [&](const CrystalRois &rois) {
+            return QJsonDocument::fromJson(rois.serialize(edge.elasticFile, edge.sizes)).object();
+        };
+        auto selected = edge.rois;
         QJsonObject masks;
-        for (auto it = edge.masks.cbegin(); it != edge.masks.cend(); ++it)
+        for (auto it = edge.masks.cbegin(); it != edge.masks.cend(); ++it) {
+            const int row = it.key();
+            if (!selected.assignMask(row, it->pixels, edge.sizes.at(row < 60 ? 0 : 1)))
+                ImageUtil::fail(tr("%1 的组分掩膜无效。").arg(edge.rois.items()[row].label));
             masks[QString::number(it.key())] = it->provenance;
+        }
+        out["roi_snapshot"] = snapshot(selected);
+        if (!masks.isEmpty())
+            out["base_roi_snapshot"] = snapshot(edge.rois);
         out["spectral_selections"] = masks;
     }
     return out;
@@ -1151,6 +1278,11 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::readEdgeConfiguration(
             invalid(key);
     out.elasticFile = absolutePath(base, config.value("elastic_file").toString());
     out.roiFile = absolutePath(base, config.value("roi_file").toString());
+    if (const auto original = config.value("original_roi_only"); !original.isUndefined()) {
+        if (!original.isBool())
+            invalid("original_roi_only");
+        out.originalRoiOnly = original.toBool();
+    }
     if (config.contains("wide_file") && !config.value("wide_file").isString())
         invalid("wide_file");
     out.wideFile = absolutePath(base, config.value("wide_file").toString());
@@ -1164,8 +1296,24 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::readEdgeConfiguration(
     }
     if (out.batchTargets.isUndefined())
         out.batchTargets = QJsonValue::Null;
+    if (const auto pending = config.value(manualCalculationKey); !pending.isUndefined()) {
+        if (!pending.isArray())
+            invalid(manualCalculationKey);
+        for (const auto &entry : pending.toArray()) {
+            const auto index = manualCalculationSteps.indexOf(entry.toString());
+            if (index < 0)
+                invalid(manualCalculationKey);
+            out.manualPages.insert(MasksPage + int(index));
+        }
+    }
     const auto fields = configurationFields();
     out.parameters = config.value("parameters").toObject();
+    const auto linearEnabled = out.parameters.take("background_enable_linear");
+    const auto linearWindows = out.parameters.take("low_q_linear_windows");
+    if (!out.parameters.contains("background_enable_polynomial") && !linearEnabled.isUndefined())
+        out.parameters["background_enable_polynomial"] = linearEnabled;
+    if (!out.parameters.contains("background_windows_polynomial") && !linearWindows.isUndefined())
+        out.parameters["background_windows_polynomial"] = linearWindows;
     if (!out.parameters.contains("normalize_near_edge_by_scan_count"))
         out.parameters["normalize_near_edge_by_scan_count"] = false;
     const auto defaults = SpectrumProcessingPage::backgroundConfigurationDefaults();
@@ -1224,6 +1372,8 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::readEdgeConfiguration(
         if (!out.rois.restore(QJsonDocument(roi).toJson(), out.sizes, &error))
             ImageUtil::fail(error);
         const auto records = config.value("spectral_selections").toObject();
+        if (out.originalRoiOnly && !records.isEmpty())
+            invalid("spectral_selections");
         for (auto it = records.constBegin(); it != records.constEnd(); ++it) {
             bool ok;
             const int row = it.key().toInt(&ok);
@@ -1231,6 +1381,31 @@ SpectroscopyDialog::EdgeConfiguration SpectroscopyDialog::readEdgeConfiguration(
                 !it.value().isObject())
                 invalid("spectral_selections");
             out.masks.insert(row, {out.rois.items()[row].mask, it.value().toObject()});
+        }
+        if (config.contains("base_roi_snapshot")) {
+            if (!out.rois.restore(QJsonDocument(config.value("base_roi_snapshot").toObject()).toJson(),
+                                  out.sizes, &error))
+                ImageUtil::fail(error);
+            for (auto it = out.masks.cbegin(); it != out.masks.cend(); ++it)
+                if (!containsPixels(out.rois.items()[it.key()], it->pixels))
+                    invalid("base_roi_snapshot");
+        } else if (!out.masks.isEmpty()) {
+            // Older plans only stored the cropped spectral ROIs in the snapshot.
+            CrystalRois original;
+            QFile roiFile(out.roiFile);
+            const bool haveOriginal = roiFile.open(QIODevice::ReadOnly) &&
+                                      original.restore(roiFile.readAll(), out.sizes, &error);
+            for (auto it = out.masks.cbegin(); it != out.masks.cend(); ++it) {
+                const int row = it.key();
+                const auto &baseRoi = original.items()[row];
+                const auto size = out.sizes.at(row < 60 ? 0 : 1);
+                const bool compatible = haveOriginal && containsPixels(baseRoi, it->pixels);
+                const auto &sourceRoi = compatible ? baseRoi : out.rois.items()[row];
+                if (compatible && !sourceRoi.mask.isEmpty())
+                    out.rois.assignMask(row, sourceRoi.mask, size);
+                else
+                    out.rois.assign(row, sourceRoi.rect, size);
+            }
         }
     }
     return out;
@@ -1246,7 +1421,9 @@ void SpectroscopyDialog::applyEdgeConfiguration(const EdgeConfiguration &edge) {
         m_rois = edge.rois;
         m_roiSizes = edge.sizes;
         m_spectralMasks = edge.masks;
+        m_useOriginalRoi = edge.originalRoiOnly;
         m_configExclusions = edge.exclusions;
+        m_manualPages = edge.manualPages;
         m_files->clear();
         for (const auto &[file, enabled] : edge.scans)
             appendScan(m_files, file, enabled);
@@ -1254,13 +1431,14 @@ void SpectroscopyDialog::applyEdgeConfiguration(const EdgeConfiguration &edge) {
         for (auto it = fields.cbegin(); it != fields.cend(); ++it)
             configProperty(it.value()).write(it.value(), edge.parameters.value(it.key()).toVariant());
         for (int row = 0; row < edge.corrections.size(); ++row) {
-            const auto label = m_rois.items()[row].label;
-            m_corrections->item(row, 0)->setText(m_spectralMasks.contains(row) ? label + QStringLiteral(" ✓") : label);
             const auto values = edge.corrections[row].toArray();
             for (int col = 0; col < values.size(); ++col)
                 m_corrections->item(row, col + 1)->setText(QString::number(values[col].toInt()));
         }
+        refreshSpectralMaskLabels();
         m_processing->restoreEdgeInputs(edge.wideFile, edge.batchTargets);
+        if (!m_measureCompton->isChecked())
+            m_manualPages.remove(ComptonPage);
     }
     m_projection.clear();
     m_nextPage = -1;
@@ -1635,6 +1813,46 @@ void SpectroscopyDialog::refreshExportIdentity() {
     m_processing->setExportIdentity(resultStem(), edgeIdentity());
 }
 
+int SpectroscopyDialog::firstManualPage() const {
+    int first = NearEdgePage;
+    for (const int page : m_manualPages)
+        if (page != ComptonPage || m_measureCompton->isChecked())
+            first = std::min(first, page);
+    return first;
+}
+
+QString SpectroscopyDialog::manualCalculationHint(int page) const {
+    QString action;
+    switch (page) {
+    case MasksPage: action = m_calculateMaskButton->text(); break;
+    case ElasticPage: action = m_fitElasticButton->text(); break;
+    case XrsPage: action = m_extractButton->text(); break;
+    case RawPage: action = m_combineButton->text(); break;
+    case ComptonPage: return tr("Compton 设置已修改。请先使用 Full Scan 或完成 Compton 峰拼接。");
+    case BackgroundPage: return tr("背景设置已修改。请先执行「批量扣除」或「使用原谱」。");
+    default: return {};
+    }
+    return tr("参数已修改。请先点击「%1」，计算成功后再进入下一步。").arg(action);
+}
+
+void SpectroscopyDialog::calculationParametersEdited(int stage) {
+    if (m_updating || m_busy)
+        return;
+    m_manualPages.insert(pageForJob(stage));
+    invalidate(stage);
+}
+
+void SpectroscopyDialog::processingParametersEdited(int page) {
+    if (m_updating || (page == ComptonPage && !m_measureCompton->isChecked()))
+        return;
+    m_manualPages.insert(page);
+    if (m_activeEdge >= 0 && m_edgeGroups[m_activeEdge].status != EdgeStatus::Pending)
+        setEdgeStatus(EdgeStatus::Combined);
+    refreshActions();
+    if (m_tabs->currentIndex() == page)
+        message(manualCalculationHint(page));
+}
+
 void SpectroscopyDialog::invalidate(int stage, bool preserveEdgeStatus) {
     if (m_updating || m_busy)
         return;
@@ -1673,7 +1891,8 @@ void SpectroscopyDialog::invalidate(int stage, bool preserveEdgeStatus) {
                     m_inclusion->item(r, c)->setText(QStringLiteral("—"));
     }
     refreshState();
-    message(stage == prepareMaskStep ? tr("点击下一步计算掩膜。")
+    message(m_manualPages.contains(pageForJob(stage)) ? manualCalculationHint(pageForJob(stage))
+            : stage == prepareMaskStep ? tr("点击下一步计算掩膜。")
             : stage == 0 ? tr("弹性参数或 ROI 已变更，请重新标定。")
             : stage == 1 ? tr("XRS 扫描或归一化参数已变更，请重新提取。")
                          : tr("叠加条件已变更，请重新计算 Q 并叠加。"));
@@ -1688,9 +1907,11 @@ void SpectroscopyDialog::refreshState() {
     refreshEdgeGroups();
     const bool idle = !isBusy(), hasEdge = m_activeEdge >= 0;
     m_edgeTable->setEnabled(idle);
-    m_hfComposition->setEnabled(idle);
-    m_hfTable->parentWidget()->setEnabled(idle);
-    m_hfShells->parentWidget()->setEnabled(idle && hasEdge);
+    m_measureCompton->setEnabled(idle);
+    const bool measureCompton = m_measureCompton->isChecked();
+    m_hfComposition->setEnabled(idle && measureCompton);
+    m_hfTable->parentWidget()->setEnabled(idle && measureCompton);
+    m_hfShells->parentWidget()->setEnabled(idle && hasEdge && measureCompton);
     m_sampleName->setEnabled(idle);
     m_newEdge->setEnabled(idle);
     m_renameEdge->setEnabled(idle && hasEdge);
@@ -1699,8 +1920,8 @@ void SpectroscopyDialog::refreshState() {
     m_addScans->setEnabled(idle && hasEdge);
     m_removeScans->setEnabled(idle && hasEdge && m_files->count() > 0);
     m_saveConfig->setEnabled(idle && !m_edgeGroups.isEmpty());
-    m_extractButton->setEnabled(idle && hasEdge && m_haveCalibration);
-    m_combineButton->setEnabled(idle && hasEdge && m_haveScans);
+    m_extractButton->setEnabled(idle && hasEdge && m_haveCalibration && firstManualPage() >= XrsPage);
+    m_combineButton->setEnabled(idle && hasEdge && m_haveScans && firstManualPage() >= RawPage);
     m_saveButton->setEnabled(idle && hasEdge && m_haveResult);
     m_cancelButton->setEnabled(m_busy);
     m_roiStatus->setText(tr("有效 %1 · 失效 %2 · 待设置 %3 / 75")
@@ -1724,18 +1945,19 @@ bool SpectroscopyDialog::loadRois(const QString &path) {
         if (changed) {
             m_spectralMasks.clear();
             m_configExclusions.clear();
-            QSignalBlocker block(m_corrections);
-            for (int r = 0; r < 75; ++r)
-                m_corrections->item(r, 0)->setText(rois.items()[r].label);
         }
         m_rois = rois;
+        refreshSpectralMaskLabels();
         m_roiSizes = sizes;
         m_roiPath->setText(QFileInfo(path).absoluteFilePath());
         if (!changed) {
             refreshState();
             return true;
         }
-        invalidate(prepareMaskStep);
+        if (!m_masks.images.isEmpty())
+            calculationParametersEdited(prepareMaskStep);
+        else
+            invalidate(prepareMaskStep);
         message(tr("已载入 ROI：%1；待设置的晶体须先框选或标记失效。").arg(path));
         return true;
     } catch (const std::exception &e) {
@@ -1761,6 +1983,77 @@ void SpectroscopyDialog::setAvailableFiles(const QStringList &files) {
     m_processing->setAvailableFiles(files);
 }
 
+QSet<QString> SpectroscopyDialog::listedScanPaths() const {
+    QSet<QString> paths;
+    for (int i = 0; i < m_files->count(); ++i)
+        paths.insert(scanPathKey(m_files->item(i)->data(Qt::UserRole).toString()));
+    return paths;
+}
+
+void SpectroscopyDialog::populateScanAddMenu(QMenu &menu) {
+    QStringList available, scans;
+    auto listed = listedScanPaths();
+    for (const auto &path : m_availableFiles) {
+        const auto format = HdfFile::formatFromFileName(path);
+        if (format == ScanFormat::GridScan)
+            continue;
+        const auto key = scanPathKey(path);
+        if (listed.contains(key))
+            continue;
+        listed.insert(key);
+        available.append(path);
+        if (format == ScanFormat::Scan)
+            scans.append(path);
+    }
+    auto select = menu.addAction(tr("从数据浏览器多选…"), this, [this, available] {
+        chooseBrowserScans(available);
+    });
+    select->setObjectName("ChooseBrowserSpectrumScans");
+    select->setEnabled(!available.isEmpty());
+    auto all = menu.addAction(tr("添加全部已导入的 scan 文件"), this, [this, scans] { addScans(scans); });
+    all->setEnabled(!scans.isEmpty());
+    menu.addSeparator();
+    menu.addAction(tr("从磁盘选择扫描…"), this, [this] {
+        addScans(QFileDialog::getOpenFileNames(this, tr("添加 XRS 扫描"),
+                                               QFileInfo(m_elasticFile->text()).absolutePath(),
+                                               "NeXus (*.nxs *.h5 *.hdf5)"));
+    });
+}
+
+void SpectroscopyDialog::chooseBrowserScans(const QStringList &files) {
+    QDialog dialog(this);
+    dialog.setObjectName("SpectrumBrowserScanPicker");
+    dialog.setWindowTitle(tr("从数据浏览器添加扫描"));
+    dialog.resize(600, 420);
+    auto layout = new QVBoxLayout(&dialog);
+    auto list = new QListWidget;
+    list->setObjectName("BrowserSpectrumScans");
+    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    for (const auto &path : files) {
+        auto item = new QListWidgetItem(QFileInfo(path).fileName(), list);
+        item->setToolTip(QDir::toNativeSeparators(path));
+        item->setData(Qt::UserRole, path);
+    }
+    layout->addWidget(list);
+    layout->addWidget(new QLabel(tr("Ctrl 多选，Shift 连选，Ctrl+A 全选。")));
+    auto buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    auto add = buttons->addButton(tr("添加所选扫描"), QDialogButtonBox::AcceptRole);
+    add->setObjectName("AddSelectedBrowserScans");
+    add->setEnabled(false);
+    layout->addWidget(buttons);
+    connect(list, &QListWidget::itemSelectionChanged, &dialog,
+            [list, add] { add->setEnabled(list->selectionModel()->hasSelection()); });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    QStringList selected;
+    for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->isSelected())
+            selected.append(list->item(i)->data(Qt::UserRole).toString());
+    addScans(selected);
+}
+
 void SpectroscopyDialog::addScans(const QStringList &files) {
     if (isBusy() || files.isEmpty())
         return;
@@ -1769,23 +2062,30 @@ void SpectroscopyDialog::addScans(const QStringList &files) {
         return;
     }
     const int before = m_files->count();
-    for (const auto &file : files) {
-        auto path = QFileInfo(file).absoluteFilePath();
-        bool duplicate = false;
-        const auto canonical = QFileInfo(path).canonicalFilePath();
-        for (int i = 0; i < m_files->count(); ++i) {
-            const auto existing = m_files->item(i)->data(Qt::UserRole).toString();
-            if (existing == path || (!canonical.isEmpty() && QFileInfo(existing).canonicalFilePath() == canonical))
-                duplicate = true;
+    {
+        auto listed = listedScanPaths();
+        const QSignalBlocker block(m_files);
+        for (const auto &file : files) {
+            const auto path = QFileInfo(file).absoluteFilePath();
+            const auto key = scanPathKey(path);
+            if (listed.contains(key))
+                continue;
+            listed.insert(key);
+            appendScan(m_files, path, true);
         }
-        if (duplicate)
-            continue;
-        appendScan(m_files, path, true);
     }
-    if (m_files->count() != before)
+    if (m_files->count() == before)
+        return;
+    if (m_haveScans)
+        calculationParametersEdited(1);
+    else
         invalidate(1);
 }
 void SpectroscopyDialog::runStep(int step) {
+    runStep(step, MaskSource::Current);
+}
+
+void SpectroscopyDialog::runStep(int step, MaskSource source) {
     if (isBusy() || step < prepareMaskStep || step > 2)
         return;
     if (m_activeEdge < 0) {
@@ -1793,12 +2093,17 @@ void SpectroscopyDialog::runStep(int step) {
         selectStep(0);
         return;
     }
+    if (firstManualPage() < pageForJob(step)) {
+        selectStep(firstManualPage());
+        return;
+    }
     if ((step == 1 && !m_haveCalibration) || (step == 2 && !m_haveScans)) {
         message(tr("请按顺序完成前面的处理步骤。"), true);
         return;
     }
     try {
-        auto s = settings();
+        const auto s = settings(source);
+        const bool replaceMasks = source == MaskSource::Parameters || source == MaskSource::Original;
         QStringList files;
         for (int i = 0; i < m_files->count(); ++i)
             if (m_files->item(i)->checkState() == Qt::Checked)
@@ -1808,7 +2113,8 @@ void SpectroscopyDialog::runStep(int step) {
             m_tabs->setCurrentIndex(0);
             return;
         }
-        invalidate(step);
+        if (!replaceMasks)
+            invalidate(step);
         m_job = step;
         if (step == 0)
             m_calibrationSettings = s;
@@ -1826,7 +2132,7 @@ void SpectroscopyDialog::runStep(int step) {
         message(tr("正在计算，可取消…"));
         auto rois = m_rois;
         auto calibration = m_calibration;
-        auto masks = m_masks;
+        auto masks = replaceMasks ? ElasticCalibration{} : m_masks;
         auto projection = m_projection;
         auto scans = m_scans;
         auto progress = [this](const QString &text, int value) {
@@ -1840,8 +2146,10 @@ void SpectroscopyDialog::runStep(int step) {
                 },
                 Qt::QueuedConnection);
         };
-        m_watcher.setFuture(QtConcurrent::run([this, step, s, rois, calibration, masks, projection, scans, files, progress] {
+        m_watcher.setFuture(QtConcurrent::run([this, step, s, rois, calibration, masks, projection, scans, files,
+                                               progress, source] {
             Work out;
+            out.maskSource = source;
             try {
                 if (step == prepareMaskStep || step == 0) {
                     out.masks = masks.images.isEmpty()
@@ -1872,28 +2180,33 @@ void SpectroscopyDialog::advanceToPage(int target) {
         return;
     }
     m_nextPage = -1;
-    if (target <= 5) {
+    if (target == ComptonPage && !m_measureCompton->isChecked())
+        target = BackgroundPage;
+    const int firstManual = firstManualPage();
+    if (target > firstManual)
+        return;
+    if (target <= BackgroundPage) {
         int job;
         if (m_masks.images.isEmpty())
             job = prepareMaskStep;
-        else if (target >= 2 && !m_haveCalibration)
+        else if (target >= ElasticPage && !m_haveCalibration)
             job = 0;
-        else if (target >= 3 && !m_haveScans)
+        else if (target >= XrsPage && !m_haveScans)
             job = 1;
-        else if (target >= 4 && !m_haveResult)
+        else if (target >= RawPage && !m_haveResult)
             job = 2;
         else {
-            selectStep(target);
+            if (target != BackgroundPage || m_processing->prepareAnalysisInput())
+                selectStep(target);
+            return;
+        }
+        if (pageForJob(job) == firstManual) {
+            selectStep(firstManual);
             return;
         }
         runStep(job);
         if (m_busy)
             m_nextPage = target;
-        return;
-    }
-    if (target == 6) {
-        if (m_processing->prepareAnalysisInput())
-            selectStep(6);
         return;
     }
     if (m_processing->ensureAnalysis()) {
@@ -1902,31 +2215,63 @@ void SpectroscopyDialog::advanceToPage(int target) {
         m_nextPage = target;
     }
 }
-void SpectroscopyDialog::updateMasks() {
+void SpectroscopyDialog::maskParametersEdited() {
     if (m_busy || m_updating)
         return;
-    invalidate(prepareMaskStep);
-    if (m_projection.isEmpty())
-        return;
-    try {
-        const std::atomic_bool cancel{false};
-        m_masks = Spectroscopy::prepareMasks(settings(), m_rois, cancel, {}, m_projection);
-        refreshImages();
-        message(tr("掩膜已计算。可修正像素，或点击下一步计算弹性标定。"));
-    } catch (const std::exception &e) {
-        message(QString::fromUtf8(e.what()), true);
+    m_manualPages.insert(MasksPage);
+    if (m_spectralMasks.isEmpty() && !m_useOriginalRoi)
+        invalidate(prepareMaskStep);
+    else
+        refreshActions();
+    message(m_useOriginalRoi ? tr("当前使用原始 ROI。点击「计算掩膜」应用修改后的参数。")
+            : m_spectralMasks.isEmpty() ? tr("像素掩膜参数已修改。点击「计算掩膜」应用。")
+                                        : tr("当前使用谱分解掩膜。点击「计算掩膜」应用修改后的参数。"));
+}
+
+void SpectroscopyDialog::refreshSpectralMaskLabels() {
+    const QSignalBlocker block(m_corrections);
+    for (int row = 0; row < m_corrections->rowCount(); ++row) {
+        const auto &label = m_rois.items()[row].label;
+        m_corrections->item(row, 0)->setText(m_spectralMasks.contains(row) ? label + QStringLiteral(" ✓") : label);
     }
 }
 
+void SpectroscopyDialog::applySpectralMasks(QMap<int, SpectralSelection> selections) {
+    ElasticCalibration masks;
+    if (!selections.isEmpty()) {
+        auto options = settings(MaskSource::Spectral);
+        options.spectralMasks = selections;
+        const std::atomic_bool cancel{false};
+        masks = Spectroscopy::prepareMasks(options, m_rois, cancel, {}, m_projection);
+    }
+    if (selections.isEmpty())
+        m_manualPages.insert(MasksPage);
+    else
+        m_manualPages.remove(MasksPage);
+    invalidate(prepareMaskStep);
+    m_spectralMasks = std::move(selections);
+    m_useOriginalRoi = false;
+    refreshSpectralMaskLabels();
+    if (m_spectralMasks.isEmpty()) {
+        message(tr("已清除谱分解掩膜。点击「计算掩膜」应用参数掩膜。"));
+        return;
+    }
+    m_masks = std::move(masks);
+    m_projection = m_masks.images;
+    m_imageSource->setCurrentIndex(1);
+    refreshImages();
+    message(tr("已应用 %1 个晶体的谱分解掩膜。像素掩膜参数暂停生效。").arg(m_spectralMasks.size()));
+}
+
 void SpectroscopyDialog::editSpectralMask() {
-    if (m_busy)
+    if (isBusy())
         return;
     if (!m_rois.count(RoiState::Valid)) {
         message(tr("请先载入初始 ROI。"), true);
         return;
     }
     try {
-        const auto s = settings();
+        const auto s = settings(MaskSource::Spectral);
         QMap<QString, QSize> sizes;
         for (const auto &roi : m_rois.items()) {
             if (roi.state != RoiState::Valid || sizes.contains(roi.detector))
@@ -1939,7 +2284,10 @@ void SpectroscopyDialog::editSpectralMask() {
         QStringList files;
         for (int i = 0; i < m_files->count(); ++i)
             files.append(m_files->item(i)->data(Qt::UserRole).toString());
-        SpectralMaskDialog dialog(s, m_rois.items(), sizes, m_corrections->currentRow(), files, this);
+        auto candidates = m_rois;
+        for (auto it = m_spectralMasks.cbegin(); it != m_spectralMasks.cend(); ++it)
+            candidates.assignMask(it.key(), it->pixels, sizes.value(m_rois.items()[it.key()].detector));
+        SpectralMaskDialog dialog(s, candidates.items(), sizes, m_corrections->currentRow(), files, this);
         if (dialog.exec() != QDialog::Accepted)
             return;
         m_corrections->setCurrentCell(dialog.currentRow(), 0);
@@ -1948,30 +2296,10 @@ void SpectroscopyDialog::editSpectralMask() {
             message(tr("已完成确认，所有晶体均保留原 ROI。"));
             return;
         }
-        auto updated = m_rois;
-        auto options = s;
-        for (auto it = accepted.cbegin(); it != accepted.cend(); ++it) {
-            const auto &roi = m_rois.items()[it.key()];
-            if (!updated.assignMask(it.key(), it->pixels, sizes.value(roi.detector)))
-                throw std::runtime_error(tr("%1 的组分掩膜无效。").arg(roi.label).toStdString());
-            options.spectralMasks.insert(it.key(), it.value());
-        }
-        // Construct the complete preview before publishing any of the reviewed ROIs.
-        const std::atomic_bool cancel{false};
-        auto masks = Spectroscopy::prepareMasks(options, updated, cancel, {}, m_projection);
-        invalidate(prepareMaskStep);
-        m_rois = std::move(updated);
-        m_spectralMasks = std::move(options.spectralMasks);
-        m_masks = std::move(masks);
-        m_projection = m_masks.images;
-        {
-            QSignalBlocker block(m_corrections);
-            for (auto it = accepted.cbegin(); it != accepted.cend(); ++it)
-                m_corrections->item(it.key(), 0)->setText(m_rois.items()[it.key()].label + QStringLiteral(" ✓"));
-        }
-        m_imageSource->setCurrentIndex(1);
-        refreshImages();
-        message(tr("已更新 %1 个晶体的原始 ROI。").arg(accepted.size()));
+        auto selections = m_spectralMasks;
+        for (auto it = accepted.cbegin(); it != accepted.cend(); ++it)
+            selections.insert(it.key(), it.value());
+        applySpectralMasks(std::move(selections));
     } catch (const std::exception &e) {
         message(QString::fromUtf8(e.what()), true);
     }
@@ -2023,6 +2351,7 @@ void SpectroscopyDialog::refreshCalibration() {
 void SpectroscopyDialog::refreshImages() {
     if (!m_images[0])
         return;
+    m_imageSource->setItemText(1, m_useOriginalRoi ? tr("原始 ROI 区域") : tr("最终像素掩膜"));
     if (m_haveScans && m_imageSource->count() == 2)
         m_imageSource->addItem(tr("当前 XRS 扫描叠加图"));
     if (!m_haveScans && m_imageSource->count() == 3)
@@ -2128,8 +2457,11 @@ void SpectroscopyDialog::refreshResult() {
     {
         QSignalBlocker block(m_resultChoice);
         m_resultChoice->clear();
-        m_resultChoice->addItem(tr("总谱与各模组"), -1);
-        m_resultChoice->addItem(tr("全部单晶体谱"), -2);
+        m_resultChoice->addItem(tr("总谱与各模组"), TotalAndModules);
+        m_resultChoice->addItem(tr("各模组谱"), AllModules);
+        m_resultChoice->addItem(tr("全部单晶体谱"), AllCrystals);
+        for (auto it = m_result.modules.cbegin(); it != m_result.modules.cend(); ++it)
+            m_resultChoice->addItem(tr("%1 模组谱").arg(it.key()), it.key());
         for (int r = 0; r < 75; ++r)
             if (m_result.included[r])
                 m_resultChoice->addItem(m_rois.items()[r].label, r);
@@ -2152,12 +2484,19 @@ void SpectroscopyDialog::refreshResultCurve() {
     if (!m_haveResult)
         return;
     QVector<SpectrumCurve> curves;
-    int choice = m_resultChoice->currentData().toInt();
-    if (choice == -1) {
-        curves.append({tr("Total"), m_result.energyTransferEv, m_result.total, Qt::black, false});
+    const auto selected = m_resultChoice->currentData();
+    bool indexOk = false;
+    const int choice = selected.toInt(&indexOk);
+    if (!indexOk) {
+        const auto module = m_result.modules.constFind(selected.toString());
+        if (module != m_result.modules.cend())
+            curves.append({module.key(), m_result.energyTransferEv, module.value(), {}, false});
+    } else if (choice == TotalAndModules || choice == AllModules) {
+        if (choice == TotalAndModules)
+            curves.append({tr("Total"), m_result.energyTransferEv, m_result.total, Qt::black, false});
         for (auto it = m_result.modules.begin(); it != m_result.modules.end(); ++it)
             curves.append({it.key(), m_result.energyTransferEv, it.value(), {}, false});
-    } else if (choice == -2) {
+    } else if (choice == AllCrystals) {
         for (int r = 0; r < 75; ++r)
             if (m_result.included[r])
                 curves.append(
@@ -2206,20 +2545,32 @@ void SpectroscopyDialog::save() {
 }
 
 void SpectroscopyDialog::refreshActions() {
-    int step = m_tabs->currentIndex();
+    const int firstManual = firstManualPage();
+    if (m_tabs->currentIndex() > firstManual)
+        selectStep(firstManual);
+    for (int page = MasksPage; page < m_tabs->count(); ++page)
+        m_tabs->setTabEnabled(page, page <= firstManual && (page != ComptonPage || m_measureCompton->isChecked()));
+    const int step = m_tabs->currentIndex();
     m_tabs->cornerWidget()->setVisible(step == 0);
     m_tabs->cornerWidget()->setEnabled(!isBusy());
     m_previousButton->setVisible(step > 0);
     m_previousButton->setEnabled(!isBusy());
+    m_processing->backgroundRunButton()->setVisible(step == BackgroundPage);
     m_nextButton->setVisible(step < m_tabs->count() - 1);
-    m_nextButton->setEnabled(!isBusy() && m_activeEdge >= 0);
+    const bool needsManualCalculation = m_manualPages.contains(step);
+    m_nextButton->setEnabled(!isBusy() && m_activeEdge >= 0 && !needsManualCalculation);
+    m_nextButton->setToolTip(needsManualCalculation ? manualCalculationHint(step) : QString{});
+    m_calculateMaskButton->setVisible(step == 1);
+    m_calculateMaskButton->setEnabled(!isBusy() && m_activeEdge >= 0);
+    m_resetMaskButton->setVisible(step == MasksPage);
+    m_resetMaskButton->setEnabled(!isBusy() && m_activeEdge >= 0 && m_rois.count(RoiState::Valid) > 0);
     m_extractButton->setVisible(step == 3);
     m_fitElasticButton->setVisible(step == 2);
-    m_fitElasticButton->setEnabled(!isBusy() && m_activeEdge >= 0);
+    m_fitElasticButton->setEnabled(!isBusy() && m_activeEdge >= 0 && firstManual >= ElasticPage);
     m_combineButton->setVisible(step == 4);
     m_saveButton->setVisible(step == 4);
     m_cancelButton->setVisible(m_busy);
-    m_nextButton->setDefault(m_nextButton->isVisibleTo(this));
+    m_nextButton->setDefault(m_nextButton->isVisibleTo(this) && m_nextButton->isEnabled());
 }
 void SpectroscopyDialog::useRoiDraft(const QString &file, const QString &path) {
     if (m_busy) {

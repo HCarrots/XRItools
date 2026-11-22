@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include "ImagingIO.h"
 #include <Eigen/Cholesky>
+#include <Eigen/QR>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -21,6 +22,20 @@ constexpr qsizetype maxPoints = 200000, maxCrystals = 256, maxValues = 20000000;
 void checkCancelled(const std::atomic_bool &stop) {
     if (stop.load())
         fail(QCoreApplication::translate("SpectrumProcessing", "数据处理已取消。"));
+}
+Eigen::MatrixXd polynomialBasis(const double *energy, qsizetype count, int order, double center, double scale) {
+    Eigen::MatrixXd basis(count, order + 1);
+    basis.col(0).setOnes();
+    const Eigen::ArrayXd x = (Eigen::Map<const Eigen::ArrayXd>(energy, count) - center) / scale;
+    for (int degree = 1; degree <= order; ++degree)
+        basis.col(degree) = basis.col(degree - 1).array() * x;
+    return basis;
+}
+double polynomialValue(const Eigen::VectorXd &coefficients, double x) {
+    double value = 0.;
+    for (auto degree = coefficients.size(); degree > 0; --degree)
+        value = value * x + coefficients[degree - 1];
+    return value;
 }
 ProcessedSpectrum readSpectrum(const QString &file, const SpectrumHdfLayout &layout) {
     auto axis = HdfFile::inspect(file, layout.energy);
@@ -742,6 +757,134 @@ CrystalBackground SpectrumProcessing::fit(const QVector<double> &energy, const Q
         result.corrected.append(intensity[i] - value);
     }
     return result;
+}
+
+CrystalBackground SpectrumProcessing::fitPolynomial(const QVector<double> &energy, const QVector<double> &intensity,
+                                                    const BackgroundSettings &settings, int order,
+                                                    const std::atomic_bool &stop) {
+    if (order < 0 || order > maxBackgroundPolynomialOrder || energy.size() != intensity.size() ||
+        settings.windows.isEmpty())
+        fail(QCoreApplication::translate("SpectrumProcessing", "多项式背景的阶数、能量轴或拟合能区无效。"));
+
+    QVector<double> x, y;
+    double intensityScale = 0.;
+    for (qsizetype i = 0; i < energy.size(); ++i) {
+        if ((i & 255) == 0)
+            checkCancelled(stop);
+        if (std::isfinite(energy[i]) && std::isfinite(intensity[i]) &&
+            std::any_of(settings.windows.cbegin(), settings.windows.cend(), [&](auto window) {
+                return window.first <= energy[i] && energy[i] <= window.second;
+            })) {
+            x.append(energy[i]);
+            y.append(intensity[i]);
+            intensityScale = std::max(intensityScale, std::abs(intensity[i]));
+        }
+    }
+    if (x.size() < order + 1)
+        fail(QCoreApplication::translate("SpectrumProcessing", "拟合区间内至少需要 %1 个有效点。").arg(order + 1));
+
+    const auto [lo, hi] = std::minmax_element(x.cbegin(), x.cend());
+    const double span = *hi - *lo, center = *lo + .5 * span, scale = span > 0. ? .5 * span : 1.;
+    if (!std::isfinite(span))
+        fail(QCoreApplication::translate("SpectrumProcessing", "能量范围无效。"));
+    const Eigen::MatrixXd basis = polynomialBasis(x.constData(), x.size(), order, center, scale);
+    const Eigen::ColPivHouseholderQR<Eigen::MatrixXd> fit(basis);
+    if (fit.rank() != order + 1)
+        fail(QCoreApplication::translate("SpectrumProcessing", "拟合区间缺少不同的能量点。"));
+    intensityScale = intensityScale > 0. ? intensityScale : 1.;
+    const Eigen::VectorXd values = Eigen::Map<const Eigen::VectorXd>(y.constData(), y.size()) / intensityScale;
+    const Eigen::VectorXd coefficients = fit.solve(values);
+    const double variance = (values.array() - values.mean()).matrix().squaredNorm();
+
+    CrystalBackground result;
+    result.settings = settings;
+    result.rSquared = variance > 0. ? 1. - (values - basis * coefficients).squaredNorm() / variance : NAN;
+    QJsonArray savedCoefficients;
+    for (int degree = 0; degree <= order; ++degree)
+        savedCoefficients.append(coefficients[degree] * intensityScale);
+    result.parameters = {{"order", order}, {"energy_center_ev", center}, {"energy_scale_ev", scale},
+                         {"coefficients_ascending", savedCoefficients}};
+    result.background.reserve(energy.size());
+    result.corrected.reserve(energy.size());
+    for (qsizetype i = 0; i < energy.size(); ++i) {
+        if ((i & 255) == 0)
+            checkCancelled(stop);
+        double value = NAN;
+        if (std::isfinite(intensity[i]) && std::isfinite(energy[i])) {
+            value = intensityScale * polynomialValue(coefficients, (energy[i] - center) / scale);
+            if (!std::isfinite(value))
+                fail(QCoreApplication::translate("SpectrumProcessing", "多项式背景在实测能区内超出数值范围。"));
+        }
+        result.background.append(value);
+        result.corrected.append(intensity[i] - value);
+    }
+    return result;
+}
+
+QVector<double> SpectrumProcessing::savitzkyGolay(const QVector<double> &energy, const QVector<double> &intensity,
+                                                 int windowPoints, int order,
+                                                 const QVector<qsizetype> &segmentStarts) {
+    if (energy.size() != intensity.size() || windowPoints < 3 || windowPoints % 2 == 0 ||
+        order < 0 || order >= windowPoints - 1)
+        return intensity;
+
+    auto smoothed = intensity;
+    qsizetype first = 0;
+    while (first < energy.size()) {
+        if (!std::isfinite(intensity[first]) || !std::isfinite(energy[first])) {
+            ++first;
+            continue;
+        }
+        const auto split = std::upper_bound(segmentStarts.cbegin(), segmentStarts.cend(), first);
+        const auto limit = split == segmentStarts.cend() ? energy.size() : std::min(*split, energy.size());
+        auto end = first + 1;
+        while (end < limit && std::isfinite(intensity[end]) && std::isfinite(energy[end]) &&
+               energy[end] > energy[end - 1])
+            ++end;
+        auto window = std::min<qsizetype>(windowPoints, end - first);
+        window -= (window + 1) % 2;
+        if (window > order + 1) {
+            const auto half = window / 2;
+            const double spacing = (energy[end - 1] - energy[first]) / (end - first - 1);
+            bool uniform = true;
+            for (auto i = first + 1; i < end && uniform; ++i)
+                uniform = std::abs((energy[i] - energy[first]) - spacing * (i - first)) <= spacing * 1e-7;
+
+            Eigen::MatrixXd weights;
+            if (uniform) {
+                // The same Savitzky–Golay weights apply to every uniform window.
+                const Eigen::MatrixXd basis = polynomialBasis(energy.constData() + first, window, order,
+                                                               energy[first] + spacing * half, spacing * half);
+                weights = basis * basis.colPivHouseholderQr().solve(Eigen::MatrixXd::Identity(window, window));
+            }
+            auto previousStart = first - 1;
+            Eigen::VectorXd coefficients;
+            double center = 0., scale = 1.;
+            for (auto i = first; i < end; ++i) {
+                const auto start = std::clamp(i - half, first, end - window);
+                const Eigen::Map<const Eigen::VectorXd> samples(intensity.constData() + start, window);
+                if (uniform) {
+                    smoothed[i] = weights.row(i - start).dot(samples);
+                    continue;
+                }
+                if (start != previousStart) {
+                    scale = .5 * (energy[start + window - 1] - energy[start]);
+                    center = energy[start] + scale;
+                    const Eigen::MatrixXd basis = polynomialBasis(energy.constData() + start, window, order,
+                                                                   center, scale);
+                    const auto fit = basis.colPivHouseholderQr();
+                    coefficients.resize(0);
+                    if (fit.rank() == order + 1)
+                        coefficients = fit.solve(samples);
+                    previousStart = start;
+                }
+                if (coefficients.size())
+                    smoothed[i] = polynomialValue(coefficients, (energy[i] - center) / scale);
+            }
+        }
+        first = end;
+    }
+    return smoothed;
 }
 
 void SpectrumProcessing::save(const QString &path, const ProcessedSpectrum &data,

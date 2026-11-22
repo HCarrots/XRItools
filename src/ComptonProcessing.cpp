@@ -484,7 +484,7 @@ double valenceAt(const ComptonResult &reference, double pz, double q) {
 } // namespace
 
 QString backgroundComponentKey(BackgroundComponent component) {
-    static const QStringList keys{"linear", "hf_core", "compton_peak", "asymmetry"};
+    static const QStringList keys{"polynomial", "hf_core", "compton_peak", "asymmetry"};
     return keys.value(int(component));
 }
 
@@ -577,9 +577,10 @@ CrystalBackground fitBackgroundComponent(BackgroundComponent component, const St
     }
     if (windows.isEmpty())
         fail(QCoreApplication::translate("ComptonProcessing", "保护能区覆盖了全部拟合区间。"));
-    if (component == BackgroundComponent::Linear || component == BackgroundComponent::ComptonPeak) {
-        const bool peak = component == BackgroundComponent::ComptonPeak;
-        auto result = SpectrumProcessing::fit(energy, residual, {peak, windows, peak}, stop);
+    if (component == BackgroundComponent::Polynomial || component == BackgroundComponent::ComptonPeak) {
+        auto result = component == BackgroundComponent::Polynomial
+            ? SpectrumProcessing::fitPolynomial(energy, residual, {false, windows}, settings.polynomialOrder, stop)
+            : SpectrumProcessing::fit(energy, residual, {true, windows, true}, stop);
         result.method = backgroundComponentKey(component);
         return result;
     }

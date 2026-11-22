@@ -42,6 +42,7 @@ struct BackgroundSettings {
     QVector<QPair<double, double>> windows;
     bool zeroBaseline = false;
 };
+inline constexpr int maxBackgroundPolynomialOrder = 6;
 struct CrystalBackground {
     QVector<double> background, corrected;
     BackgroundSettings settings;
@@ -65,6 +66,10 @@ ProcessedSpectrum replaceEdges(const ProcessedSpectrum &, const QVector<Processe
 ProcessedSpectrum stitch(const QStringList &, const SpectrumHdfLayout &, const std::atomic_bool &);
 CrystalBackground fit(const QVector<double> &energy, const QVector<double> &intensity,
                       const BackgroundSettings &, const std::atomic_bool &);
+CrystalBackground fitPolynomial(const QVector<double> &energy, const QVector<double> &intensity,
+                                const BackgroundSettings &, int order, const std::atomic_bool &);
+QVector<double> savitzkyGolay(const QVector<double> &energy, const QVector<double> &intensity,
+                             int windowPoints, int order, const QVector<qsizetype> &segmentStarts = {});
 void save(const QString &path, const ProcessedSpectrum &,
           const QMap<QString, CrystalBackground> &backgrounds = {},
           const QMap<QString, QMap<QString, QVector<double>>> &components = {});

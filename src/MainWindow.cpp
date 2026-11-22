@@ -38,8 +38,12 @@ class DatabaseFileModel : public QAbstractTableModel {
   public:
     using QAbstractTableModel::QAbstractTableModel;
 
-    int rowCount(const QModelIndex &parent = {}) const override { return parent.isValid() ? 0 : int(paths.size()); }
-    int columnCount(const QModelIndex &parent = {}) const override { return parent.isValid() ? 0 : 2; }
+    int rowCount(const QModelIndex &parent = {}) const override {
+        return parent.isValid() ? 0 : int(paths.size());
+    }
+    int columnCount(const QModelIndex &parent = {}) const override {
+        return parent.isValid() ? 0 : 2;
+    }
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
         if (orientation == Qt::Horizontal && role == Qt::DisplayRole)
             return section == 0 ? QCoreApplication::translate("MainWindow", "文件名")
@@ -64,7 +68,9 @@ class DatabaseFileModel : public QAbstractTableModel {
         paths = std::move(files);
         endResetModel();
     }
-    const QString &pathAt(int row) const { return paths.at(row); }
+    const QString &pathAt(int row) const {
+        return paths.at(row);
+    }
 
   private:
     QStringList paths;
@@ -153,8 +159,9 @@ void MainWindow::buildUi() {
     selectWorkspace->setObjectName("SpecifyWorkspace");
     const auto describeRoot = [this, selectWorkspace] {
         const auto path = WorkspacePaths::root();
-        selectWorkspace->setStatusTip(path.isEmpty() ? tr("选择自动保存配置和结果的工作文件夹")
-                                                       : tr("当前工作区 %1").arg(QDir::toNativeSeparators(path)));
+        selectWorkspace->setStatusTip(path.isEmpty()
+                                          ? tr("选择自动保存配置和结果的工作文件夹")
+                                          : tr("当前工作区 %1").arg(QDir::toNativeSeparators(path)));
     };
     describeRoot();
     connect(selectWorkspace, &QAction::triggered, this, [this, describeRoot] {
@@ -168,14 +175,15 @@ void MainWindow::buildUi() {
             if (m_bond)
                 m_bond->refreshOutputDestination();
             describeRoot();
-            statusBar()->showMessage(tr("当前工作区 %1").arg(QDir::toNativeSeparators(WorkspacePaths::root())));
+            statusBar()->showMessage(
+                tr("当前工作区 %1").arg(QDir::toNativeSeparators(WorkspacePaths::root())));
         } catch (const std::exception &error) {
             QMessageBox::warning(this, tr("指定工作区"), QString::fromUtf8(error.what()));
         }
     });
     fileMenu->addSeparator();
-    auto open = fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("导入 HDF5 文件(&O)…"),
-                                    QKeySequence::Open);
+    auto open =
+        fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("导入 HDF5 文件(&O)…"), QKeySequence::Open);
     open->setObjectName("ImportHdfFiles");
     connect(open, &QAction::triggered, this, [this] {
         auto files = QFileDialog::getOpenFileNames(
@@ -183,8 +191,7 @@ void MainWindow::buildUi() {
             "HDF5 / NeXus (*.nxs *.h5 *.hdf5 *.hdf *.nx5);;All files (*)");
         openFiles(files);
     });
-    auto importDatabase =
-        fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("从数据库导入HDF5文件"));
+    auto importDatabase = fileMenu->addAction(WorkflowUi::icon("folder-open"), tr("从数据库导入HDF5文件"));
     importDatabase->setObjectName("ImportDatabaseHdfFiles");
     connect(importDatabase, &QAction::triggered, this, &MainWindow::importDatabaseFiles);
     m_exportAction = fileMenu->addAction(WorkflowUi::icon("download"), tr("导出当前文件副本…"));
@@ -213,8 +220,7 @@ void MainWindow::buildUi() {
     viewMenu->setObjectName("DataBrowserMenu");
     auto showBrowser = viewMenu->addAction(tr("显示数据浏览器"));
     showBrowser->setObjectName("ShowDataBrowser");
-    connect(showBrowser, &QAction::triggered, this,
-            [this] { showWorkspace(m_browser); });
+    connect(showBrowser, &QAction::triggered, this, [this] { showWorkspace(m_browser); });
     viewMenu->addSeparator();
     const QStringList modes{tr("图像 / 曲线"), tr("数据表"), tr("文本 / 元数据")};
     for (int i = 0; i < modes.size(); ++i) {
@@ -250,8 +256,8 @@ void MainWindow::buildUi() {
     imaging->setObjectName("ImagingStep0");
     connect(imaging, &QAction::triggered, this, [this] { openImaging(); });
     auto chemicalBondMenu = menuBar()->addMenu(tr("IXS衬度成像(&O)"));
-    chemicalBondMenu->addAction(WorkflowUi::icon("layers"), tr("打开四维衬度工作区"), this,
-                                [this] { openBondImaging(); })
+    chemicalBondMenu
+        ->addAction(WorkflowUi::icon("layers"), tr("打开四维衬度工作区"), this, [this] { openBondImaging(); })
         ->setObjectName("OpenBondWorkspace");
     auto language = menuBar()->addMenu(tr("语言(&L)"));
     language->setObjectName("LanguageMenu");
@@ -449,8 +455,7 @@ void MainWindow::buildUi() {
     m_workspaces->setObjectName("ProcessingWorkspaces");
     m_workspaces->addWidget(center);
     setCentralWidget(m_workspaces);
-    connect(m_backToBrowser, &QToolButton::clicked, this,
-            [this] { showWorkspace(m_browser); });
+    connect(m_backToBrowser, &QToolButton::clicked, this, [this] { showWorkspace(m_browser); });
     connect(palette, &QComboBox::currentIndexChanged, m_plot, &ScientificPlot::setPalette);
     connect(log, &QCheckBox::toggled, m_plot, &ScientificPlot::setLogarithmic);
     connect(aspect, &QCheckBox::toggled, m_plot, &ScientificPlot::setAspectLocked);
@@ -519,7 +524,8 @@ void MainWindow::buildUi() {
 void MainWindow::importDatabaseFiles() {
     QSettings settings;
     const auto root = QFileDialog::getExistingDirectory(
-        this, tr("选择数据库目录"), settings.value("databaseDirectory", settings.value("lastDirectory")).toString());
+        this, tr("选择数据库目录"),
+        settings.value("databaseDirectory", settings.value("lastDirectory")).toString());
     if (root.isEmpty())
         return;
     settings.setValue("databaseDirectory", root);
@@ -626,6 +632,9 @@ void MainWindow::importDatabaseFiles() {
 
 void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     m_play->setChecked(false);
+    const auto previous = m_workspaces->currentWidget();
+    if (previous != page && (previous == m_spectroscopy || previous == m_imaging || previous == m_bond))
+        statusBar()->clearMessage();
     if (auto editor = qobject_cast<RoiDialog *>(m_workspaces->currentWidget()); editor && editor != page) {
         const auto file = m_roiEditors.key(editor);
         const auto path = editor->currentSchemePath();
@@ -642,6 +651,12 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
     explorer->setVisible(page == m_browser && m_explorerVisible);
     m_workspaces->setCurrentWidget(page);
     page->show();
+    if (page == m_spectroscopy)
+        statusBar()->showMessage(m_spectroscopy->statusText());
+    else if (page == m_imaging)
+        statusBar()->showMessage(m_imaging->statusText());
+    else if (page == m_bond)
+        statusBar()->showMessage(m_bond->statusText());
     if (page == m_browser)
         updateBrowserTitle();
     else
@@ -653,16 +668,22 @@ void MainWindow::showWorkspace(QWidget *page, const QString &title) {
 
 void MainWindow::updateBrowserTitle() {
     if (m_workspaces->currentWidget() == m_browser)
-        setWindowTitle(m_file.isEmpty() ? tr("XRI — 非共振非弹性散射成像数据处理工具")
-                                       : QFileInfo(m_file).fileName() + " [" + formatLabel() + tr("] — XRI"));
+        setWindowTitle(m_file.isEmpty()
+                           ? tr("XRI — 非共振非弹性散射成像数据处理工具")
+                           : QFileInfo(m_file).fileName() + " [" + formatLabel() + tr("] — XRI"));
 }
 SpectroscopyDialog *MainWindow::openSpectroscopy(int step) {
     if (!m_spectroscopy) {
         m_spectroscopy = new SpectroscopyDialog(m_file, this);
         m_spectroscopy->setWindowFlags(Qt::Widget);
         m_spectroscopy->setMinimumSize(0, 0);
+        m_spectroscopy->useGlobalStatus();
         m_spectroscopy->findChild<QPushButton *>("CloseWorkflow")->hide();
         m_workspaces->addWidget(m_spectroscopy);
+        connect(m_spectroscopy, &SpectroscopyDialog::statusChanged, this, [this](const QString &text) {
+            if (m_workspaces->currentWidget() == m_spectroscopy)
+                statusBar()->showMessage(text);
+        });
         connect(m_spectroscopy, &SpectroscopyDialog::roiRequested, this, [this](const QString &file) {
             openRoi(file, m_spectroscopy->findChild<QLineEdit *>("SpectrumRoiScheme")->text());
         });
@@ -678,8 +699,13 @@ ImagingDialog *MainWindow::openImaging(int step) {
         m_imaging = new ImagingDialog(m_file, this);
         m_imaging->setWindowFlags(Qt::Widget);
         m_imaging->setMinimumSize(0, 0);
+        m_imaging->useGlobalStatus();
         m_imaging->findChild<QPushButton *>("CloseWorkflow")->hide();
         m_workspaces->addWidget(m_imaging);
+        connect(m_imaging, &ImagingDialog::statusChanged, this, [this](const QString &text) {
+            if (m_workspaces->currentWidget() == m_imaging)
+                statusBar()->showMessage(text);
+        });
         connect(m_imaging, &ImagingDialog::roiRequested, this, [this](const QString &file) {
             openRoi(file, m_imaging->findChild<QLineEdit *>("input.roi_table")->text());
         });
@@ -698,7 +724,12 @@ ImagingDialog *MainWindow::openImaging(int step) {
 BondWorkspace *MainWindow::openBondImaging() {
     if (!m_bond) {
         m_bond = new BondWorkspace(m_file, this);
+        m_bond->useGlobalStatus();
         m_workspaces->addWidget(m_bond);
+        connect(m_bond, &BondWorkspace::statusChanged, this, [this](const QString &text) {
+            if (m_workspaces->currentWidget() == m_bond)
+                statusBar()->showMessage(text);
+        });
         connect(m_bond, &BondWorkspace::roiRequested, this, [this](const QString &file) {
             openRoi(file, m_bond->findChild<QLineEdit *>("input.roi_table")->text());
         });
@@ -734,7 +765,7 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
         m_roiReturn = m_workspaces->currentWidget();
     auto editor = m_roiEditors.value(file);
     if (!editor) {
-        editor = new RoiDialog(file, tr("共用 ROI"), this);
+        editor = new RoiDialog(file, tr("ROI"), this);
         editor->setWindowFlags(Qt::Widget);
         editor->setMinimumSize(0, 0);
         m_workspaces->addWidget(editor);
@@ -752,7 +783,7 @@ RoiDialog *MainWindow::openRoi(const QString &source, const QString &scheme) {
     }
     if (roiScheme.endsWith(".json", Qt::CaseInsensitive) && QFileInfo::exists(roiScheme))
         editor->loadFrom(roiScheme);
-    showWorkspace(editor, tr("共用 ROI · 75 个分析晶体 — %1").arg(QFileInfo(file).fileName()));
+    showWorkspace(editor, tr("ROI · 75 个分析晶体 — %1").arg(QFileInfo(file).fileName()));
     return editor;
 }
 
@@ -773,11 +804,11 @@ void MainWindow::convertTextRois() {
     if (directory.isEmpty()) {
         const auto workspace = WorkspacePaths::root();
         const auto legacy = workspace.isEmpty() ? QDir::current().filePath("workspace/ROI/old_ROI")
-                                                 : QDir(workspace).filePath("ROI/old_ROI");
+                                                : QDir(workspace).filePath("ROI/old_ROI");
         directory = QFileInfo(legacy).isDir() ? legacy : settings.value("lastDirectory").toString();
     }
     const auto files = QFileDialog::getOpenFileNames(this, tr("选择一个或多个文本 ROI 表"), directory,
-                                                    tr("文本 ROI (*.txt *.tsv)"));
+                                                     tr("文本 ROI (*.txt *.tsv)"));
     if (files.isEmpty())
         return;
     const auto first = QFileInfo(files.first());
@@ -811,9 +842,14 @@ void MainWindow::convertTextRois() {
         });
         QMessageBox message(QMessageBox::Information, title,
                             tr("已保存 ROI 配置 %1\n有效 %2 个，失效 %3 个。\nLAMBDA %4×%5，MINIPIX %6×%7")
-                                .arg(QDir::toNativeSeparators(path)).arg(valid).arg(crystals.size() - valid)
-                                .arg(sizes[0].width()).arg(sizes[0].height())
-                                .arg(sizes[1].width()).arg(sizes[1].height()), QMessageBox::Ok, this);
+                                .arg(QDir::toNativeSeparators(path))
+                                .arg(valid)
+                                .arg(crystals.size() - valid)
+                                .arg(sizes[0].width())
+                                .arg(sizes[0].height())
+                                .arg(sizes[1].width())
+                                .arg(sizes[1].height()),
+                            QMessageBox::Ok, this);
         if (!notes.isEmpty())
             message.setDetailedText(notes.join('\n'));
         message.exec();
@@ -1309,7 +1345,7 @@ void MainWindow::closeEvent(QCloseEvent *e) {
 
 bool MainWindow::restartForLanguage(const QString &language) {
     const bool loadingRois = std::any_of(m_roiEditors.cbegin(), m_roiEditors.cend(),
-                                        [](const RoiDialog *editor) { return editor->isLoading(); });
+                                         [](const RoiDialog *editor) { return editor->isLoading(); });
     if (isReading() || isExporting() || loadingRois || (m_spectroscopy && m_spectroscopy->isBusy()) ||
         (m_imaging && m_imaging->isBusy()) || (m_bond && m_bond->isBusy())) {
         statusBar()->showMessage(tr("请等待当前任务结束后再切换语言。"), 8000);

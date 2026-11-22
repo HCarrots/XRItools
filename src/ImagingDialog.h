@@ -40,12 +40,14 @@ class ImagingDialog : public QDialog {
         return m_haveResult;
     }
     QString statusText() const;
+    void useGlobalStatus();
     const ImagingResult &result() const {
         return m_result;
     }
   signals:
     void openFileRequested(const QString &path);
     void roiRequested(const QString &file);
+    void statusChanged(const QString &text);
 
   private:
     struct Work {

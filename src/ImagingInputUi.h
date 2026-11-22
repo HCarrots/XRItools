@@ -33,7 +33,7 @@ inline QJsonValue read(QWidget *widget, const QString &key) {
                 ids.append(id);
             return ids;
         } else if (kind == 3 || kind == 4) {
-            if (text.isEmpty() && key=="statistics.background_yz_mm")
+            if (text.isEmpty() && key == "statistics.background_yz_mm")
                 return QJsonArray{};
             QJsonParseError error;
             auto doc = QJsonDocument::fromJson(text.toUtf8(), &error);
@@ -76,7 +76,7 @@ template <class AddText, class AddNumber>
 void build(QWidget *context, QVBoxLayout *ll, QVBoxLayout *rr, QMap<QString, QWidget *> &fields,
            const QStringList &availableFiles, const AddText &addText, const AddNumber &addNumber,
            const std::function<void()> &changed, const std::function<void(const QString &)> &roiRequested) {
-    auto files = new QGroupBox(QObject::tr("原始文件与共用 ROI"));
+    auto files = new QGroupBox(QObject::tr("原始文件与ROI"));
     auto ff = new QFormLayout(files);
     auto fileField = [&](const QString &key, const QString &label, bool scan) {
         auto row = new QWidget;
@@ -96,15 +96,14 @@ void build(QWidget *context, QVBoxLayout *ll, QVBoxLayout *rr, QMap<QString, QWi
                 auto folder = QFileInfo(edit->text()).absolutePath();
                 if (!scan && edit->text().isEmpty()) {
                     const auto workspace = WorkspacePaths::directory(WorkspacePaths::Workflow::Roi,
-                                                                      WorkspacePaths::Kind::Config);
+                                                                     WorkspacePaths::Kind::Config);
                     if (!workspace.isEmpty())
                         folder = workspace;
                 }
                 const auto path =
-                    scan
-                        ? WorkflowUi::selectSource(context, availableFiles, edit->text(), title)
-                        : QFileDialog::getOpenFileName(context, title, folder,
-                                                       "ROI (*.json *.txt *.tsv);;All files (*)");
+                    scan ? WorkflowUi::selectSource(context, availableFiles, edit->text(), title)
+                         : QFileDialog::getOpenFileName(context, title, folder,
+                                                        "ROI (*.json *.txt *.tsv);;All files (*)");
                 if (!path.isEmpty())
                     edit->setText(path);
             });
@@ -113,7 +112,7 @@ void build(QWidget *context, QVBoxLayout *ll, QVBoxLayout *rr, QMap<QString, QWi
     fileField("input.calibration_nxs", QObject::tr("薄膜标定"), true);
     fileField("input.sample_nxs", QObject::tr("样品成像"), true);
     auto roiButtons = fileField("input.roi_table", QObject::tr("ROI 方案 / TSV"), false);
-    auto selectRoi = new QPushButton(QObject::tr("选取共用 ROI…"));
+    auto selectRoi = new QPushButton(QObject::tr("选取ROI…"));
     roiButtons->addWidget(selectRoi);
     auto roiNote =
         new QLabel(QObject::tr("按共用方案的逐像素掩膜或矩形取固定像素。旧 TSV 的平移/扩展按表应用。共用 "

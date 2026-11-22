@@ -31,6 +31,14 @@ QLabel *hint(const QString &text = {}) {
     return label;
 }
 
+QFormLayout *controlForm(QWidget *parent = nullptr) {
+    auto form = new QFormLayout(parent);
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    return form;
+}
+
 QDoubleSpinBox *number(int decimals, double minimum, double maximum, double initial) {
     auto box = new QDoubleSpinBox;
     box->setDecimals(decimals);
@@ -162,30 +170,31 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_tabs = new QTabWidget;
     m_tabs->setObjectName("BondSteps");
     m_tabs->setUsesScrollButtons(true);
-    m_viewBar = new QWidget;
-    auto viewRow = new QHBoxLayout(m_viewBar);
-    viewRow->setContentsMargins(0, 0, 0, 0);
-    viewRow->addWidget(new QLabel(tr("显示数据")));
+    m_viewBar = new QWidget(this);
+    auto viewLayout = new QVBoxLayout(m_viewBar);
+    viewLayout->setContentsMargins(0, 0, 0, 0);
+    auto viewFields = controlForm();
     m_dataSource = new QComboBox;
     m_dataSource->setObjectName("BondViewSource");
     m_dataSource->addItem(tr("原始体素"));
-    viewRow->addWidget(m_dataSource);
+    viewFields->addRow(tr("显示数据"), m_dataSource);
+    viewLayout->addLayout(viewFields);
     m_singleEnergy = new QWidget;
-    auto energyPicker = new QHBoxLayout(m_singleEnergy);
-    energyPicker->setContentsMargins(14, 0, 0, 0);
-    energyPicker->addWidget(new QLabel(tr("能量通道")));
+    auto energyFields = controlForm(m_singleEnergy);
+    auto energyPicker = new QHBoxLayout;
     m_channel = index("BondSpectrumChannel");
     energyPicker->addWidget(m_channel);
     m_selectedEnergy = new QLabel;
-    energyPicker->addWidget(m_selectedEnergy);
-    viewRow->addWidget(m_singleEnergy);
+    energyPicker->addWidget(m_selectedEnergy, 1);
+    energyFields->addRow(tr("能量通道"), energyPicker);
+    viewLayout->addWidget(m_singleEnergy);
     auto import = WorkflowUi::button("folder-open", tr("载入已有方案…"));
     import->setObjectName("ImportBondConfig");
     auto saveConfig = WorkflowUi::button("save", tr("保存当前配置…"));
     saveConfig->setObjectName("SaveBondConfig");
     auto reopen = WorkflowUi::button("folder-open", tr("查看已有结果…"));
     m_configTools = WorkflowUi::cornerTools({import, saveConfig, reopen});
-    m_tabs->setCornerWidget(WorkflowUi::cornerTools({m_configTools, m_viewBar}));
+    m_tabs->setCornerWidget(m_configTools);
     root->addWidget(m_tabs, 1);
     auto filePage = new QWidget;
     auto fileLayout = new QVBoxLayout(filePage);
@@ -194,11 +203,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     auto column = [&](int stretch) {
         auto body = new QWidget;
         auto layout = new QVBoxLayout(body);
-        auto scroll = new QScrollArea;
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setWidget(body);
-        columns->addWidget(scroll, stretch);
+        columns->addWidget(WorkflowUi::scrollBody(body), stretch);
         return layout;
     };
     auto left = column(3);
@@ -239,9 +244,8 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
 
     right->addStretch();
     fileLayout->addLayout(columns, 1);
-    auto next = WorkflowUi::button("check", tr("校验数据"));
-    next->setObjectName("CheckBondInputs");
-    fileLayout->addWidget(next, 0, Qt::AlignRight);
+    m_checkInputs = WorkflowUi::button("check", tr("校验数据"));
+    m_checkInputs->setObjectName("CheckBondInputs");
     m_tabs->addTab(filePage, tr("1 数据与 ROI"));
 
     m_tabs->addTab(createSpatialPage(), tr("2 ROI标定"));
@@ -251,36 +255,46 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     auto voxelPage = new QWidget;
     auto voxelLayout = new QVBoxLayout(voxelPage);
     WorkflowUi::compact(voxelLayout);
+    auto voxelControls = new QWidget;
+    auto voxelSidebar = new QVBoxLayout(voxelControls);
+    WorkflowUi::compact(voxelSidebar);
+    auto voxelSettings = new QGroupBox(tr("谱图设置"));
+    voxelSettings->setObjectName("BondVoxelPlotSettings");
+    m_voxelControlsLayout = new QVBoxLayout(voxelSettings);
+    WorkflowUi::compact(m_voxelControlsLayout);
+    voxelSidebar->addWidget(voxelSettings);
+    auto voxelPreview = new QWidget;
+    auto voxelPreviewLayout = new QVBoxLayout(voxelPreview);
+    voxelPreviewLayout->setContentsMargins(0, 0, 0, 0);
     m_volumeQuality = hint({});
-    voxelLayout->addWidget(m_volumeQuality);
     m_volumeFileStatus = hint();
-    voxelLayout->addWidget(m_volumeFileStatus);
+    m_volumeFileStatus->setObjectName("BondVolumeFileStatus");
+    m_volumeFileStatus->setTextFormat(Qt::PlainText);
     m_volumeSaveTools = new QWidget;
-    auto saveRow = new QHBoxLayout(m_volumeSaveTools);
-    saveRow->setContentsMargins(0, 0, 0, 0);
-    saveRow->addWidget(new QLabel(tr("新结果文件")));
+    auto saveTools = new QHBoxLayout(m_volumeSaveTools);
+    saveTools->setContentsMargins(0, 0, 0, 0);
     m_output = new QLineEdit;
     m_output->setObjectName("BondOutput");
-    saveRow->addWidget(m_output, 1);
+    m_output->setMinimumWidth(220);
+    m_output->setPlaceholderText(tr("新结果文件"));
+    m_output->setAccessibleName(tr("新结果文件"));
+    connect(m_output, &QLineEdit::textChanged, m_output, &QLineEdit::setToolTip);
+    saveTools->addWidget(m_output, 1);
     m_chooseOutput = new QPushButton(tr("浏览…"));
-    saveRow->addWidget(m_chooseOutput);
-    m_workspaceOutput = hint();
-    m_workspaceOutput->setObjectName("IxsWorkspaceOutput");
-    saveRow->addWidget(m_workspaceOutput, 1);
-    refreshOutputDestination();
+    saveTools->addWidget(m_chooseOutput);
     connect(m_chooseOutput, &QPushButton::clicked, this, [this] {
         auto path = QFileDialog::getSaveFileName(this, tr("选择 HDF5 保存位置"), m_output->text(), volumes, nullptr,
                                                 QFileDialog::DontConfirmOverwrite);
         if (!path.isEmpty())
             m_output->setText(QFileInfo(path).suffix().isEmpty() ? path + ".h5" : path);
     });
-    auto saveVolume = WorkflowUi::button("save", tr("保存原始四维体素 HDF5"));
-    saveVolume->setObjectName("SaveBondVolume");
-    saveRow->addWidget(saveVolume);
-    connect(saveVolume, &QPushButton::clicked, this, &BondWorkspace::saveResult);
-    voxelLayout->addWidget(m_volumeSaveTools);
+    m_saveVolume = WorkflowUi::button("save", tr("保存原始四维体素 HDF5"));
+    m_saveVolume->setObjectName("SaveBondVolume");
+    saveTools->addWidget(m_saveVolume);
+    connect(m_saveVolume, &QPushButton::clicked, this, &BondWorkspace::saveResult);
+    refreshOutputDestination();
+    auto positionFields = controlForm();
     auto coordinates = new QHBoxLayout;
-    coordinates->addWidget(new QLabel(tr("空间索引")));
     m_x = index("BondVoxelX");
     m_y = index("BondVoxelY");
     m_z = index("BondVoxelZ");
@@ -294,47 +308,43 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     coordinates->addWidget(m_y);
     coordinates->addWidget(new QLabel("Z"));
     coordinates->addWidget(m_z);
+    coordinates->addStretch();
+    positionFields->addRow(tr("空间索引"), coordinates);
+    m_voxelControlsLayout->addLayout(positionFields);
     m_spectralStyleControl = new QWidget;
-    auto styleRow = new QHBoxLayout(m_spectralStyleControl);
-    styleRow->setContentsMargins(0, 0, 0, 0);
-    styleRow->addWidget(new QLabel(tr("图形")));
+    auto styleFields = controlForm(m_spectralStyleControl);
     m_spectralStyle = new QComboBox;
     m_spectralStyle->setObjectName("BondSpectralStyle");
     m_spectralStyle->addItems({tr("三维曲面"), tr("谱线瀑布")});
-    styleRow->addWidget(m_spectralStyle);
+    styleFields->addRow(tr("图形"), m_spectralStyle);
+    m_voxelControlsLayout->addWidget(m_spectralStyleControl);
 
     auto energyOptions = new QWidget;
-    auto energyRow = new QHBoxLayout(energyOptions);
-    energyRow->setContentsMargins(0, 0, 0, 0);
+    auto energyOptionsLayout = controlForm(energyOptions);
     m_loss = new QCheckBox(tr("显示能量转移"));
     m_loss->setObjectName("BondShowEnergyTransfer");
     m_analyzer = number(8, 0., 100., 0.);
     m_analyzer->setObjectName("BondAnalyzerReference");
     m_analyzer->setSpecialValueText(tr("待输入"));
     m_analyzer->setToolTip(tr("输入适用于所有已选晶体的分析器参考能量。"));
-    energyRow->addWidget(m_loss);
-    energyRow->addWidget(new QLabel(tr("分析器参考 / keV")));
-    energyRow->addWidget(m_analyzer);
-    energyRow->addStretch();
-    coordinates->addSpacing(6);
-    coordinates->addWidget(WorkflowUi::disclosureButton(tr("能量坐标设置"), energyOptions));
+    energyOptionsLayout->addRow(m_loss);
+    energyOptionsLayout->addRow(tr("分析器参考 / keV"), m_analyzer);
+    voxelSidebar->addWidget(WorkflowUi::disclosure(tr("能量坐标设置"), energyOptions));
     auto processing = new QWidget;
     auto processingLayout = new QVBoxLayout(processing);
     processingLayout->setContentsMargins(0, 0, 0, 0);
-    auto fitRow = new QHBoxLayout;
+    auto fitFields = controlForm();
     m_backgroundMode = new QComboBox;
     m_backgroundMode->setObjectName("BondBackgroundMode");
     m_backgroundMode->addItems({tr("逐体素线性扣除"), tr("按 q 分流（高 q 康普顿与低 q 线性）")});
+    m_backgroundMode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_backgroundMode->setMinimumContentsLength(14);
     createComptonOptions();
     auto reference = WorkflowUi::button("sliders-horizontal", tr("宽谱与康普顿参数…"));
     reference->setObjectName("BondComptonParameters");
     reference->hide();
     connect(reference, &QPushButton::clicked, this, [this] { m_comptonOptions->exec(); });
-    auto modeRow = new QHBoxLayout;
-    modeRow->addWidget(m_backgroundMode);
-    modeRow->addWidget(reference);
-    modeRow->addStretch();
-    processingLayout->addLayout(modeRow);
+    processingLayout->addWidget(reference);
     m_background = new QLineEdit;
     m_background->setObjectName("BondBackground");
     m_background->setPlaceholderText(tr("起点:终点，可填多段"));
@@ -344,14 +354,13 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_applyProcessing = WorkflowUi::button("filter", tr("应用谱处理"));
     m_applyProcessing->setObjectName("ApplyBondSpectralProcessing");
     auto linearLabel = new QLabel(tr("线性拟合 / keV"));
-    fitRow->addWidget(linearLabel);
-    fitRow->addWidget(m_background, 2);
     auto normalizationLabel = new QLabel(tr("面积归一化 / keV"));
     normalizationLabel->setToolTip(tr("可选。在扣背底之后对指定区间积分并归一化。"));
-    fitRow->addWidget(normalizationLabel);
-    fitRow->addWidget(m_normalization, 1);
-    fitRow->addWidget(m_applyProcessing);
-    processingLayout->addLayout(fitRow);
+    fitFields->addRow(tr("处理方式"), m_backgroundMode);
+    fitFields->addRow(linearLabel, m_background);
+    fitFields->addRow(normalizationLabel, m_normalization);
+    processingLayout->insertLayout(0, fitFields);
+    processingLayout->addWidget(m_applyProcessing);
     auto processingHint = hint(tr("线性拟合可填多段入射能区。仅做面积归一化时，线性拟合区留空。"));
     processingLayout->addWidget(processingHint);
     connect(m_backgroundMode, &QComboBox::currentIndexChanged, this,
@@ -363,14 +372,9 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             });
     auto processingOptions = WorkflowUi::disclosureButton(tr("扣背底与归一化"), processing);
     processingOptions->setObjectName("BondProcessingOptions");
-    coordinates->addWidget(processingOptions);
-    coordinates->addStretch();
-    coordinates->addWidget(m_spectralStyleControl);
-    voxelLayout->addLayout(coordinates);
-    voxelLayout->addWidget(energyOptions);
-    voxelLayout->addWidget(processing);
+    voxelSidebar->addWidget(processingOptions, 0, Qt::AlignLeft);
+    voxelSidebar->addWidget(processing);
     m_voxelInfo = hint(tr("载入四维结果后可点击 XY 切片查看单体素谱。"));
-    voxelLayout->addWidget(m_voxelInfo);
     m_plots = new QTabWidget;
     m_plots->setObjectName("BondSpectralPlots");
     auto pair = new QSplitter;
@@ -379,7 +383,7 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_slice->setAxisLabels("Y (mm)", "X (mm)");
     m_slice->setProfilePickingEnabled(true);
     m_slice->setPickAnywhere(true);
-    m_spectrum = new SpectrumPlot;
+    m_spectrum = new SpectrumPlot(nullptr, SpectrumPlot::Style::Spectroscopy);
     m_spectrum->setObjectName("BondVoxelSpectrum");
     m_spectrum->setFineGrid(true);
     pair->addWidget(m_slice);
@@ -389,116 +393,126 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
     m_spectralFigure = new BondFigures;
     m_spectralFigure->setObjectName("BondEnergyPosition");
     m_plots->addTab(m_spectralFigure, tr("沿 X 三维谱图"));
-    voxelLayout->addWidget(m_plots, 1);
-    auto toFigures = WorkflowUi::button("layers", tr("查看三维结果分析"));
-    toFigures->setObjectName("AnalyzeBondVolume");
-    m_plots->setCornerWidget(toFigures);
+    voxelPreviewLayout->addWidget(m_plots, 1);
+    voxelPreviewLayout->addWidget(m_voxelInfo);
+    voxelPreviewLayout->addWidget(m_volumeQuality);
+    m_toFigures = WorkflowUi::button("chevron-right", tr("下一步"));
+    m_toFigures->setObjectName("AnalyzeBondVolume");
+    m_toFigures->setToolTip(tr("查看三维结果分析"));
+    voxelSidebar->addStretch();
+    voxelLayout->addWidget(WorkflowUi::analysisSplit("BondVoxelSplitter", voxelControls, voxelPreview), 1);
 
     auto figurePage = new QWidget;
     auto figureLayout = new QVBoxLayout(figurePage);
     WorkflowUi::compact(figureLayout);
-    m_mapControls = new QWidget;
-    auto mapControlsLayout = new QVBoxLayout(m_mapControls);
-    mapControlsLayout->setContentsMargins(0, 0, 0, 0);
-    auto mapRow = new QHBoxLayout;
+    auto resultControls = new QWidget;
+    auto resultSidebar = new QVBoxLayout(resultControls);
+    WorkflowUi::compact(resultSidebar);
+    m_mapControls = new QGroupBox(tr("图像设置"));
+    m_resultControlsLayout = new QVBoxLayout(m_mapControls);
+    WorkflowUi::compact(m_resultControlsLayout);
     m_mode = new QComboBox;
     m_mode->setObjectName("BondContrastMode");
     m_mode->addItems({tr("单能量强度"), tr("四维体素的双能量差值 S(Eb) − S(Ea)"), tr("区间积分强度")});
+    m_mode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_mode->setMinimumContentsLength(17);
+    auto mapMode = controlForm();
+    mapMode->addRow(tr("显示方式"), m_mode);
+    m_resultControlsLayout->addLayout(mapMode);
     m_dualEnergy = new QWidget;
-    auto dualEnergyRow = new QHBoxLayout(m_dualEnergy);
-    dualEnergyRow->setContentsMargins(10, 0, 0, 0);
+    auto dualEnergyFields = controlForm(m_dualEnergy);
     m_ea = number(10, -1e5, 1e5, 0.);
     m_eb = number(10, -1e5, 1e5, 0.);
     m_ea->setObjectName("BondEa");
     m_eb->setObjectName("BondEb");
-    mapRow->addWidget(m_mode);
-    dualEnergyRow->addWidget(new QLabel("Ea"));
-    dualEnergyRow->addWidget(m_ea);
-    dualEnergyRow->addWidget(new QLabel("Eb"));
-    dualEnergyRow->addWidget(m_eb);
-    mapRow->addWidget(m_dualEnergy);
+    dualEnergyFields->addRow("Ea", m_ea);
+    dualEnergyFields->addRow("Eb", m_eb);
+    m_resultControlsLayout->addWidget(m_dualEnergy);
     m_integralBounds = new QWidget;
-    auto boundsRow = new QHBoxLayout(m_integralBounds);
-    boundsRow->setContentsMargins(10, 0, 0, 0);
+    auto boundsFields = controlForm(m_integralBounds);
     m_integralLo = number(10, -1e5, 1e5, 0.);
     m_integralHi = number(10, -1e5, 1e5, 0.);
     m_integralLo->setObjectName("BondIntegralLo");
     m_integralHi->setObjectName("BondIntegralHi");
-    boundsRow->addWidget(new QLabel(tr("积分下限")));
-    boundsRow->addWidget(m_integralLo);
-    boundsRow->addWidget(new QLabel(tr("积分上限")));
-    boundsRow->addWidget(m_integralHi);
-    mapRow->addWidget(m_integralBounds);
-    mapRow->addStretch();
-    mapControlsLayout->addLayout(mapRow);
+    boundsFields->addRow(tr("积分下限"), m_integralLo);
+    boundsFields->addRow(tr("积分上限"), m_integralHi);
+    m_resultControlsLayout->addWidget(m_integralBounds);
     m_mapInfo = hint();
     m_mapInfo->setObjectName("BondMapInfo");
-    mapControlsLayout->addWidget(m_mapInfo);
-    figureLayout->addWidget(m_mapControls);
+    m_resultControlsLayout->addWidget(m_mapInfo);
+    resultSidebar->addWidget(m_mapControls);
+    auto figureControls = new QStackedWidget;
+    resultSidebar->addWidget(figureControls);
+    resultSidebar->addStretch();
     m_figures = new QTabWidget;
-    auto montagePage = new QWidget;
-    auto montageLayout = new QVBoxLayout(montagePage);
-    WorkflowUi::compact(montageLayout);
-    auto montageRow = new QHBoxLayout;
+    m_figures->setObjectName("BondResultPlots");
+    auto montageControls = new QGroupBox(tr("XY 切片组"));
+    auto montageFields = controlForm(montageControls);
+    WorkflowUi::compact(montageFields);
     m_firstZ = index("BondFirstZ");
     m_countZ = index("BondCountZ");
     m_strideZ = index("BondStrideZ");
     m_countZ->setRange(1, 9);
     m_countZ->setValue(6);
     m_strideZ->setRange(1, 1);
-    for (const auto &control : {qMakePair(tr("起始 Z 索引"), m_firstZ), qMakePair(tr("切片数"), m_countZ),
-                                qMakePair(tr("间隔"), m_strideZ)}) {
-        montageRow->addWidget(new QLabel(control.first));
-        montageRow->addWidget(control.second);
-    }
-    montageRow->addStretch();
-    montageLayout->addLayout(montageRow);
+    montageFields->addRow(tr("起始 Z 索引"), m_firstZ);
+    montageFields->addRow(tr("切片数"), m_countZ);
+    montageFields->addRow(tr("间隔"), m_strideZ);
+    figureControls->addWidget(montageControls);
     m_montage = new BondFigures;
     m_montage->setObjectName("BondMontage");
-    montageLayout->addWidget(m_montage, 1);
-    m_figures->addTab(montagePage, tr("XY 切片组"));
-    auto surfacePage = new QWidget;
-    auto surfaceLayout = new QVBoxLayout(surfacePage);
-    WorkflowUi::compact(surfaceLayout);
-    auto surfaceRow = new QHBoxLayout;
+    m_figures->addTab(m_montage, tr("XY 切片组"));
+    auto surfaceControls = new QGroupBox(tr("三维等值面"));
+    auto surfaceFields = controlForm(surfaceControls);
+    WorkflowUi::compact(surfaceFields);
     m_level = number(12, -1e12, 1e12, 0);
     m_level2 = number(12, -1e12, 1e12, 0);
     m_secondSurface = new QCheckBox(tr("第二等值面"));
     m_buildSurface = WorkflowUi::button("layers", tr("生成等值面"));
     m_buildSurface->setObjectName("BuildBondSurface");
-    surfaceRow->addWidget(new QLabel(tr("阈值")));
-    surfaceRow->addWidget(m_level);
-    surfaceRow->addWidget(m_secondSurface);
-    surfaceRow->addWidget(m_level2);
-    surfaceRow->addWidget(m_buildSurface);
-    surfaceRow->addStretch();
-    surfaceLayout->addLayout(surfaceRow);
+    surfaceFields->addRow(tr("阈值"), m_level);
+    surfaceFields->addRow(m_secondSurface, m_level2);
+    surfaceFields->addRow(m_buildSurface);
+    figureControls->addWidget(surfaceControls);
     m_surface = new BondFigures;
     m_surface->setObjectName("BondIsosurface");
     m_surface->setMesh({}, {}, {}, tr("生成等值面后，按住左键拖动旋转。"));
-    surfaceLayout->addWidget(m_surface, 1);
-    m_figures->addTab(surfacePage, tr("三维等值面"));
-    m_referencePage = createReferenceMaps();
+    m_figures->addTab(m_surface, tr("三维等值面"));
+    auto referenceControls = new QWidget;
+    m_referencePage = createReferenceMaps(referenceControls);
+    figureControls->addWidget(referenceControls);
     m_figures->addTab(m_referencePage, tr("参考谱拟合四联图"));
+    connect(m_figures, &QTabWidget::currentChanged, figureControls, &QStackedWidget::setCurrentIndex);
     connect(m_figures, &QTabWidget::currentChanged, this, [this] { syncViewControls(); });
-    figureLayout->addWidget(m_figures, 1);
+    figureLayout->addWidget(WorkflowUi::analysisSplit("BondResultsSplitter", resultControls, m_figures), 1);
     m_tabs->addTab(voxelPage, tr("5 四维结果与体素谱"));
     m_tabs->addTab(figurePage, tr("6 三维结果分析"));
     m_stepHint = hint();
     m_stepHint->setObjectName("BondStepHint");
-    root->addWidget(m_stepHint);
     auto footer = new QHBoxLayout;
     m_status = hint();
     m_status->setObjectName("BondStatus");
     m_progress = new QProgressBar;
-    m_progress->setMaximumWidth(160);
+    m_progress->setMaximumWidth(140);
     m_progress->hide();
-    m_cancel = WorkflowUi::button("square", tr("取消"));
+    m_cancel = WorkflowUi::button("square", tr("取消计算"));
     m_cancel->hide();
-    footer->addWidget(m_status, 1);
+    m_previous = WorkflowUi::button("chevron-left", tr("上一步"));
+    m_previous->setObjectName("PreviousBondStep");
+    footer->addWidget(m_previous);
+    footer->addStretch(1);
     footer->addWidget(m_progress);
+    footer->addWidget(m_checkInputs);
+    footer->addWidget(m_calibrate);
+    footer->addWidget(m_volumeSaveTools);
+    footer->addWidget(m_nextAfterSpatial);
+    footer->addWidget(m_confirmCrystals);
+    footer->addWidget(m_toFigures);
     footer->addWidget(m_cancel);
     root->addLayout(footer);
+    root->addWidget(m_stepHint);
+    root->addWidget(m_volumeFileStatus);
+    root->addWidget(m_status);
 
     connect(import, &QPushButton::clicked, this, [this] {
         auto path = QFileDialog::getOpenFileName(this, tr("载入已有方案"),
@@ -520,9 +534,10 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         if (!path.isEmpty())
             openVolume(path);
     });
-    connect(next, &QPushButton::clicked, this, &BondWorkspace::validateInputs);
+    connect(m_checkInputs, &QPushButton::clicked, this, &BondWorkspace::validateInputs);
     connect(m_run, &QPushButton::clicked, this, &BondWorkspace::startVolume);
-    connect(toFigures, &QPushButton::clicked, this, [this] { selectStage(Results); });
+    connect(m_toFigures, &QPushButton::clicked, this, [this] { selectStage(Results); });
+    connect(m_previous, &QPushButton::clicked, this, [this] { selectStage(Stage(m_tabs->currentIndex() - 1)); });
     connect(m_fitGains, &QCheckBox::toggled, m_anchor, &QLineEdit::setEnabled);
     connect(m_cancel, &QPushButton::clicked, this, [this] {
         m_stop.store(true);
@@ -611,17 +626,16 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
             showChannelSummary();
             refreshWorkflow();
         }
-        if (result.volume) {
-            m_volumePendingSave = result.resultPath.isEmpty();
+        if (result.volume || result.savedVolume) {
+            m_volumePendingSave = result.volume && result.resultPath.isEmpty();
             m_volumeFileStatus->setText(m_volumePendingSave ? tr("四维体素已求解，尚未保存。")
-                                                            : tr("结果文件：%1").arg(result.resultPath));
-            installVolume(std::move(*result.volume));
+                                                            : tr("结果文件：%1").arg(QDir::toNativeSeparators(result.resultPath)));
         }
+        if (result.volume)
+            installVolume(std::move(*result.volume));
         if (result.savedVolume) {
-            m_volumePendingSave = false;
             m_volume.bandDiagnostics.clear();
             m_volume.diagnosticImage = {};
-            m_volumeFileStatus->setText(tr("结果文件：%1").arg(result.resultPath));
             syncViewControls();
         }
         if (result.processed) {
@@ -680,17 +694,10 @@ QWidget *BondWorkspace::createCrystalPage() {
     inputDetails->addTab(m_crystals, tr("晶体 ROI"));
     inputDetails->addTab(m_diagnostics, tr("输入校验记录"));
     crystalsLayout->addWidget(inputDetails, 1);
-    auto actions = new QHBoxLayout;
-    actions->addStretch();
-    m_backToSpatial = WorkflowUi::button("chevron-left", tr("返回第 2 步更新标定"));
-    m_backToSpatial->setObjectName("UpdateBondSpatial");
-    actions->addWidget(m_backToSpatial);
-    connect(m_backToSpatial, &QPushButton::clicked, this, [this] { selectStage(Spatial); });
-    m_confirmCrystals = WorkflowUi::button("chevron-right", tr("确认晶体并进入四维重建"));
+    m_confirmCrystals = WorkflowUi::button("chevron-right", tr("下一步"));
     m_confirmCrystals->setObjectName("ConfirmBondCrystals");
-    actions->addWidget(m_confirmCrystals);
+    m_confirmCrystals->setToolTip(tr("确认晶体并进入四维重建"));
     connect(m_confirmCrystals, &QPushButton::clicked, this, &BondWorkspace::confirmCrystals);
-    crystalsLayout->addLayout(actions);
     return crystalsPage;
 }
 
@@ -698,9 +705,14 @@ QWidget *BondWorkspace::createSpatialPage() {
     auto spatialPage = new QWidget;
     auto spatialLayout = new QVBoxLayout(spatialPage);
     WorkflowUi::compact(spatialLayout);
-    spatialLayout->addWidget(hint(tr("用薄膜标定晶体的空间响应，用样品积分谱拟合相对增益。两条路线共用这套模型。")));
+    auto parameters = new QWidget;
+    auto parameterLayout = new QVBoxLayout(parameters);
+    WorkflowUi::compact(parameterLayout);
     auto solver = new QGroupBox(tr("ROI 标定参数"));
-    auto solverForm = new QFormLayout(solver);
+    parameterLayout->addWidget(solver);
+    parameterLayout->addStretch();
+    auto solverForm = controlForm(solver);
+    WorkflowUi::compact(solverForm);
     m_xStep = new QLineEdit;
     m_xStep->setObjectName("BondXStep");
     m_xStep->setPlaceholderText(tr("自动（按薄膜标定）"));
@@ -713,6 +725,7 @@ QWidget *BondWorkspace::createSpatialPage() {
     m_iterations->setRange(1, 1000000);
     m_iterations->setValue(20000);
     m_tolerance = number(12, 1e-12, 1., 1e-7);
+    m_tolerance->setMinimumWidth(120);
     m_tolerance->setSingleStep(1e-7);
     solverForm->addRow(m_fitGains);
     solverForm->addRow(tr("增益锚点（编号_标签）"), m_anchor);
@@ -720,32 +733,29 @@ QWidget *BondWorkspace::createSpatialPage() {
     solverForm->addRow(tr("投影 KKT 容差"), m_tolerance);
     m_calibrate = WorkflowUi::button("play", tr("计算 ROI 标定"));
     m_calibrate->setObjectName("PrepareBondSpatial");
-    solverForm->addRow(m_calibrate);
-    auto spatialColumns = new QHBoxLayout;
-    auto spatialControls = new QVBoxLayout;
-    spatialControls->addWidget(solver);
-    spatialControls->addStretch();
-    spatialColumns->addLayout(spatialControls, 2);
-    auto spatialReview = new QVBoxLayout;
+    auto preview = new QWidget;
+    auto spatialReview = new QVBoxLayout(preview);
+    spatialReview->setContentsMargins(0, 0, 0, 0);
     m_spatialStatus = hint(tr("计算后检查体素网格、采用的晶体和增益收敛状态。"));
     m_spatialStatus->setObjectName("BondSpatialSummary");
-    spatialReview->addWidget(m_spatialStatus);
     auto spatialDetails = new QTabWidget;
     m_spatialTable = new QTableWidget(0, 3);
     m_spatialTable->setObjectName("BondSpatialCrystals");
     m_spatialTable->setHorizontalHeaderLabels({tr("晶体编号"), tr("相对增益"), tr("空间模型或拒绝原因")});
     m_spatialTable->horizontalHeader()->setStretchLastSection(true);
+    m_spatialTable->setAlternatingRowColors(true);
+    m_spatialTable->verticalHeader()->hide();
     m_spatialTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     spatialDetails->addTab(m_spatialTable, tr("晶体标定"));
     m_spatialDiagnostics = new QPlainTextEdit;
     m_spatialDiagnostics->setReadOnly(true);
     spatialDetails->addTab(m_spatialDiagnostics, tr("标定记录"));
     spatialReview->addWidget(spatialDetails, 1);
-    spatialColumns->addLayout(spatialReview, 3);
-    spatialLayout->addLayout(spatialColumns, 1);
-    m_nextAfterSpatial = WorkflowUi::button("chevron-right", tr("下一步：筛选晶体"));
+    spatialReview->addWidget(m_spatialStatus);
+    spatialLayout->addWidget(WorkflowUi::analysisSplit("BondSpatialSplitter", parameters, preview), 1);
+    m_nextAfterSpatial = WorkflowUi::button("chevron-right", tr("下一步"));
     m_nextAfterSpatial->setObjectName("ContinueBondSpatial");
-    spatialLayout->addWidget(m_nextAfterSpatial, 0, Qt::AlignRight);
+    m_nextAfterSpatial->setToolTip(tr("下一步：筛选晶体"));
     connect(m_calibrate, &QPushButton::clicked, this, &BondWorkspace::prepareSpatial);
     connect(m_nextAfterSpatial, &QPushButton::clicked, this, [this] { selectStage(Crystals); });
     const auto invalidateCalibration = [this] { invalidateSpatial(); };
@@ -759,11 +769,14 @@ QWidget *BondWorkspace::createSpatialPage() {
 
 QWidget *BondWorkspace::createVolumeBuildPage() {
     auto channelsPage = new QWidget;
-    auto channelsLayout = new QHBoxLayout(channelsPage);
+    auto channelsLayout = new QVBoxLayout(channelsPage);
     WorkflowUi::compact(channelsLayout);
-    auto channelControls = new QVBoxLayout;
+    auto controls = new QWidget;
+    auto channelControls = new QVBoxLayout(controls);
+    WorkflowUi::compact(channelControls);
     auto backProject = new QGroupBox(tr("1. 逐能量反投影"));
     auto backLayout = new QVBoxLayout(backProject);
+    WorkflowUi::compact(backLayout);
     backLayout->addWidget(hint(tr("汇总各能量、各 YZ 位置的剂量归一化计数，应用共用空间模型得到逐能量反投影。")));
     m_prepareChannels = WorkflowUi::button("play", tr("计算逐能量反投影"));
     m_prepareChannels->setObjectName("PrepareBondChannels");
@@ -771,22 +784,26 @@ QWidget *BondWorkspace::createVolumeBuildPage() {
     channelControls->addWidget(backProject);
     auto volumeSolve = new QGroupBox(tr("2. 四维体素求解"));
     auto solveLayout = new QVBoxLayout(volumeSolve);
+    WorkflowUi::compact(solveLayout);
     solveLayout->addWidget(hint(tr("对每个入射能量独立求解非负体素。扣背底在求解后的体素谱上设置。")));
     auto flag = [this, solveLayout](const QString &key, const QString &label) {
         auto box = new QCheckBox(label);
         box->setObjectName(key);
         m_inputs[key] = box;
         solveLayout->addWidget(box);
+        return box;
     };
-    flag("output.save_diagnostics", tr("保存积分谱的各晶体正演矩阵、预测和残差"));
+    flag("output.save_diagnostics", tr("保存积分谱正演诊断"))
+        ->setToolTip(tr("保存积分谱的各晶体正演矩阵、预测和残差"));
     flag("output.plots", tr("保存积分谱诊断 PNG"));
     m_run = WorkflowUi::button("play", tr("求解四维体素"));
     m_run->setObjectName("RunBondVolume");
     solveLayout->addWidget(m_run);
     channelControls->addWidget(volumeSolve);
     channelControls->addStretch();
-    channelsLayout->addLayout(channelControls, 2);
-    auto channelReview = new QVBoxLayout;
+    auto preview = new QWidget;
+    auto channelReview = new QVBoxLayout(preview);
+    channelReview->setContentsMargins(4, 0, 0, 0);
     m_channelStatus = hint(tr("计算后检查各能量通道的归一化探测器信号。"));
     m_channelStatus->setObjectName("BondChannelSummary");
     channelReview->addWidget(m_channelStatus);
@@ -796,7 +813,7 @@ QWidget *BondWorkspace::createVolumeBuildPage() {
     m_channelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_channelTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     channelReview->addWidget(m_channelTable, 1);
-    channelsLayout->addLayout(channelReview, 3);
+    channelsLayout->addWidget(WorkflowUi::analysisSplit("BondVolumeBuildSplitter", controls, preview), 1);
     connect(m_prepareChannels, &QPushButton::clicked, this, &BondWorkspace::prepareChannels);
     return channelsPage;
 }
@@ -808,6 +825,14 @@ BondWorkspace::~BondWorkspace() {
 
 bool BondWorkspace::isBusy() const {
     return m_busy;
+}
+
+QString BondWorkspace::statusText() const {
+    return m_status->text();
+}
+
+void BondWorkspace::useGlobalStatus() {
+    m_status->hide();
 }
 
 void BondWorkspace::selectStage(Stage stage) {
@@ -826,17 +851,25 @@ void BondWorkspace::refreshWorkflow() {
     const bool inputsReady = bool(m_checkedInputs);
     const bool spatialReady = bool(m_spatial);
     const bool reconstructionReady = spatialReady && m_crystalsConfirmed;
-    m_calibrate->setEnabled(inputsReady);
-    m_nextAfterSpatial->setEnabled(spatialReady);
-    m_confirmCrystals->setEnabled(spatialReady);
-    m_backToSpatial->setVisible(inputsReady && !spatialReady);
+    const int step = m_tabs->currentIndex();
+    m_previous->setVisible(step > Inputs);
+    m_previous->setEnabled(!m_busy && step > Inputs);
+    m_checkInputs->setVisible(step == Inputs);
+    m_checkInputs->setEnabled(!m_busy);
+    m_calibrate->setVisible(step == Spatial);
+    m_calibrate->setEnabled(!m_busy && inputsReady);
+    m_nextAfterSpatial->setVisible(step == Spatial);
+    m_nextAfterSpatial->setEnabled(!m_busy && spatialReady);
+    m_confirmCrystals->setVisible(step == Crystals);
+    m_confirmCrystals->setEnabled(!m_busy && spatialReady);
+    m_toFigures->setVisible(step == Volume);
+    m_toFigures->setEnabled(!m_busy && hasVolume());
     m_prepareChannels->setEnabled(reconstructionReady);
     m_run->setEnabled(bool(m_channels));
     m_applyProcessing->setEnabled(hasVolume());
     m_buildSurface->setEnabled(hasVolume());
     m_fitReference->setEnabled(hasVolume());
 
-    const int step = m_tabs->currentIndex();
     QString hint;
     if (step >= Volume && !hasVolume())
         hint = tr("请先完成第 4 步四维体素重建，或在第 1 步打开已有结果。");
@@ -858,15 +891,18 @@ void BondWorkspace::syncViewControls() {
     m_mapControls->setVisible(!referenceMaps);
     const bool showViewTools = hasVolume() && (step == Volume || (step == Results && !referenceMaps));
     m_configTools->setVisible(step == Inputs);
-    m_viewBar->setVisible(showViewTools);
-    m_tabs->cornerWidget()->setVisible(step == Inputs || showViewTools);
+    auto viewLayout = step == Volume ? m_voxelControlsLayout : step == Results ? m_resultControlsLayout : nullptr;
+    if (viewLayout && viewLayout->indexOf(m_viewBar) < 0)
+        viewLayout->insertWidget(0, m_viewBar);
     m_singleEnergy->setVisible((step == Volume && voxel) || (step == Results && mode == SingleEnergy));
+    m_viewBar->setVisible(showViewTools);
     m_dualEnergy->setVisible(mode == EnergyDifference);
     m_integralBounds->setVisible(mode == IntervalIntegral);
     m_xControl->setVisible(voxel);
     m_voxelInfo->setVisible(voxel);
     m_spectralStyleControl->setVisible(!voxel);
-    m_volumeSaveTools->setVisible(m_volumePendingSave);
+    m_volumeSaveTools->setVisible(step == Volume && m_volumePendingSave);
+    m_volumeFileStatus->setVisible((step == Volume || step == Results) && !m_volumeFileStatus->text().isEmpty());
     if (hasVolume() && m_channel->value() < m_volume.axes[0].size()) {
         const double incident = m_volume.axes[0][m_channel->value()];
         m_selectedEnergy->setText(
@@ -918,6 +954,7 @@ void BondWorkspace::useRoiDraft(const QString &file, const QString &path) {
 void BondWorkspace::status(const QString &text, bool error) {
     m_status->setText(text);
     m_status->setStyleSheet(error ? "color:#a02020" : "");
+    emit statusChanged(text);
 }
 
 void BondWorkspace::launch(const QString &message, std::function<Work()> fn) {
@@ -944,6 +981,8 @@ void BondWorkspace::setBusy(bool busy) {
         m_tabs->widget(i)->setEnabled(!busy);
     m_configTools->setEnabled(!busy);
     m_viewBar->setEnabled(!busy);
+    m_volumeSaveTools->setEnabled(!busy);
+    refreshWorkflow();
 }
 
 bool BondWorkspace::importConfiguration(const QString &path) {
@@ -980,8 +1019,7 @@ void BondWorkspace::refreshOutputDestination() {
     const auto folder = WorkspacePaths::directory(Workflow::Ixs, Kind::Result);
     m_output->setVisible(folder.isEmpty());
     m_chooseOutput->setVisible(folder.isEmpty());
-    m_workspaceOutput->setVisible(!folder.isEmpty());
-    m_workspaceOutput->setText(QDir::toNativeSeparators(folder));
+    m_saveVolume->setToolTip(QDir::toNativeSeparators(folder));
 }
 
 void BondWorkspace::applyConfiguration(const QJsonObject &config) {
@@ -1125,7 +1163,7 @@ void BondWorkspace::startVolume() {
             Work out;
             out.volume = BondImaging::reconstructVolume(
                 *channels, output, m_stop, [this](const QString &text, int percent) { reportProgress(text, percent); });
-            out.message = tr("四维体素已求解。检查结果和通道收敛情况后保存。");
+            out.message = tr("检查通道收敛情况后保存。");
             return out;
         });
     } catch (const std::exception &error) {
@@ -1145,7 +1183,7 @@ void BondWorkspace::saveResult() {
             BondImaging::save(path, m_volume, m_stop);
             out.savedVolume = true;
             out.resultPath = path;
-            out.message = tr("结果已保存到 %1").arg(path);
+            out.message = tr("四维结果已保存。");
             return out;
         });
     } catch (const std::exception &error) {
@@ -1174,7 +1212,7 @@ void BondWorkspace::openVolume(const QString &path) {
         out.volume = BondImaging::load(path);
         ImageUtil::cancel(m_stop);
         out.resultPath = path;
-        out.message = tr("已打开结果 %1").arg(path);
+        out.message = tr("已载入四维结果。");
         return out;
     });
 }
@@ -1588,11 +1626,13 @@ void BondWorkspace::refreshMontage() {
                           m_mode->currentIndex() == EnergyDifference || m_lo < 0., mapIntensityLabel());
 }
 
-QWidget *BondWorkspace::createReferenceMaps() {
+QWidget *BondWorkspace::createReferenceMaps(QWidget *controls) {
     auto page = new QWidget;
+    page->setObjectName("BondReferenceMaps");
     auto layout = new QVBoxLayout(page);
     WorkflowUi::compact(layout);
-    auto files = new QGridLayout;
+    auto controlsLayout = new QVBoxLayout(controls);
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
     for (int i = 0; i < 2; ++i) {
         const auto label = i == 0 ? tr("基体参考谱") : tr("目标参考谱");
         auto edit = new QLineEdit;
@@ -1600,11 +1640,11 @@ QWidget *BondWorkspace::createReferenceMaps() {
         edit->setPlaceholderText(tr("单条谱，能量转移以 eV 表示"));
         m_referenceFiles[i] = edit;
         auto browse = WorkflowUi::button("folder-open", tr("浏览…"));
-        const int col = 3 * i;
-        files->addWidget(new QLabel(label), 0, col);
-        files->addWidget(edit, 0, col + 1);
-        files->addWidget(browse, 0, col + 2);
-        files->setColumnStretch(col + 1, 1);
+        controlsLayout->addWidget(new QLabel(label));
+        auto source = new QHBoxLayout;
+        source->addWidget(edit, 1);
+        source->addWidget(browse);
+        controlsLayout->addLayout(source);
         connect(browse, &QPushButton::clicked, page, [this, edit, label] {
             const auto path = QFileDialog::getOpenFileName(
                 this, label, edit->text(), tr("参考谱 (*.h5 *.hdf5 *.tsv *.txt)"));
@@ -1612,8 +1652,7 @@ QWidget *BondWorkspace::createReferenceMaps() {
                 edit->setText(path);
         });
     }
-    layout->addLayout(files);
-    auto controls = new QHBoxLayout;
+    auto fields = controlForm();
     m_referenceZ = index("BondReferenceZ");
     m_referenceAnalyzer = number(8, 0., 100., 0.);
     m_referenceAnalyzer->setObjectName("BondReferenceAnalyzer");
@@ -1622,20 +1661,17 @@ QWidget *BondWorkspace::createReferenceMaps() {
     m_referenceWindow->setObjectName("BondReferenceWindow");
     m_referenceThreshold = number(8, 0., 1e9, 0.);
     m_referenceThreshold->setObjectName("BondReferenceThreshold");
-    controls->addWidget(new QLabel(tr("Z 索引")));
-    controls->addWidget(m_referenceZ);
-    controls->addWidget(new QLabel(tr("分析器能量 / keV")));
-    controls->addWidget(m_referenceAnalyzer);
-    controls->addWidget(new QLabel(tr("拟合能区 / eV")));
-    controls->addWidget(m_referenceWindow, 1);
-    controls->addWidget(new QLabel(tr("系数阈值 ±")));
-    controls->addWidget(m_referenceThreshold);
+    fields->addRow(tr("Z 索引"), m_referenceZ);
+    fields->addRow(tr("分析器能量 / keV"), m_referenceAnalyzer);
+    fields->addRow(tr("拟合能区 / eV"), m_referenceWindow);
+    fields->addRow(tr("系数阈值 ±"), m_referenceThreshold);
     m_fitReference = WorkflowUi::button("play", tr("拟合当前切片"));
     m_fitReference->setObjectName("FitBondReferenceMaps");
-    controls->addWidget(m_fitReference);
-    layout->addLayout(controls);
-    layout->addWidget(hint(tr("使用四维原始体素谱和线性背底。基体与目标参考谱均须覆盖拟合能区，"
-                              "且至少有五个已收敛通道。")));
+    controlsLayout->addLayout(fields);
+    controlsLayout->addWidget(m_fitReference);
+    controlsLayout->addWidget(hint(tr("使用四维原始体素谱和线性背底。基体与目标参考谱均须覆盖拟合能区，"
+                                      "且至少有五个已收敛通道。")));
+    controlsLayout->addStretch();
     auto charts = new QGridLayout;
     const QStringList titles{tr("A · 总强度"), tr("B · 基体拟合残差平方和"), tr("C · 目标谱有符号系数")};
     for (int i = 0; i < 3; ++i) {
@@ -1651,7 +1687,7 @@ QWidget *BondWorkspace::createReferenceMaps() {
     }
     m_referenceMaps[1]->setPalette(1);
     m_referenceMaps[2]->setPalette(3);
-    m_referenceSpectra = new SpectrumPlot;
+    m_referenceSpectra = new SpectrumPlot(nullptr, SpectrumPlot::Style::Spectroscopy);
     m_referenceSpectra->setObjectName("BondReferenceSpectra");
     m_referenceSpectra->setCurves({}, tr("D · 分区平均谱与参考谱"));
     charts->addWidget(m_referenceSpectra, 1, 1);

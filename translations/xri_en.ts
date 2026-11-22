@@ -193,6 +193,14 @@
     </context>
     <context>
         <name>BondWorkspace</name>
+        <message><source>谱图设置</source><translation>Plot Settings</translation></message>
+        <message><source>图像设置</source><translation>Image Settings</translation></message>
+        <message><source>显示方式</source><translation>Display Mode</translation></message>
+        <message><source>处理方式</source><translation>Processing Method</translation></message>
+        <message><source>上一步</source><translation>Previous</translation></message>
+        <message><source>下一步</source><translation>Next</translation></message>
+        <message><source>取消计算</source><translation>Cancel Calculation</translation></message>
+        <message><source>保存积分谱正演诊断</source><translation>Save integrated-spectrum diagnostics</translation></message>
         <message>
             <source>4 四维体素重建</source>
             <translation>4 4D Voxel Reconstruction</translation>
@@ -394,16 +402,16 @@
             <translation>Solving 4D voxels by energy…</translation>
         </message>
         <message>
-            <source>四维体素已求解。检查结果和通道收敛情况后保存。</source>
-            <translation>4D voxels are ready. Review the result and channel convergence, then save.</translation>
+            <source>检查通道收敛情况后保存。</source>
+            <translation>Review channel convergence before saving.</translation>
         </message>
         <message>
             <source>正在写入 HDF5 结果…</source>
             <translation>Writing the HDF5 result…</translation>
         </message>
         <message>
-            <source>结果已保存到 %1</source>
-            <translation>Result saved to %1</translation>
+            <source>四维结果已保存。</source>
+            <translation>4D result saved.</translation>
         </message>
         <message>
             <source>网格 %1 × %2 × %3 · ΔX %4 mm · 采用 %5 块晶体 · 拒绝 %6 块 · 增益 %7 · 积分谱 NNLS %8</source>
@@ -810,8 +818,8 @@
             <translation>3D difference saved to %1</translation>
         </message>
         <message>
-            <source>已打开结果 %1</source>
-            <translation>Opened result %1</translation>
+            <source>已载入四维结果。</source>
+            <translation>4D result loaded.</translation>
         </message>
         <message>
             <source>样品帧 %1 · 独立能量点 %2</source>
@@ -1682,6 +1690,16 @@ Settings (outer to inner): %4</translation>
     </context>
     <context>
         <name>ImagingDialog</name>
+        <message><source>查看内容</source><translation>Views</translation></message>
+        <message><source>光斑模型</source><translation>Spot Model</translation></message>
+        <message><source>晶体</source><translation>Crystal</translation></message>
+        <message><source>运行校验或重建后显示日志。已有结果可读取随结果保存的日志。</source><translation>Run validation or reconstruction to display a log. Loading a result also loads its saved log, when available.</translation></message>
+        <message><source>完成重建或载入已有结果后显示摘要。</source><translation>Complete a reconstruction or open an existing result to view its summary.</translation></message>
+        <message><source>图像设置</source><translation>Image Settings</translation></message>
+        <message><source>模型设置</source><translation>Model Settings</translation></message>
+        <message><source>深度与低响应区</source><translation>Depth and Low-Response Regions</translation></message>
+        <message><source>切片平面</source><translation>Slice plane</translation></message>
+        <message><source>显示方式</source><translation>Display mode</translation></message>
         <message>
             <source>已取消诊断计算。</source>
             <translation>Diagnostic calculation canceled.</translation>
@@ -2431,8 +2449,8 @@ Settings (outer to inner): %4</translation>
             <translation>Full summary</translation>
         </message>
         <message>
-            <source>6 诊断与日志</source>
-            <translation>6 Diagnostics and Log</translation>
+            <source>6 日志</source>
+            <translation>6 Log</translation>
         </message>
         <message>
             <source>可载入已有方案，或选择薄膜、样品和 ROI 后校验输入。</source>
@@ -2964,11 +2982,11 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>Select a valid data file for this step.</translation>
         </message>
         <message>
-            <source>共用 ROI</source>
+            <source>ROI</source>
             <translation>Shared ROI</translation>
         </message>
         <message>
-            <source>共用 ROI · 75 个分析晶体 — %1</source>
+            <source>ROI · 75 个分析晶体 — %1</source>
             <translation>Shared ROI · 75 analyzer crystals — %1</translation>
         </message>
         <message>
@@ -3067,7 +3085,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>The reconstruction does not record which crystals were included in the solve.</translation>
         </message>
         <message>
-            <source>原始文件与共用 ROI</source>
+            <source>原始文件与ROI</source>
             <translation>Source files and shared ROIs</translation>
         </message>
         <message>
@@ -3091,7 +3109,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>ROI scheme / TSV</translation>
         </message>
         <message>
-            <source>选取共用 ROI…</source>
+            <source>选取ROI…</source>
             <translation>Select Shared ROIs…</translation>
         </message>
         <message>
@@ -3496,7 +3514,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>Start with a blank scheme or load an existing scheme to continue editing.</translation>
         </message>
         <message>
-            <source>保存共用 ROI 方案…</source>
+            <source>保存ROI 方案…</source>
             <translation>Save Shared ROI Scheme…</translation>
         </message>
         <message>
@@ -3564,7 +3582,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>Crystals %1 and %2 share detector pixels. Change an assignment or mark one crystal invalid.</translation>
         </message>
         <message>
-            <source>保存共用 ROI 方案</source>
+            <source>保存ROI 方案</source>
             <translation>Save Shared ROI Scheme</translation>
         </message>
         <message>
@@ -3572,7 +3590,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>XRI ROI (*.roi.json)</translation>
         </message>
         <message>
-            <source>共用 ROI 方案的文件名应以 .roi.json 结尾。</source>
+            <source>ROI 方案的文件名应以 .roi.json 结尾。</source>
             <translation>The shared scheme filename must end in .roi.json.</translation>
         </message>
         <message>
@@ -3580,7 +3598,7 @@ LAMBDA %4×%5, MINIPIX %6×%7</translation>
             <translation>Could not save the scheme. %1</translation>
         </message>
         <message>
-            <source>已保存共用 ROI 方案：%1（手动匹配 %2 个，待设置 %3 个）</source>
+            <source>已保存ROI 方案：%1（手动匹配 %2 个，待设置 %3 个）</source>
             <translation>Shared ROI scheme saved: %1 (%2 manually matched, %3 unassigned)</translation>
         </message>
     </context>
@@ -4036,6 +4054,13 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectroscopyDialog</name>
+        <message><source>参数已修改。请先点击「%1」，计算成功后再进入下一步。</source><translation>Settings changed. Click “%1” and finish the calculation before continuing.</translation></message>
+        <message><source>Compton 设置已修改。请先使用 Full Scan 或完成 Compton 峰拼接。</source><translation>Compton settings changed. Use Full Scan or finish splicing the Compton peak before continuing.</translation></message>
+        <message><source>背景设置已修改。请先执行「批量扣除」或「使用原谱」。</source><translation>Background settings changed. Run “Batch subtraction” or “Use original spectra” before continuing.</translation></message>
+        <message>
+            <source>测量 Compton</source>
+            <translation>Compton measured</translation>
+        </message>
         <message>
             <source>无法从内置表读取元素列表。</source>
             <translation>Could not read the element list from the built-in table.</translation>
@@ -4249,9 +4274,21 @@ Incomplete output directory: </translation>
         <message><source>I0 · 已修复 %1 点 · %2</source><translation>I0 · %1 points repaired · %2</translation></message>
         <message><source>已完成确认，所有晶体均保留原 ROI。</source><translation>Review complete. All crystals retain their original ROIs.</translation></message>
         <message><source>%1 的组分掩膜无效。</source><translation>Invalid component mask for %1.</translation></message>
-        <message><source>已更新 %1 个晶体的原始 ROI。</source><translation>Updated the original ROIs for %1 crystals.</translation></message>
         <message><source>选择弹性扫描并载入 ROI，点击下一步计算掩膜。</source><translation>Select the elastic scan, load the ROIs and click Next to calculate masks.</translation></message>
-        <message><source>掩膜已计算。可修正像素，或点击下一步计算弹性标定。</source><translation>Masks are ready. Refine the pixels or click Next to fit the elastic peaks.</translation></message>
+        <message><source>计算掩膜</source><translation>Calculate masks</translation></message>
+        <message><source>重置掩膜</source><translation>Reset Masks</translation></message>
+        <message><source>原始 ROI 区域</source><translation>Original ROI regions</translation></message>
+        <message><source>清除当前掩膜并恢复载入的原始 ROI 区域。</source><translation>Clear the current masks and restore the originally loaded ROI regions.</translation></message>
+        <message><source>已重置掩膜，当前使用原始 ROI。可点击下一步计算弹性标定。</source><translation>Masks reset. The original ROIs are active. Click Next to fit the elastic peaks.</translation></message>
+        <message><source>当前使用原始 ROI。点击「计算掩膜」应用修改后的参数。</source><translation>The original ROIs are active. Click Calculate masks to apply the revised settings.</translation></message>
+        <message><source>使用当前像素掩膜参数重新计算，替换谱分解掩膜。</source><translation>Calculate masks with the current pixel mask settings and replace any spectral masks.</translation></message>
+        <message><source>已应用参数掩膜。可点击下一步计算弹性标定。</source><translation>Parameter-based masks applied. Click Next to fit the elastic peaks.</translation></message>
+        <message><source>当前使用谱分解掩膜。</source><translation>Spectral masks are active.</translation></message>
+        <message><source>像素掩膜参数已修改。点击「计算掩膜」应用。</source><translation>Pixel mask settings changed. Click Calculate masks to apply them.</translation></message>
+        <message><source>当前使用谱分解掩膜。点击「计算掩膜」应用修改后的参数。</source><translation>Spectral masks are active. Click Calculate masks to apply the revised settings.</translation></message>
+        <message><source>已应用 %1 个晶体的谱分解掩膜。像素掩膜参数暂停生效。</source><translation>Applied spectral masks to %1 crystals. Pixel mask settings are inactive.</translation></message>
+        <message><source>已清除谱分解掩膜。点击「计算掩膜」应用参数掩膜。</source><translation>Spectral masks cleared. Click Calculate masks to apply parameter-based masks.</translation></message>
+        <message><source>已取消。</source><translation>Cancelled.</translation></message>
         <message><source>请先计算掩膜。</source><translation>Calculate masks first.</translation></message>
         <message><source>点击下一步计算掩膜。</source><translation>Click Next to calculate masks.</translation></message>
         <message>
@@ -4407,16 +4444,16 @@ Incomplete output directory: </translation>
             <translation>Auto uses the measured energy channel. Confirm that energy is in keV and strictly monotonic.</translation>
         </message>
         <message>
-            <source>高级：能量通道与 I0 归一化</source>
-            <translation>Advanced: Energy Channels and I0 Normalization</translation>
+            <source>高级</source>
+            <translation>Advanced</translation>
         </message>
         <message>
             <source>ROI 与像素掩膜</source>
             <translation>ROIs and pixel masks</translation>
         </message>
         <message>
-            <source>使用像素掩膜（优先采用谱分辨结果）</source>
-            <translation>Use pixel masks (spectral selections take priority)</translation>
+            <source>按参数筛选像素</source>
+            <translation>Filter pixels by mask settings</translation>
         </message>
         <message>
             <source>在原 ROI 内寻找峰值并重定位</source>
@@ -4465,6 +4502,38 @@ Incomplete output directory: </translation>
         <message>
             <source>添加扫描…</source>
             <translation>Add Scans…</translation>
+        </message>
+        <message>
+            <source>添加扫描</source>
+            <translation>Add Scans</translation>
+        </message>
+        <message>
+            <source>从数据浏览器多选…</source>
+            <translation>Select Files from the Data Browser…</translation>
+        </message>
+        <message>
+            <source>从磁盘选择扫描…</source>
+            <translation>Select Scans from Disk…</translation>
+        </message>
+        <message>
+            <source>从数据浏览器添加扫描</source>
+            <translation>Add Scans from the Data Browser</translation>
+        </message>
+        <message>
+            <source>勾选所选扫描</source>
+            <translation>Check Selected Scans</translation>
+        </message>
+        <message>
+            <source>取消勾选所选扫描</source>
+            <translation>Uncheck Selected Scans</translation>
+        </message>
+        <message>
+            <source>添加所选扫描</source>
+            <translation>Add Selected Scans</translation>
+        </message>
+        <message>
+            <source>Ctrl 多选，Shift 连选，Ctrl+A 全选。</source>
+            <translation>Ctrl-click to select multiple files, Shift-click to select a range, or Ctrl+A to select all.</translation>
         </message>
         <message>
             <source>移除选中</source>
@@ -4842,6 +4911,10 @@ Incomplete output directory: </translation>
             <source>总谱与各模组</source>
             <translation>Total and module spectra</translation>
         </message>
+        <message><source>各模组谱</source><translation>All module spectra</translation></message>
+        <message><source>%1 模组谱</source><translation>%1 module spectrum</translation></message>
+        <message><source>上一条谱</source><translation>Previous spectrum</translation></message>
+        <message><source>下一条谱</source><translation>Next spectrum</translation></message>
         <message>
             <source>全部单晶体谱</source>
             <translation>All individual crystal spectra</translation>
@@ -5045,6 +5118,14 @@ Incomplete output directory: </translation>
             <translation>The fitting range lacks distinct energy points.</translation>
         </message>
         <message>
+            <source>多项式背景的阶数、能量轴或拟合能区无效。</source>
+            <translation>The polynomial order, energy axis, or fitting range is invalid.</translation>
+        </message>
+        <message>
+            <source>多项式背景在实测能区内超出数值范围。</source>
+            <translation>The polynomial background exceeds the numerical range at measured energies.</translation>
+        </message>
+        <message>
             <source>所选区间没有可辨识的康普顿峰。</source>
             <translation>No identifiable Compton peak in the selected range.</translation>
         </message>
@@ -5075,6 +5156,30 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectrumProcessingPage</name>
+        <message><source>收起参数面板</source><translation>Collapse parameters</translation></message>
+        <message><source>展开参数面板</source><translation>Expand parameters</translation></message>
+        <message><source>使用 Full Scan</source><translation>Use Full Scan</translation></message>
+        <message><source>已使用 Full Scan 作为背景分析输入。</source><translation>Full Scan is now the input for background analysis.</translation></message>
+        <message><source>总谱与各模组</source><translation>Total and module spectra</translation></message>
+        <message><source>各模组谱</source><translation>All module spectra</translation></message>
+        <message><source>全部单晶体谱</source><translation>All individual crystal spectra</translation></message>
+        <message><source>Total</source><translation>Total</translation></message>
+        <message>
+            <source>使用原谱</source>
+            <translation>Use original spectra</translation>
+        </message>
+        <message>
+            <source>原谱</source>
+            <translation>Original spectrum</translation>
+        </message>
+        <message>
+            <source>正在整理原谱…</source>
+            <translation>Preparing original spectra…</translation>
+        </message>
+        <message>
+            <source>已保留 %1 条原谱。</source>
+            <translation>Kept %1 original spectra.</translation>
+        </message>
         <message>
             <source>在第 1 步设置元素与化学比、HF 壳层表和当前分组的扣除壳层。</source>
             <translation>Set the elements, stoichiometric ratios, HF shell table and shells to subtract for the current group in step 1.</translation>
@@ -5136,8 +5241,12 @@ Incomplete output directory: </translation>
             <translation>Exclude these points from all fits. Separate ranges with commas.</translation>
         </message>
         <message>
-            <source>线性背景</source>
-            <translation>Linear background</translation>
+            <source>多项式背景</source>
+            <translation>Polynomial background</translation>
+        </message>
+        <message>
+            <source>多项式阶数</source>
+            <translation>Polynomial order</translation>
         </message>
         <message>
             <source>HF-core 拟合</source>
@@ -5228,8 +5337,8 @@ Incomplete output directory: </translation>
             <translation>Fit each enabled background on the preview spectrum first.</translation>
         </message>
         <message>
-            <source>请勾选要批量扣除的谱。</source>
-            <translation>Select spectra for batch subtraction.</translation>
+            <source>请勾选至少一条要处理的谱。</source>
+            <translation>Select at least one spectrum to process.</translation>
         </message>
         <message>
             <source>请填写「%1」的拟合能区。</source>
@@ -5706,6 +5815,26 @@ Incomplete output directory: </translation>
             <translation>Plot Settings</translation>
         </message>
         <message>
+            <source>谱平滑</source>
+            <translation>Spectrum Smoothing</translation>
+        </message>
+        <message>
+            <source>Savitzky–Golay 平滑</source>
+            <translation>Savitzky–Golay smoothing</translation>
+        </message>
+        <message>
+            <source>叠加平滑曲线与未平滑结果谱进行比较。</source>
+            <translation>Overlay the smoothed curve on the unsmoothed result spectrum for comparison.</translation>
+        </message>
+        <message>
+            <source>窗口点数（奇数）</source>
+            <translation>Window size (odd)</translation>
+        </message>
+        <message>
+            <source>%1 · 平滑</source>
+            <translation>%1 · Smoothed</translation>
+        </message>
+        <message>
             <source>显示内容</source>
             <translation>Display</translation>
         </message>
@@ -5968,18 +6097,26 @@ Incomplete output directory: </translation>
     </context>
     <context>
         <name>SpectralMaskDialog</name>
-        <message><source>全部晶体确认后，一次性更新已采用的 ROI。</source><translation>Review all crystals to apply the selected ROIs together.</translation></message>
+        <message><source>全部晶体确认后，一次性应用谱分解掩膜。</source><translation>Review all crystals to apply the spectral masks together.</translation></message>
         <message><source>晶体</source><translation>Crystal</translation></message>
         <message><source>采用所选组分</source><translation>Use selected component</translation></message>
+        <message><source>分解全部晶体</source><translation>Decompose all crystals</translation></message>
+        <message><source>批量采用所选组分</source><translation>Use selected component in batch</translation></message>
+        <message><source>对待确认晶体使用相同的组分编号、阈值和符号。组分编号对应各晶体自己的分解结果。</source><translation>Use the same component number, threshold and sign for unreviewed crystals. Component numbers refer to each crystal's own decomposition.</translation></message>
         <message><source>不采用，保留原 ROI</source><translation>Keep original ROI</translation></message>
-        <message><source>已记录此晶体的组分掩膜。可重新分解以修改选择。</source><translation>A component mask is recorded for this crystal. Decompose again to revise it.</translation></message>
+        <message><source>计算失败</source><translation>Calculation failed</translation></message>
         <message><source>待确认</source><translation>Awaiting review</translation></message>
         <message><source>未计算</source><translation>Not calculated</translation></message>
         <message><source>保留原 ROI</source><translation>Keep original ROI</translation></message>
         <message><source>采用组分 %1</source><translation>Use component %1</translation></message>
         <message><source>已确认 %1 / %2</source><translation>Reviewed %1 / %2</translation></message>
-        <message><source>更新原始 ROI</source><translation>Update original ROI</translation></message>
+        <message><source>应用谱分解掩膜</source><translation>Apply spectral masks</translation></message>
         <message><source>当前原始 ROI</source><translation>Current original ROI</translation></message>
+        <message><source>组分 %1 · 已采用 %2 个 · 无可用组分，保留原 ROI %3 个 · 待确认 %4 个</source><translation>Component %1 · Applied to %2 · %3 kept their original ROI (no usable component) · %4 awaiting review</translation></message>
+        <message><source>分解完成 · 成功 %1 个 · 无可用组分 %2 个 · 失败 %3 个</source><translation>Decomposition complete · %1 succeeded · %2 had no usable component · %3 failed</translation></message>
+        <message><source>无法创建像素谱缓存。</source><translation>Could not create the pixel spectra cache.</translation></message>
+        <message><source>无法写入像素谱缓存。</source><translation>Could not write the pixel spectra cache.</translation></message>
+        <message><source>无法读取像素谱缓存，请重新分解当前晶体。</source><translation>Could not read the pixel spectra cache. Decompose the current crystal again.</translation></message>
         <message><source>%1 原始 ROI 已更新，共 %2 个像素。</source><translation>Original ROI for %1 updated to %2 pixels.</translation></message>
         <message>
             <source>上一个晶体</source>
@@ -6062,8 +6199,8 @@ Incomplete output directory: </translation>
             <translation>Apply to crystal</translation>
         </message>
         <message>
-            <source>选择具有样品特征的参考扫描，分解后根据谱形选择目标组分。</source>
-            <translation>Choose a reference scan with a sample feature, then identify the sample component by its spectrum.</translation>
+            <source>请选择参考扫描，然后分解当前晶体或全部晶体。</source>
+            <translation>Choose a reference scan, then decompose the current crystal or all crystals.</translation>
         </message>
         <message>
             <source>正在读取像素谱并分解…</source>
@@ -6175,5 +6312,11 @@ Incomplete output directory: </translation>
             <source>工作文件夹不可用，请重新指定工作区。</source>
             <translation>The workspace folder is unavailable. Set the workspace again.</translation>
         </message>
+    </context>
+    <context>
+        <name>WorkflowUi</name>
+        <message><source>拖动调整参数栏宽度</source><translation>Drag to resize the parameter panel</translation></message>
+        <message><source>收起参数面板</source><translation>Collapse parameters</translation></message>
+        <message><source>展开参数面板</source><translation>Expand parameters</translation></message>
     </context>
 </TS>

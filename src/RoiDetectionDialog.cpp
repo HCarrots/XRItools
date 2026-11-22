@@ -94,7 +94,8 @@ RoiDetectionDialog::RoiDetectionDialog(const QString &source, QWidget *parent)
     parameters->setSpacing(layout->spacing());
     auto sourceForm = new QFormLayout;
     parameters->addLayout(sourceForm);
-    auto fileRow = [this](QFormLayout *form, const QString &label, const QString &value, const QString &filter) {
+    auto fileRow = [this](QFormLayout *form, const QString &label, const QString &value,
+                          const QString &filter) {
         auto row = new QHBoxLayout;
         auto edit = new QLineEdit(value);
         auto browse = new QPushButton(tr("浏览…"));
@@ -119,8 +120,8 @@ RoiDetectionDialog::RoiDetectionDialog(const QString &source, QWidget *parent)
     auto modelSettings = new QWidget;
     auto modelForm = new QFormLayout(modelSettings);
     WorkflowUi::compact(modelForm);
-    m_python = fileRow(modelForm, tr("Python 环境"), settings.value("roiDetection/python", defaultPython).toString(),
-                       tr("所有文件 (*)"));
+    m_python = fileRow(modelForm, tr("Python 环境"),
+                       settings.value("roiDetection/python", defaultPython).toString(), tr("所有文件 (*)"));
     m_python->setObjectName("SpotRoiPython");
     const QDir appDirectory(QCoreApplication::applicationDirPath());
     auto defaultWeights = appDirectory.filePath("models/roi-maskrcnn.pt");
@@ -128,8 +129,9 @@ RoiDetectionDialog::RoiDetectionDialog(const QString &source, QWidget *parent)
     if (!QFileInfo::exists(defaultWeights))
         defaultWeights = appDirectory.absoluteFilePath("../share/xri-tools/models/roi-maskrcnn.pt");
 #endif
-    m_weights = fileRow(modelForm, tr("模型权重"), settings.value("roiDetection/weights", defaultWeights).toString(),
-                        tr("XRI Mask R-CNN (*.pt);;所有文件 (*)"));
+    m_weights =
+        fileRow(modelForm, tr("模型权重"), settings.value("roiDetection/weights", defaultWeights).toString(),
+                tr("XRI Mask R-CNN (*.pt);;所有文件 (*)"));
     m_weights->setObjectName("SpotRoiWeights");
     auto choices = new QHBoxLayout;
     m_detector = new QComboBox;
@@ -174,9 +176,9 @@ RoiDetectionDialog::RoiDetectionDialog(const QString &source, QWidget *parent)
     display->addWidget(previewGroup);
     m_table = new QTableWidget(0, 10);
     m_table->setObjectName("SpotRoiResults");
-    m_table->setHorizontalHeaderLabels(
-        {tr("编号"), tr("置信度"), tr("X 质心"), tr("Y 质心"), tr("掩膜像素"), tr("原始积分"), tr("净积分"),
-         tr("长轴 / px"), tr("短轴 / px"), tr("角度 / °")});
+    m_table->setHorizontalHeaderLabels({tr("编号"), tr("置信度"), tr("X 质心"), tr("Y 质心"), tr("掩膜像素"),
+                                        tr("原始积分"), tr("净积分"), tr("长轴 / px"), tr("短轴 / px"),
+                                        tr("角度 / °")});
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setAlternatingRowColors(true);
@@ -222,9 +224,8 @@ RoiDetectionDialog::RoiDetectionDialog(const QString &source, QWidget *parent)
     connect(m_export, &QPushButton::clicked, this, [this] { exportResult(); });
     connect(m_matchSaved, &QPushButton::clicked, this, [this] { loadResultForMatching(); });
     connect(m_matchCurrent, &QPushButton::clicked, this, [this] { matchAndSave(m_result); });
-    connect(&m_process, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
-        completed(code, status);
-    });
+    connect(&m_process, &QProcess::finished, this,
+            [this](int code, QProcess::ExitStatus status) { completed(code, status); });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             setRunning(false);
@@ -301,7 +302,8 @@ bool RoiDetectionDialog::eventFilter(QObject *watched, QEvent *event) {
 
 void RoiDetectionDialog::resizePreview() {
     if (!m_overlay.isNull())
-        m_preview->setPixmap(m_overlay.scaled(m_preview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_preview->setPixmap(
+            m_overlay.scaled(m_preview->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
 void RoiDetectionDialog::updateFrameRange() {
@@ -348,12 +350,12 @@ void RoiDetectionDialog::run() {
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert("PYTHONIOENCODING", "utf-8");
     m_process.setProcessEnvironment(environment);
-    m_process.start(python, {"-u", script, "infer", "--file", m_source,
-                             "--detector", m_detector->currentText(), "--frame",
-                             QString::number(m_mode->currentIndex() == 0 ? -1 : m_frame->value()), "--weights",
-                             QFileInfo(weights).absoluteFilePath(), "--score", QString::number(m_score->value()),
-                             "--mask-threshold", QString::number(m_maskThreshold->value()), "--output",
-                             m_work.filePath("spots.json"), "--preview", m_work.filePath("spots.png")});
+    m_process.start(
+        python, {"-u", script, "infer", "--file", m_source, "--detector", m_detector->currentText(),
+                 "--frame", QString::number(m_mode->currentIndex() == 0 ? -1 : m_frame->value()), "--weights",
+                 QFileInfo(weights).absoluteFilePath(), "--score", QString::number(m_score->value()),
+                 "--mask-threshold", QString::number(m_maskThreshold->value()), "--output",
+                 m_work.filePath("spots.json"), "--preview", m_work.filePath("spots.png")});
 }
 
 void RoiDetectionDialog::completed(int code, QProcess::ExitStatus status) {
@@ -366,7 +368,8 @@ void RoiDetectionDialog::completed(int code, QProcess::ExitStatus status) {
         return;
     }
     if (code != 0 || status != QProcess::NormalExit) {
-        const auto detail = QString::fromUtf8(m_process.readAllStandardError()).trimmed().section('\n', -1).left(350);
+        const auto detail =
+            QString::fromUtf8(m_process.readAllStandardError()).trimmed().section('\n', -1).left(350);
         m_preview->setText(tr("未生成掩膜"));
         m_message->setText(tr("识别失败。%1").arg(detail));
         return;
@@ -387,10 +390,15 @@ void RoiDetectionDialog::completed(int code, QProcess::ExitStatus status) {
     for (int row = 0; row < spots.size(); ++row) {
         const auto spot = spots.at(row).toObject();
         const auto center = spot.value("centroid_xy").toArray();
-        const double values[] = {spot.value("id").toDouble(), spot.value("score").toDouble(),
-                                 center[0].toDouble(), center[1].toDouble(), spot.value("mask_area").toDouble(),
-                                 spot.value("integrated_counts").toDouble(), spot.value("net_counts").toDouble(),
-                                 spot.value("ellipse_major_px").toDouble(), spot.value("ellipse_minor_px").toDouble(),
+        const double values[] = {spot.value("id").toDouble(),
+                                 spot.value("score").toDouble(),
+                                 center[0].toDouble(),
+                                 center[1].toDouble(),
+                                 spot.value("mask_area").toDouble(),
+                                 spot.value("integrated_counts").toDouble(),
+                                 spot.value("net_counts").toDouble(),
+                                 spot.value("ellipse_major_px").toDouble(),
+                                 spot.value("ellipse_minor_px").toDouble(),
                                  spot.value("ellipse_angle_deg").toDouble()};
         for (int col = 0; col < 10; ++col) {
             auto item = new QTableWidgetItem(QString::number(values[col], 'g', 8));
@@ -411,7 +419,7 @@ void RoiDetectionDialog::exportResult() {
     if (m_result.isEmpty())
         return;
     const auto path = WorkspacePaths::saveFile(this, Workflow::Roi, Kind::Result, m_source,
-                                                tr("导出掩膜与参数"), "spot-rois.json", tr("JSON (*.json)"));
+                                               tr("导出掩膜与参数"), "spot-rois.json", tr("JSON (*.json)"));
     if (path.isEmpty())
         return;
     QSaveFile file(path);
@@ -475,8 +483,8 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         auto mask = CrystalRois::decodeMask(spot["mask_runs"].toArray(), size);
         const auto center = spot["centroid_xy"].toArray();
         const int id = spot["id"].toInt();
-        if (mask.isEmpty() || id <= 0 || ids.contains(id) || center.size() != 2 ||
-            !center[0].isDouble() || !center[1].isDouble()) {
+        if (mask.isEmpty() || id <= 0 || ids.contains(id) || center.size() != 2 || !center[0].isDouble() ||
+            !center[1].isDouble()) {
             m_message->setText(tr("识别结果中的光斑编号、质心或掩膜无效。"));
             return;
         }
@@ -493,8 +501,8 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         QVector<QSize> sizes;
         QVector<int> matches;
     };
-    const auto state = std::make_shared<MatchingState>(
-        MatchingState{CrystalRois{}, sourceSizes, QVector<int>(count, -1)});
+    const auto state =
+        std::make_shared<MatchingState>(MatchingState{CrystalRois{}, sourceSizes, QVector<int>(count, -1)});
     auto review = new QWidget;
     auto layout = new QVBoxLayout(review);
     WorkflowUi::compact(layout);
@@ -577,7 +585,7 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
     auto actions = new QHBoxLayout;
     auto status = new QLabel(tr("可从空白方案开始，也可载入已有方案继续编辑。"));
     status->setWordWrap(true);
-    auto save = WorkflowUi::button("save", tr("保存共用 ROI 方案…"));
+    auto save = WorkflowUi::button("save", tr("保存ROI 方案…"));
     save->setObjectName("SaveMatchedSpotRois");
     auto back = WorkflowUi::button("chevron-left", tr("返回识别结果"));
     back->setObjectName("ReturnToSpotRoiResults");
@@ -623,9 +631,10 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         image->setPixmap(QPixmap::fromImage(picture));
         for (int row = 0; row < count; ++row) {
             const auto &roi = output.items()[first + row];
-            table->item(row, 1)->setText(roi.state == RoiState::Pending ? tr("未设置") :
-                                         roi.state == RoiState::Invalid ? tr("已失效") :
-                                         roi.mask.isEmpty() ? tr("矩形 ROI") : tr("掩膜"));
+            table->item(row, 1)->setText(roi.state == RoiState::Pending   ? tr("未设置")
+                                         : roi.state == RoiState::Invalid ? tr("已失效")
+                                         : roi.mask.isEmpty()             ? tr("矩形 ROI")
+                                                                          : tr("掩膜"));
             table->item(row, 2)->setText(matches[row] < 0 ? QString() : QString::number(ids[matches[row]]));
         }
         save->setEnabled(matches.count(-1) < count);
@@ -654,17 +663,18 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
     });
     connect(reset, &QPushButton::clicked, review, [view] { view->resetZoom(); });
     connect(back, &QPushButton::clicked, review, finishReview);
-    connect(invalid, &QPushButton::clicked, review, [selectedRows, state, first, refresh, advanceFrom, candidates] {
-        candidates->hide();
-        const auto rows = selectedRows();
-        for (const auto &row : rows) {
-            state->output.invalidate(first + row.row());
-            state->matches[row.row()] = -1;
-        }
-        refresh();
-        if (rows.size() == 1)
-            advanceFrom(rows.first().row());
-    });
+    connect(invalid, &QPushButton::clicked, review,
+            [selectedRows, state, first, refresh, advanceFrom, candidates] {
+                candidates->hide();
+                const auto rows = selectedRows();
+                for (const auto &row : rows) {
+                    state->output.invalidate(first + row.row());
+                    state->matches[row.row()] = -1;
+                }
+                refresh();
+                if (rows.size() == 1)
+                    advanceFrom(rows.first().row());
+            });
     connect(clear, &QPushButton::clicked, review, [selectedRows, state, first, refresh, candidates] {
         candidates->hide();
         for (const auto &row : selectedRows()) {
@@ -673,7 +683,8 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         }
         refresh();
     });
-    auto matchSpot = [this, selectedRows, state, first, status, ids, masks, size, refresh, advanceFrom](int spot) {
+    auto matchSpot = [this, selectedRows, state, first, status, ids, masks, size, refresh,
+                      advanceFrom](int spot) {
         const auto selected = selectedRows();
         if (selected.size() != 1)
             return;
@@ -682,7 +693,8 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         const int row = selected.first().row(), owner = int(matches.indexOf(spot));
         if (owner >= 0 && owner != row) {
             status->setText(tr("光斑 %1 已匹配 %2。请先清除该晶体的匹配。")
-                                .arg(ids[spot]).arg(output.items()[first + owner].label));
+                                .arg(ids[spot])
+                                .arg(output.items()[first + owner].label));
             return;
         }
         if (!output.assignMask(first + row, masks[spot], size))
@@ -718,83 +730,89 @@ void RoiDetectionDialog::matchAndSave(const QByteArray &result) {
         candidates->setCurrentIndex(-1);
         candidates->show();
     };
-    connect(load, &QPushButton::clicked, review, [this, review, state, count, source, sourceSizes, status, refresh, candidates] {
-        auto &matches = state->matches;
-        if (matches.count(-1) < count &&
-            QMessageBox::question(review, tr("载入已有方案"), tr("载入会替换本窗口尚未保存的匹配。继续吗？")) != QMessageBox::Yes)
-            return;
-        auto folder = WorkspacePaths::directory(Workflow::Roi, Kind::Config);
-        if (folder.isEmpty())
-            folder = QFileInfo(source).absolutePath();
-        const auto path = QFileDialog::getOpenFileName(review, tr("载入已有 ROI 方案"), folder,
-                                                       tr("XRI ROI (*.roi.json *.json)"));
-        if (path.isEmpty())
-            return;
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            status->setText(tr("无法读取方案。%1").arg(file.errorString()));
-            return;
-        }
-        const auto bytes = file.readAll();
-        const auto geometry = QJsonDocument::fromJson(bytes).object()["detector_sizes"].toArray();
-        auto imported = sourceSizes;
-        for (int i = 0; i < 2; ++i) {
-            if (imported[i].isEmpty() && geometry.size() == 2) {
-                const auto pair = geometry[i].toArray();
-                if (pair.size() == 2 && pair[0].toInt() >= 0 && pair[1].toInt() >= 0 &&
-                    pair[0].toInt() <= 4096 && pair[1].toInt() <= 4096)
-                    imported[i] = QSize(pair[0].toInt(), pair[1].toInt());
-            }
-        }
-        QString error;
-        if (!state->output.restore(bytes, imported, &error)) {
-            status->setText(error);
-            return;
-        }
-        state->sizes = imported;
-        matches.fill(-1);
-        candidates->hide();
-        refresh();
-        status->setText(tr("已载入原方案。请选择晶体并点击光斑掩膜。"));
-    });
-    connect(save, &QPushButton::clicked, review, [this, review, state, first, count, selectRow, status, source, finishReview] {
-        const auto &output = state->output;
-        QHash<QPoint, QString> owners;
-        for (int row = 0; row < count; ++row) {
-            const auto &roi = output.items()[first + row];
-            if (roi.state != RoiState::Valid)
-                continue;
-            for (const auto &p : roi.pixels()) {
-                const auto other = owners.constFind(p);
-                if (other != owners.cend()) {
-                    selectRow(row);
-                    status->setText(tr("晶体 %1 和 %2 共享探测器像素。请调整匹配或标记其中一个失效。")
-                                        .arg(roi.label, *other));
+    connect(load, &QPushButton::clicked, review,
+            [this, review, state, count, source, sourceSizes, status, refresh, candidates] {
+                auto &matches = state->matches;
+                if (matches.count(-1) < count &&
+                    QMessageBox::question(review, tr("载入已有方案"),
+                                          tr("载入会替换本窗口尚未保存的匹配。继续吗？")) != QMessageBox::Yes)
+                    return;
+                auto folder = WorkspacePaths::directory(Workflow::Roi, Kind::Config);
+                if (folder.isEmpty())
+                    folder = QFileInfo(source).absolutePath();
+                const auto path = QFileDialog::getOpenFileName(review, tr("载入已有 ROI 方案"), folder,
+                                                               tr("XRI ROI (*.roi.json *.json)"));
+                if (path.isEmpty())
+                    return;
+                QFile file(path);
+                if (!file.open(QIODevice::ReadOnly)) {
+                    status->setText(tr("无法读取方案。%1").arg(file.errorString()));
                     return;
                 }
-                owners.insert(p, roi.label);
-            }
-        }
-        const auto path = WorkspacePaths::saveFile(
-            review, Workflow::Roi, Kind::Config, source, tr("保存共用 ROI 方案"), "matched-spots.roi.json",
-            tr("XRI ROI (*.roi.json)"), QFileInfo(source).absoluteDir().filePath("matched-spots.roi.json"));
-        if (path.isEmpty())
-            return;
-        if (!path.endsWith(".roi.json", Qt::CaseInsensitive)) {
-            status->setText(tr("共用 ROI 方案的文件名应以 .roi.json 结尾。"));
-            return;
-        }
-        const auto scheme = output.serialize(source, state->sizes);
-        QSaveFile destination(path);
-        if (!destination.open(QIODevice::WriteOnly) || destination.write(scheme) != scheme.size() ||
-            !destination.commit()) {
-            status->setText(tr("无法保存方案。%1").arg(destination.errorString()));
-            return;
-        }
-        m_message->setText(tr("已保存共用 ROI 方案：%1（手动匹配 %2 个，待设置 %3 个）")
-                               .arg(path).arg(count - state->matches.count(-1)).arg(output.count(RoiState::Pending)));
-        finishReview();
-    });
+                const auto bytes = file.readAll();
+                const auto geometry = QJsonDocument::fromJson(bytes).object()["detector_sizes"].toArray();
+                auto imported = sourceSizes;
+                for (int i = 0; i < 2; ++i) {
+                    if (imported[i].isEmpty() && geometry.size() == 2) {
+                        const auto pair = geometry[i].toArray();
+                        if (pair.size() == 2 && pair[0].toInt() >= 0 && pair[1].toInt() >= 0 &&
+                            pair[0].toInt() <= 4096 && pair[1].toInt() <= 4096)
+                            imported[i] = QSize(pair[0].toInt(), pair[1].toInt());
+                    }
+                }
+                QString error;
+                if (!state->output.restore(bytes, imported, &error)) {
+                    status->setText(error);
+                    return;
+                }
+                state->sizes = imported;
+                matches.fill(-1);
+                candidates->hide();
+                refresh();
+                status->setText(tr("已载入原方案。请选择晶体并点击光斑掩膜。"));
+            });
+    connect(save, &QPushButton::clicked, review,
+            [this, review, state, first, count, selectRow, status, source, finishReview] {
+                const auto &output = state->output;
+                QHash<QPoint, QString> owners;
+                for (int row = 0; row < count; ++row) {
+                    const auto &roi = output.items()[first + row];
+                    if (roi.state != RoiState::Valid)
+                        continue;
+                    for (const auto &p : roi.pixels()) {
+                        const auto other = owners.constFind(p);
+                        if (other != owners.cend()) {
+                            selectRow(row);
+                            status->setText(tr("晶体 %1 和 %2 共享探测器像素。请调整匹配或标记其中一个失效。")
+                                                .arg(roi.label, *other));
+                            return;
+                        }
+                        owners.insert(p, roi.label);
+                    }
+                }
+                const auto path = WorkspacePaths::saveFile(
+                    review, Workflow::Roi, Kind::Config, source, tr("保存ROI 方案"), "matched-spots.roi.json",
+                    tr("XRI ROI (*.roi.json)"),
+                    QFileInfo(source).absoluteDir().filePath("matched-spots.roi.json"));
+                if (path.isEmpty())
+                    return;
+                if (!path.endsWith(".roi.json", Qt::CaseInsensitive)) {
+                    status->setText(tr("ROI 方案的文件名应以 .roi.json 结尾。"));
+                    return;
+                }
+                const auto scheme = output.serialize(source, state->sizes);
+                QSaveFile destination(path);
+                if (!destination.open(QIODevice::WriteOnly) || destination.write(scheme) != scheme.size() ||
+                    !destination.commit()) {
+                    status->setText(tr("无法保存方案。%1").arg(destination.errorString()));
+                    return;
+                }
+                m_message->setText(tr("已保存ROI 方案：%1（手动匹配 %2 个，待设置 %3 个）")
+                                       .arg(path)
+                                       .arg(count - state->matches.count(-1))
+                                       .arg(output.count(RoiState::Pending)));
+                finishReview();
+            });
     selectRow(0);
     refresh();
     m_pages->addWidget(review);
