@@ -9,3 +9,4 @@
 *.h5
 *.hdf5
 *.nx5
+!/assets/calibration/target_kapton_55.calibration.h5

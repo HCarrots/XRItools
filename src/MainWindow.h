@@ -75,6 +75,7 @@ class MainWindow : public QMainWindow {
     bool restartForLanguage(const QString &language);
     void openAutomaticRoi();
     void convertTextRois();
+    void exportTextRois();
     void showWorkspace(QWidget *page, const QString &title = {});
     void updateBrowserTitle();
     QTreeWidgetItem *fileRoot(const QString &file) const;

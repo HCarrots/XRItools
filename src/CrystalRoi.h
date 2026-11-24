@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <array>
 
 enum class RoiState { Pending, Valid, Invalid };
 struct CrystalRoi {
@@ -28,6 +29,8 @@ class CrystalRois {
     int count(RoiState state) const;
     static QByteArray convertTextFiles(const QStringList &files, const QVector<QSize> &sizes,
                                        QStringList *notes = nullptr);
+    static std::array<QByteArray, 2> exportTextTables(const QByteArray &json,
+                                                    QStringList *approximatedMasks = nullptr);
     QByteArray serialize(const QString &source, const QVector<QSize> &sizes) const;
     bool restore(const QByteArray &json, const QVector<QSize> &sizes, QString *error);
 

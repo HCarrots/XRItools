@@ -249,6 +249,59 @@ QByteArray CrystalRois::convertTextFiles(const QStringList &files, const QVector
         *notes = messages;
     return QJsonDocument(obj).toJson();
 }
+
+std::array<QByteArray, 2> CrystalRois::exportTextTables(const QByteArray &json, QStringList *approximatedMasks) {
+    const auto geometry = QJsonDocument::fromJson(json).object().value("detector_sizes").toArray();
+    QVector<QSize> sizes;
+    for (const auto &entry : geometry) {
+        const auto shape = entry.toArray();
+        if (shape.size() != 2)
+            break;
+        const QSize size(shape[0].toInt(), shape[1].toInt());
+        if (size.isEmpty())
+            break;
+        sizes.append(size);
+    }
+    if (geometry.size() != 2 || sizes.size() != 2)
+        throw std::runtime_error(
+            QCoreApplication::translate("CrystalRoi", "ROI 方案须包含 LAMBDA 和 MINIPIX 的有效探测器尺寸。")
+                .toStdString());
+    CrystalRois rois;
+    QString error;
+    if (!rois.restore(json, sizes, &error))
+        throw std::runtime_error(error.toStdString());
+
+    const QByteArray header = "\troi_label\tx1\tx2\ty1\ty2\tx_shift\ty_shift\tx_expand\ty_expand\n";
+    std::array<QByteArray, 2> tables;
+    std::array<int, 2> indices{};
+    QStringList approximations;
+    for (const auto &roi : rois.items()) {
+        const int detector = roi.detector == "D_MINIPIX" ? 1 : 0;
+        const int index = indices[detector]++;
+        if (roi.state != RoiState::Valid)
+            continue;
+        const auto &rect = roi.rect;
+        if (!roi.mask.isEmpty() && roi.mask.size() != qint64(rect.width()) * rect.height())
+            approximations.append(roi.label);
+        if (tables[detector].isEmpty())
+            tables[detector] = header;
+        tables[detector] += QString("%1\t%2\t%3\t%4\t%5\t%6\t0\t0\t0\t0\n")
+                                .arg(index)
+                                .arg(roi.label)
+                                .arg(rect.x())
+                                .arg(rect.x() + rect.width())
+                                .arg(rect.y())
+                                .arg(rect.y() + rect.height())
+                                .toUtf8();
+    }
+    if (tables[0].isEmpty() && tables[1].isEmpty())
+        throw std::runtime_error(
+            QCoreApplication::translate("CrystalRoi", "方案中没有可导出的有效 ROI。").toStdString());
+    if (approximatedMasks)
+        *approximatedMasks = approximations;
+    return tables;
+}
+
 QByteArray CrystalRois::serialize(const QString &source, const QVector<QSize> &sizes) const {
     QJsonArray geometry, items;
     for (const auto &s : sizes)

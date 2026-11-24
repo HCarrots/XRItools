@@ -662,15 +662,11 @@ BondWorkspace::BondWorkspace(const QString &sample, QWidget *parent)
         if (!pending.second.isEmpty())
             useRoiDraft(pending.first, pending.second);
     });
-    auto initial = Imaging::defaults();
+    auto initial = ImagingInputUi::defaultConfiguration();
     auto input = initial.value("input").toObject();
     if (!sample.isEmpty() && HdfFile::formatFromFileName(sample) != ScanFormat::Scan)
         input["sample_nxs"] = QFileInfo(sample).absoluteFilePath();
     initial["input"] = input;
-    auto defaults = initial.value("acquisition").toObject();
-    defaults["calibration_exposure_s"] = .5;
-    defaults["sample_exposure_s"] = .5;
-    initial["acquisition"] = defaults;
     applyConfiguration(initial);
     syncViewControls();
 }
@@ -731,7 +727,7 @@ QWidget *BondWorkspace::createSpatialPage() {
     solverForm->addRow(tr("增益锚点（编号_标签）"), m_anchor);
     solverForm->addRow(tr("NNLS 最大迭代"), m_iterations);
     solverForm->addRow(tr("投影 KKT 容差"), m_tolerance);
-    m_calibrate = WorkflowUi::button("play", tr("计算 ROI 标定"));
+    m_calibrate = WorkflowUi::button("play", tr("载入或计算 ROI 标定"));
     m_calibrate->setObjectName("PrepareBondSpatial");
     auto preview = new QWidget;
     auto spatialReview = new QVBoxLayout(preview);
@@ -926,7 +922,7 @@ void BondWorkspace::invalidateInputs() {
 
 void BondWorkspace::invalidateSpatial() {
     if (m_spatial)
-        status(tr("晶体选择或空间参数已变更，请重新计算 ROI 标定。"));
+        status(tr("晶体选择或空间参数已变更，请更新 ROI 标定。"));
     m_channels.reset();
     m_spatial.reset();
     m_crystalsConfirmed = false;
@@ -1078,6 +1074,7 @@ QJsonObject BondWorkspace::configuration(bool spatial) const {
                                                 : QFileInfo(output).absolutePath();
     c["reconstruction"] = rec;
     c["runtime"] = runtime;
+    ImagingInputUi::withSharedCalibrationCache(c);
     return Imaging::config(c, QDir::currentPath());
 }
 
@@ -1090,7 +1087,7 @@ void BondWorkspace::validateInputs() {
         launch(tr("正在校验扫描、剂量与 ROI…"), [this, config] {
             Work out;
             out.inputs = BondImaging::prepareInputs(config, m_stop);
-            out.message = tr("输入已校验。请计算 ROI 标定。");
+            out.message = tr("输入已校验。请载入或计算 ROI 标定。");
             return out;
         });
     } catch (const std::exception &error) {
@@ -1104,7 +1101,7 @@ void BondWorkspace::prepareSpatial() {
     try {
         const auto config = configuration();
         invalidateSpatial();
-        launch(tr("正在计算 ROI 标定…"), [this, config, inputs = m_checkedInputs] {
+        launch(tr("正在载入或计算 ROI 标定…"), [this, config, inputs = m_checkedInputs] {
             Work out;
             out.spatial = BondImaging::prepareSpatial(
                 inputs, config, m_stop, [this](const QString &text, int percent) { reportProgress(text, percent); });

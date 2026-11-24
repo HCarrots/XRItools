@@ -1,0 +1,768 @@
+{
+  "coordinate_convention": "[x1,x2), [y1,y2)",
+  "crystals": [
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-A1",
+      "state": "valid",
+      "x1": 35,
+      "x2": 66,
+      "y1": 3,
+      "y2": 31
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-A2",
+      "state": "valid",
+      "x1": 105,
+      "x2": 144,
+      "y1": 57,
+      "y2": 86
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-A3",
+      "state": "valid",
+      "x1": 182,
+      "x2": 218,
+      "y1": 4,
+      "y2": 41
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-B1",
+      "state": "valid",
+      "x1": 35,
+      "x2": 66,
+      "y1": 56,
+      "y2": 83
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-B2",
+      "state": "valid",
+      "x1": 105,
+      "x2": 144,
+      "y1": 16,
+      "y2": 47
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-B3",
+      "state": "valid",
+      "x1": 182,
+      "x2": 218,
+      "y1": 45,
+      "y2": 74
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-C1",
+      "state": "valid",
+      "x1": 35,
+      "x2": 66,
+      "y1": 99,
+      "y2": 130
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-C2",
+      "state": "valid",
+      "x1": 105,
+      "x2": 144,
+      "y1": 112,
+      "y2": 143
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-C3",
+      "state": "valid",
+      "x1": 182,
+      "x2": 218,
+      "y1": 89,
+      "y2": 122
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-D1",
+      "state": "valid",
+      "x1": 35,
+      "x2": 66,
+      "y1": 144,
+      "y2": 174
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-D2",
+      "state": "valid",
+      "x1": 105,
+      "x2": 144,
+      "y1": 167,
+      "y2": 199
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-D3",
+      "state": "valid",
+      "x1": 182,
+      "x2": 227,
+      "y1": 147,
+      "y2": 186
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-E1",
+      "state": "valid",
+      "x1": 30,
+      "x2": 60,
+      "y1": 189,
+      "y2": 221
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-E2",
+      "state": "valid",
+      "x1": 105,
+      "x2": 144,
+      "y1": 211,
+      "y2": 244
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VB-E3",
+      "state": "valid",
+      "x1": 175,
+      "x2": 210,
+      "y1": 201,
+      "y2": 237
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-A1",
+      "state": "valid",
+      "x1": 15,
+      "x2": 45,
+      "y1": 280,
+      "y2": 316
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-A2",
+      "state": "valid",
+      "x1": 42,
+      "x2": 71,
+      "y1": 360,
+      "y2": 400
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-A3",
+      "state": "valid",
+      "x1": 20,
+      "x2": 50,
+      "y1": 435,
+      "y2": 470
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-B1",
+      "state": "valid",
+      "x1": 56,
+      "x2": 89,
+      "y1": 280,
+      "y2": 316
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-B2",
+      "state": "valid",
+      "x1": 90,
+      "x2": 118,
+      "y1": 360,
+      "y2": 400
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-B3",
+      "state": "valid",
+      "x1": 55,
+      "x2": 88,
+      "y1": 490,
+      "y2": 516
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-C1",
+      "state": "valid",
+      "x1": 110,
+      "x2": 143,
+      "y1": 280,
+      "y2": 316
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-C2",
+      "state": "valid",
+      "x1": 136,
+      "x2": 166,
+      "y1": 360,
+      "y2": 400
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-C3",
+      "state": "valid",
+      "x1": 113,
+      "x2": 146,
+      "y1": 490,
+      "y2": 516
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-D1",
+      "state": "valid",
+      "x1": 160,
+      "x2": 189,
+      "y1": 280,
+      "y2": 316
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-D2",
+      "state": "valid",
+      "x1": 179,
+      "x2": 214,
+      "y1": 360,
+      "y2": 400
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-D3",
+      "state": "valid",
+      "x1": 164,
+      "x2": 192,
+      "y1": 435,
+      "y2": 470
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-E1",
+      "state": "valid",
+      "x1": 207,
+      "x2": 238,
+      "y1": 280,
+      "y2": 316
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-E2",
+      "state": "valid",
+      "x1": 223,
+      "x2": 254,
+      "y1": 360,
+      "y2": 400
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HL-E3",
+      "state": "valid",
+      "x1": 203,
+      "x2": 233,
+      "y1": 435,
+      "y2": 470
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-A1",
+      "state": "valid",
+      "x1": 295,
+      "x2": 330,
+      "y1": 3,
+      "y2": 31
+    },
+    {
+      "add": false,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-A2",
+      "state": "invalid",
+      "x1": 0,
+      "x2": 0,
+      "y1": 0,
+      "y2": 0
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-A3",
+      "state": "valid",
+      "x1": 440,
+      "x2": 474,
+      "y1": 45,
+      "y2": 74
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-B1",
+      "state": "valid",
+      "x1": 291,
+      "x2": 320,
+      "y1": 45,
+      "y2": 72
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-B2",
+      "state": "valid",
+      "x1": 375,
+      "x2": 405,
+      "y1": 57,
+      "y2": 86
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-B3",
+      "state": "valid",
+      "x1": 430,
+      "x2": 465,
+      "y1": 4,
+      "y2": 35
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-C1",
+      "state": "valid",
+      "x1": 291,
+      "x2": 320,
+      "y1": 99,
+      "y2": 130
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-C2",
+      "state": "valid",
+      "x1": 368,
+      "x2": 400,
+      "y1": 112,
+      "y2": 143
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-C3",
+      "state": "valid",
+      "x1": 440,
+      "x2": 474,
+      "y1": 89,
+      "y2": 122
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-D1",
+      "state": "valid",
+      "x1": 291,
+      "x2": 320,
+      "y1": 144,
+      "y2": 174
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-D2",
+      "state": "valid",
+      "x1": 368,
+      "x2": 400,
+      "y1": 167,
+      "y2": 199
+    },
+    {
+      "add": false,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-D3",
+      "state": "invalid",
+      "x1": 0,
+      "x2": 0,
+      "y1": 0,
+      "y2": 0
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-E1",
+      "state": "valid",
+      "x1": 291,
+      "x2": 320,
+      "y1": 189,
+      "y2": 221
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-E2",
+      "state": "valid",
+      "x1": 368,
+      "x2": 400,
+      "y1": 211,
+      "y2": 244
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "VU-E3",
+      "state": "valid",
+      "x1": 430,
+      "x2": 463,
+      "y1": 147,
+      "y2": 186
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-A1",
+      "state": "valid",
+      "x1": 488,
+      "x2": 508,
+      "y1": 417,
+      "y2": 461
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-A2",
+      "state": "valid",
+      "x1": 471,
+      "x2": 492,
+      "y1": 361,
+      "y2": 391
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-A3",
+      "state": "valid",
+      "x1": 480,
+      "x2": 503,
+      "y1": 284,
+      "y2": 314
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-B1",
+      "state": "valid",
+      "x1": 439,
+      "x2": 468,
+      "y1": 441,
+      "y2": 471
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-B2",
+      "state": "valid",
+      "x1": 430,
+      "x2": 450,
+      "y1": 363,
+      "y2": 393
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-B3",
+      "state": "valid",
+      "x1": 440,
+      "x2": 467,
+      "y1": 297,
+      "y2": 327
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-C1",
+      "state": "valid",
+      "x1": 402,
+      "x2": 427,
+      "y1": 449,
+      "y2": 479
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-C2",
+      "state": "valid",
+      "x1": 381,
+      "x2": 404,
+      "y1": 377,
+      "y2": 407
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-C3",
+      "state": "valid",
+      "x1": 393,
+      "x2": 418,
+      "y1": 300,
+      "y2": 330
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-D1",
+      "state": "valid",
+      "x1": 349,
+      "x2": 370,
+      "y1": 441,
+      "y2": 471
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-D2",
+      "state": "valid",
+      "x1": 335,
+      "x2": 356,
+      "y1": 377,
+      "y2": 407
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-D3",
+      "state": "valid",
+      "x1": 351,
+      "x2": 378,
+      "y1": 301,
+      "y2": 331
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-E1",
+      "state": "valid",
+      "x1": 298,
+      "x2": 324,
+      "y1": 456,
+      "y2": 486
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-E2",
+      "state": "valid",
+      "x1": 291,
+      "x2": 313,
+      "y1": 385,
+      "y2": 415
+    },
+    {
+      "add": true,
+      "detector": "D_LAMBDA",
+      "roi_label": "HB-E3",
+      "state": "valid",
+      "x1": 311,
+      "x2": 334,
+      "y1": 305,
+      "y2": 335
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-A1",
+      "state": "valid",
+      "x1": 188,
+      "x2": 211,
+      "y1": 206,
+      "y2": 236
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-A2",
+      "state": "valid",
+      "x1": 185,
+      "x2": 215,
+      "y1": 131,
+      "y2": 161
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-A3",
+      "state": "valid",
+      "x1": 192,
+      "x2": 218,
+      "y1": 61,
+      "y2": 91
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-B1",
+      "state": "valid",
+      "x1": 147,
+      "x2": 174,
+      "y1": 206,
+      "y2": 236
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-B2",
+      "state": "valid",
+      "x1": 125,
+      "x2": 145,
+      "y1": 131,
+      "y2": 161
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-B3",
+      "state": "valid",
+      "x1": 155,
+      "x2": 185,
+      "y1": 61,
+      "y2": 91
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-C1",
+      "state": "valid",
+      "x1": 104,
+      "x2": 129,
+      "y1": 206,
+      "y2": 236
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-C2",
+      "state": "valid",
+      "x1": 80,
+      "x2": 100,
+      "y1": 131,
+      "y2": 161
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-C3",
+      "state": "valid",
+      "x1": 100,
+      "x2": 125,
+      "y1": 70,
+      "y2": 100
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-D1",
+      "state": "valid",
+      "x1": 54,
+      "x2": 81,
+      "y1": 206,
+      "y2": 236
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-D2",
+      "state": "valid",
+      "x1": 40,
+      "x2": 61,
+      "y1": 131,
+      "y2": 161
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-D3",
+      "state": "valid",
+      "x1": 57,
+      "x2": 78,
+      "y1": 70,
+      "y2": 100
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-E1",
+      "state": "valid",
+      "x1": 5,
+      "x2": 30,
+      "y1": 206,
+      "y2": 236
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-E2",
+      "state": "valid",
+      "x1": 0,
+      "x2": 22,
+      "y1": 135,
+      "y2": 165
+    },
+    {
+      "add": true,
+      "detector": "D_MINIPIX",
+      "roi_label": "VD-E3",
+      "state": "valid",
+      "x1": 12,
+      "x2": 38,
+      "y1": 70,
+      "y2": 100
+    }
+  ],
+  "detector_sizes": [
+    [
+      516,
+      516
+    ],
+    [
+      256,
+      256
+    ]
+  ],
+  "schema": "xri-crystal-roi",
+  "source": "target_kapton_55.nxs",
+  "version": 1
+}

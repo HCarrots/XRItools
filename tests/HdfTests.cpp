@@ -153,6 +153,30 @@ int main(int argc, char **argv) {
         rejectedDuplicate = true;
     }
     expect(rejectedDuplicate, "reject an undocumented duplicate crystal rather than guessing an assignment");
+    {
+        CrystalRois source;
+        expect(source.assign(32, QRect(500, 500, 16, 16), sizes[0]) &&
+                   source.assign(34, QRect(10, 10, 5, 5), sizes[0]) &&
+                   source.assignMask(60, {{1, 2}, {2, 2}, {1, 3}}, sizes[1]),
+               "prepare rectangular, inactive and masked ROI exports");
+        source.invalidate(34);
+        QStringList approximations;
+        const auto tables = CrystalRois::exportTextTables(source.serialize({}, sizes), &approximations);
+        expect(tables[0].contains("\n32\tVU-A3\t500\t516\t500\t516\t0\t0\t0\t0\n") &&
+                   tables[0].count('\n') == 2 && tables[1].contains("\n0\tVD-A1\t1\t3\t2\t4\t0\t0\t0\t0\n") &&
+                   approximations == QStringList{"VD-A1"},
+               "legacy export uses per-detector numbering, exact exclusive bounds and reports lossy masks");
+        const auto imported = CrystalRois::convertTextFiles({textTable("roi_lambda.txt", tables[0]),
+                                                            textTable("roi_minipix.txt", tables[1])}, sizes);
+        expect(restored.restore(imported, sizes, &roiError) && restored.count(RoiState::Valid) == 2 &&
+                   restored.items()[32].rect == source.items()[32].rect &&
+                   restored.items()[34].state == RoiState::Invalid &&
+                   restored.items()[60].rect == source.items()[60].rect && restored.items()[60].mask.isEmpty(),
+               "legacy export can be reimported with disabled crystals excluded");
+        source.invalidate(60);
+        expect(CrystalRois::exportTextTables(source.serialize({}, sizes))[1].isEmpty(),
+               "skip legacy tables without valid crystals");
+    }
     rois.clear(0);
     expect(rois.items()[0].state == RoiState::Pending && rois.items()[0].rect.isEmpty(),
            "clear ROI for manual reselection");

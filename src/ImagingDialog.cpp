@@ -47,9 +47,7 @@ ImagingDialog::ImagingDialog(const QString &sample, QWidget *parent)
     resize(1300, 880);
     setMinimumSize(1000, 690);
     buildUi();
-    auto initial = Imaging::defaults();
-    put(initial, "acquisition.calibration_exposure_s", .5);
-    put(initial, "acquisition.sample_exposure_s", .5);
+    auto initial = ImagingInputUi::defaultConfiguration();
     if (!sample.isEmpty() && HdfFile::formatFromFileName(sample) != ScanFormat::Scan)
         put(initial, "input.sample_nxs", QFileInfo(sample).absoluteFilePath());
     put(initial, "runtime.output_dir",
@@ -136,7 +134,10 @@ ImagingDialog::ImagingDialog(const QString &sample, QWidget *parent)
         refreshValidation();
         if (m_validateOnly) {
             m_tabs->setCurrentIndex(2);
-            const auto message = tr("输入校验通过：薄膜与样品网格完整，能量范围匹配。输出目录须为尚不存在的新目录。");
+            const auto &notice = m_validation.energyBand.notice;
+            const auto message = notice.isEmpty()
+                                     ? tr("输入校验通过：薄膜与样品网格完整，能量范围匹配。输出目录须为尚不存在的新目录。")
+                                     : tr("输入校验通过。%1").arg(notice);
             m_log->appendPlainText(message);
             status(message);
         } else {
@@ -286,7 +287,7 @@ void ImagingDialog::buildUi() {
         }
         form->addRow(label, row);
         connect(edit, &QLineEdit::textChanged, this, &ImagingDialog::invalidate);
-        connect(choose, &QPushButton::clicked, this, [this, edit, output] {
+        connect(choose, &QPushButton::clicked, this, [this, edit, key, output] {
             QString path;
             if (output) {
                 auto parent = QFileDialog::getExistingDirectory(this, tr("选择结果的父目录"),
@@ -295,7 +296,10 @@ void ImagingDialog::buildUi() {
                     path = QDir(parent).filePath(
                         "imaging_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz"));
             } else {
-                path = QFileDialog::getOpenFileName(this, tr("选择独立空白扫描"),
+                const auto title = key == "spatial_calibration.verification_nxs"
+                                       ? tr("选择目标能区的独立薄膜扫描")
+                                       : tr("选择独立空白扫描");
+                path = QFileDialog::getOpenFileName(this, title,
                                                    QFileInfo(edit->text()).absolutePath(),
                                                    "NeXus / HDF5 (*.nxs *.h5 *.hdf5)");
             }
@@ -317,8 +321,7 @@ void ImagingDialog::buildUi() {
     of->addRow(outputNote);
     rr->addWidget(output);
     auto boundary = new QLabel(
-        tr("主输出：相对 Kapton 等效弹性散射密度 "
-           "I(X,Y,Z)。能量已积分；背景来源可在重建参数中指定。"));
+        tr("主输出是以 Kapton 空间响应为基准的相对散射强度 I(X,Y,Z)。可在重建参数中指定背景。"));
     boundary->setWordWrap(true);
     rr->addWidget(boundary);
     rr->addStretch();
@@ -329,6 +332,11 @@ void ImagingDialog::buildUi() {
     WorkflowUi::compact(pl);
     auto psf = new QGroupBox(tr("晶体光斑模型（PSF）"));
     auto pf = new QFormLayout(psf);
+    addFlag(pf, "spatial_calibration.match_sample_band", tr("仅积分薄膜覆盖的样品能量点"));
+    fileField(pf, "spatial_calibration.verification_nxs", tr("目标能区独立薄膜（可选）"));
+    auto transferNote = new QLabel(tr("默认用薄膜自身能区确定空间响应，样品按完整能区积分。可添加同一几何下的独立薄膜扫描，比较两者在目标能区的光斑位置和形状。"));
+    transferNote->setWordWrap(true);
+    pf->addRow(transferNote);
     addFlag(pf, "psf.auto_select_model", tr("用薄箔留出误差自动选择模型"));
     addNumber(pf, "psf.min_peak_fraction", tr("最小相对峰高"));
     addNumber(pf, "psf.min_r_squared", tr("最低拟合 R²"));
@@ -774,6 +782,7 @@ QJsonObject ImagingDialog::configuration() const {
                                                 fieldValue(c, "input.sample_nxs").toString(), "imaging");
     if (!output.isEmpty())
         put(c, "runtime.output_dir", output);
+    ImagingInputUi::withSharedCalibrationCache(c);
     return Imaging::config(c, QDir::currentPath());
 }
 void ImagingDialog::applyConfiguration(const QJsonObject &config) {
@@ -900,8 +909,10 @@ void ImagingDialog::refreshValidation() {
             .arg(label, layers.join(QStringLiteral(" → ")))
             .arg(report["actual_frames"].toInt());
     };
+    const auto &notice = m_validation.energyBand.notice;
     m_validationText->setPlainText(describeLoops("calibration", tr("薄膜标定")) + '\n' +
-                                   describeLoops("sample", tr("样品成像")) + "\n\n" +
+                                   describeLoops("sample", tr("样品成像")) + '\n' +
+                                   (notice.isEmpty() ? QString{} : notice + '\n') + '\n' +
                                    QString::fromUtf8(QJsonDocument(m_validation.report).toJson()));
 }
 void ImagingDialog::exclusions(bool exclude) {
@@ -985,17 +996,26 @@ void ImagingDialog::refreshResult() {
         m_slice->setValue(int(axes[normal].size()) / 2);
     }
     auto &summary = m_result.summary;
-    m_info->setText(tr("%1 × %2 × %3 · %4 · 相对 Kapton 等效密度 · NNLS 残差 %5 · TV %6 · "
-                       "%7")
+    const auto energy = summary["energy_integration"].toObject();
+    const auto quantity = energy["calibration_mode"] == "foil-native-spatial"
+                              ? tr("相对散射强度")
+                              : tr("相对 Kapton 等效密度");
+    const auto blank = energy["blank_corrected_sample_energies_kev"];
+    auto background = tr("未扣背景");
+    if (summary["sample_background_subtracted"].toBool())
+        background = blank.isArray() && blank.toArray().size() < summary["energy_points"].toInt()
+                         ? tr("部分能量点已扣空白")
+                         : tr("已扣背景");
+    m_info->setText(tr("%1 × %2 × %3 · %4 · %5 · NNLS 残差 %6 · TV %7 · %8")
                         .arg(axes[0].size())
                         .arg(axes[1].size())
                         .arg(axes[2].size())
-                        .arg(summary["solver"].toString(),
+                        .arg(summary["solver"].toString(), quantity,
                              real(summary["nnls_relative_l2_residual"].toDouble()),
                              !m_result.tv.size()                ? tr("关闭")
                              : summary["tv_converged"].toBool() ? tr("收敛")
                                                                 : tr("未收敛，主结果回退 NNLS"),
-                             summary["sample_background_subtracted"].toBool()?tr("已校正独立背景"):tr("未指定样品背景")));
+                             background));
     m_info->show();
     m_sensitivity->setCurves({{"Sensitivity", axes[0], m_result.sensitivity, QColor(0, 80, 160), false}},
                              tr("完整 X 范围的灵敏度（含增益和 Δx / 薄膜厚度）"), "X (mm)", "sqrt(sum A^2)");

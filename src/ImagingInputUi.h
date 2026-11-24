@@ -4,11 +4,93 @@
 #include "WorkspacePaths.h"
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 
 namespace ImagingInputUi {
+inline QString defaultFoilWorkspace() {
+    const QString foil = "Data/kapton/target_kapton_55.nxs";
+    for (const auto &start : {QDir::currentPath(), QCoreApplication::applicationDirPath()}) {
+        QDir location(start);
+        for (int depth = 0; depth < 5; ++depth) {
+            for (const auto &folder : {location.absolutePath(), location.filePath("workspace")})
+                if (QFileInfo(QDir(folder).filePath(foil)).isFile())
+                    return QDir(folder).absolutePath();
+            if (!location.cdUp())
+                break;
+        }
+    }
+    return {};
+}
+
+inline QString packagedFoilDirectory() {
+    const QString file = "target_kapton_55.calibration.h5";
+    const QDir app(QCoreApplication::applicationDirPath());
+    const auto installed = QStandardPaths::locate(QStandardPaths::GenericDataLocation,
+                                                   "xri-tools/calibration", QStandardPaths::LocateDirectory);
+    for (const auto &path : {app.filePath("calibration"), app.filePath("../share/xri-tools/calibration"), installed}) {
+        if (!path.isEmpty() && QFileInfo(QDir(path).filePath(file)).isFile() &&
+            QFileInfo(QDir(path).filePath("target_kapton_55.roi.json")).isFile())
+            return QDir(path).absolutePath();
+    }
+    return {};
+}
+
+inline void withSharedCalibrationCache(QJsonObject &config) {
+    auto settings = config.value("spatial_calibration").toObject();
+    if (!settings.value("cache_directory").toString().isEmpty())
+        return;
+    const auto root = WorkspacePaths::root();
+    settings["cache_directory"] = root.isEmpty()
+                                      ? QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+                                            .filePath("calibration-cache")
+                                      : QDir(root).filePath("imaging/calibration-cache");
+    config["spatial_calibration"] = settings;
+}
+
+inline QJsonObject defaultConfiguration() {
+    auto config = Imaging::defaults();
+    const QString rawFoil = "Data/kapton/target_kapton_55.nxs";
+    auto root = WorkspacePaths::root();
+    if (root.isEmpty() || !QFileInfo(QDir(root).filePath(rawFoil)).isFile())
+        root.clear();
+    const auto preset = root.isEmpty() ? packagedFoilDirectory() : QString{};
+    if (root.isEmpty() && preset.isEmpty())
+        root = defaultFoilWorkspace();
+    auto input = config.value("input").toObject();
+    auto acquisition = config.value("acquisition").toObject();
+    acquisition["calibration_exposure_s"] = .5;
+    acquisition["sample_exposure_s"] = .5;
+    if (!root.isEmpty()) {
+        input["calibration_nxs"] = QDir(root).filePath(rawFoil);
+        const auto roi = QDir(root).filePath("ROI/config/legacy-v4.roi.json");
+        if (QFileInfo(roi).isFile())
+            input["roi_table"] = roi;
+    } else if (!preset.isEmpty()) {
+        const auto foil = QDir(preset).filePath("target_kapton_55.calibration.h5");
+        input["calibration_nxs"] = foil;
+        input["roi_table"] = QDir(preset).filePath("target_kapton_55.roi.json");
+        try {
+            const ImagingH5 file(foil);
+            const auto metadata = QJsonDocument::fromJson(file.text("xri_prepared_foil").toUtf8()).object();
+            if (metadata["schema"] == "XRI.prepared-foil.v1") {
+                for (const auto &field : {"detector", "monitor", "calibration_exposure_s",
+                                          "foil_thickness_mm", "detector_pixel_pitch_mm"})
+                    acquisition[field] = metadata[field];
+                config["psf"] = metadata["psf"];
+            }
+        } catch (const std::exception &) {
+            // Input validation reports any unreadable or invalid packaged file.
+        }
+    }
+    config["input"] = input;
+    config["acquisition"] = acquisition;
+    withSharedCalibrationCache(config);
+    return config;
+}
+
 inline QJsonValue read(QWidget *widget, const QString &key) {
     if (auto box = qobject_cast<QCheckBox *>(widget))
         return box->isChecked();

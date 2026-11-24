@@ -72,6 +72,14 @@ int main(int argc, char **argv) {
                 std::cout << QJsonDocument(report).toJson().constData();
                 return 0;
             }
+            if (command == "--prepare-ixs") {
+                const auto inputs = BondImaging::prepareInputs(config, stop);
+                const auto spatial = BondImaging::prepareSpatial(inputs, config, stop, [](const QString &text, int) {
+                    std::cerr << text.toUtf8().constData() << std::endl;
+                });
+                std::cout << QJsonDocument(BondImaging::spatialSummary(*spatial)).toJson().constData();
+                return 0;
+            }
             if (command == "--run") {
                 auto result = Imaging::run(config, stop, [](const QString &text, int progress) {
                     std::cout << progress << " " << text.toUtf8().constData() << std::endl;
@@ -201,10 +209,116 @@ int main(int argc, char **argv) {
             expect(votes.size() == 12 && votes[0] == 0 && votes[4] == checked["converged_runs"].toInt(),
                    "local protrusion map counts only converged reconstructions");
         }
+        {
+            QTemporaryDir cacheTest;
+            auto config = ImagingFixture::create(cacheTest.filePath("scan"), false, false, false, true);
+            config["spatial_calibration"] = QJsonObject{{"cache_directory", cacheTest.filePath("cache")}};
+            const auto first = Imaging::run(config, stop);
+            const auto initial = first.summary["foil_calibration_cache"].toObject();
+            auto input = config["input"].toObject();
+            const auto secondSample = cacheTest.filePath("another-sample.nxs");
+            expect(QFile::copy(input["sample_nxs"].toString(), secondSample), "prepare another sample for cached foil");
+            input["sample_nxs"] = secondSample;
+            config["input"] = input;
+            const auto bond = BondImaging::prepareSpatial(BondImaging::prepareInputs(config, stop), config, stop);
+            const auto reuse = BondImaging::spatialSummary(*bond)["foil_calibration_cache"].toObject();
+            auto runtime = config["runtime"].toObject();
+            runtime["output_dir"] = cacheTest.filePath("repeat");
+            config["runtime"] = runtime;
+            const auto repeat = Imaging::run(config, stop);
+            expect(initial["status"] == "created" && reuse["status"] == "reused" &&
+                       initial["directory"] == reuse["directory"] &&
+                       repeat.summary["foil_calibration_cache"].toObject()["status"] == "reused" &&
+                       (repeat.primary - first.primary).norm() == 0.,
+                   "3D and IXS reuse persisted optical calibration for another sample without changing the reconstruction");
+            const auto secondFoil = cacheTest.filePath("another-foil.nxs");
+            expect(QFile::copy(input["calibration_nxs"].toString(), secondFoil), "prepare a new foil source");
+            input["calibration_nxs"] = secondFoil;
+            config["input"] = input;
+            const auto updated = BondImaging::prepareSpatial(BondImaging::prepareInputs(config, stop), config, stop);
+            const auto rebuilt = BondImaging::spatialSummary(*updated)["foil_calibration_cache"].toObject();
+            expect(rebuilt["status"] == "created" && rebuilt["directory"] != initial["directory"],
+                   "choosing another foil builds its own calibration");
+        }
         auto weights = Imaging::matchedWeights({1, 2, 4}, {1, 1.5, 4});
         expect(std::abs(std::accumulate(weights.first.begin(), weights.first.end(), 0.) - 3) < 1e-12,
                "reference interpolation preserves integrated constant spectrum");
         expect(throws([&] { Imaging::matchedWeights({1, 2}, {.9, 2}); }), "no energy extrapolation");
+        {
+            QTemporaryDir temp;
+            auto config = ImagingFixture::create(temp.filePath("crop"), false, true, true, true, false,
+                                                 false, 5, {1.25, 1.75});
+            config["spatial_calibration"] = QJsonObject{{"match_sample_band", true}};
+            const auto result = Imaging::run(config, stop);
+            const auto band = result.summary["energy_integration"].toObject();
+            ImagingH5 inputs(result.directory + "/tomography_inputs.h5");
+            const QString signal = "rois/1_test/D_band_pyz";
+            const int centralPixel = (23 * 19 + 9) * 4;
+            expect(result.summary["energy_range_kev"] == QJsonArray{1.25, 1.75} &&
+                       band["discarded_sample_energies_kev"] == QJsonArray{1., 2.} &&
+                       band["used_sample_frames"].toInt() == 12 && band["discarded_sample_frames"].toInt() == 9 &&
+                       inputs.read("integration_energy_kev") == QVector<double>{1.25, 1.5, 1.75} &&
+                       inputs.read("energy_weights_kev") == QVector<double>{0., .125, .25, .125, 0.} &&
+                       inputs.read("reference_effective_energy_weights_kev") == QVector<double>{.125, .25, .125} &&
+                       inputs.read(signal)[centralPixel] == 800.,
+                   "3D imaging trims both ends, excludes reordered frames and repeats, and reweights the retained band");
+            const auto blankPath = temp.filePath("blank.nxs");
+            {
+                ImagingH5 blank(blankPath, true);
+                const double energy[] = {1.5, 1.75}, monitor[] = {2., 2.};
+                blank.write("entry/instrument/M_DCM_B5Energy_setpoint", {2}, energy);
+                blank.write("entry/data/D_SiC_Current1", {2}, monitor);
+                QVector<quint64> counts(2 * 47 * 19, 10);
+                blank.writeUInt("entry/data/D_LAMBDA", {2, 47, 19}, counts.constData());
+            }
+            auto runtime = config["runtime"].toObject();
+            runtime["output_dir"] = temp.filePath("blank-output");
+            config["runtime"] = runtime;
+            auto stats = config["statistics"].toObject();
+            stats["blank_nxs"] = blankPath;
+            config["statistics"] = stats;
+            const auto withBlank = Imaging::run(config, stop);
+            ImagingH5 corrected(withBlank.directory + "/tomography_inputs.h5");
+            expect(withBlank.summary["energy_range_kev"] == QJsonArray{1.5, 1.75} &&
+                       corrected.read("energy_weights_kev") == QVector<double>{0., 0., .125, .125, 0.} &&
+                       corrected.read("rois/1_test/B_band").first() == 2.5 &&
+                       corrected.read("rois/1_test/B_variance").first() == .3125,
+                   "a selected blank further limits the shared integration and uses the same energy weights");
+            auto one = ImagingFixture::create(temp.filePath("one"), false, false, false, false, false,
+                                              false, 5, {1.3, 1.7});
+            auto none = ImagingFixture::create(temp.filePath("none"), false, false, false, false, false,
+                                               false, 5, {3., 4.});
+            one["spatial_calibration"] = config["spatial_calibration"];
+            none["spatial_calibration"] = config["spatial_calibration"];
+            expect(throws([&] { Imaging::validate(one, stop); }) && throws([&] { Imaging::validate(none, stop); }),
+                   "explicit energy matching requires at least two covered sample points");
+
+            const auto target = ImagingFixture::create(temp.filePath("target"));
+            auto legacy = target;
+            legacy.remove("spatial_calibration");
+            const auto legacyPath = temp.filePath("config.resolved.json");
+            ImageUtil::saveJson(legacyPath, legacy);
+            expect(Imaging::loadConfig(legacyPath)["spatial_calibration"].toObject()["match_sample_band"].toBool(),
+                   "historical resolved results reopen with their original energy-matched calibration mode");
+            none["spatial_calibration"] = QJsonObject{
+                {"verification_nxs", target["input"].toObject()["calibration_nxs"]}};
+            none["statistics"] = stats;
+            const auto independent = Imaging::run(none, stop);
+            const auto full = independent.summary["energy_integration"].toObject();
+            QFile checked(independent.directory + "/spatial_response_verification.json");
+            expect(checked.open(QIODevice::ReadOnly), "write spatial response verification report");
+            const auto verification = QJsonDocument::fromJson(checked.readAll()).object();
+            const auto spot = verification["crystals"].toObject()["1_test"].toObject();
+            expect(full["calibration_mode"] == "foil-native-spatial" &&
+                       full["calibration_range_kev"] == QJsonArray{3., 4.} &&
+                       full["used_range_kev"] == QJsonArray{1., 2.} && full["used_sample_frames"].toInt() == 20 &&
+                       full["blank_corrected_sample_energies_kev"] == QJsonArray{1.5, 1.75} &&
+                       verification["status"] == "full_target_band_compared" &&
+                       spot["compared_x_positions"].toInt() == 9 &&
+                       spot["centroid_shift_p90_pixels"].toDouble(100.) < 1e-8 &&
+                       spot["normalized_pixel_distance_p90"].toDouble(1.) < 1e-8,
+                   "3D uses all sample points for disjoint foil energies and independently compares the target spots");
+        }
         {
             QTemporaryDir tmp;
             auto canonical = ImagingFixture::create(tmp.filePath("canonical"), false, false, false, true);

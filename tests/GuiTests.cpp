@@ -38,6 +38,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -1261,16 +1262,17 @@ class GuiTests : public QObject {
         auto *automaticAction = window.findChild<QAction *>("DetectSpotRois");
         auto *manualAction = window.findChild<QAction *>("SelectCrystalRois");
         auto *convertTextRois = window.findChild<QAction *>("ConvertTextRois");
+        auto *exportTextRois = window.findChild<QAction *>("ExportTextRois");
         auto *backToBrowser = window.findChild<QToolButton *>("BackToBrowser");
         auto *menuBar = window.menuBar();
         auto *roiMenu = window.findChild<QMenu *>("RoiMenu");
-        QVERIFY(automaticAction && manualAction && convertTextRois && backToBrowser && roiMenu);
+        QVERIFY(automaticAction && manualAction && convertTextRois && exportTextRois && backToBrowser && roiMenu);
         QCOMPARE(roiMenu->title(), QStringLiteral("ROI(&R)"));
         QCOMPARE(manualAction->text(), QStringLiteral("手动选取 ROI"));
         QCOMPARE(automaticAction->text(), QStringLiteral("自动选取 ROI"));
         QVERIFY(menuBar->actions().contains(roiMenu->menuAction()));
         QVERIFY(!menuBar->actions().contains(manualAction) && !menuBar->actions().contains(automaticAction));
-        QCOMPARE(roiMenu->actions(), (QList<QAction *>{manualAction, automaticAction, convertTextRois}));
+        QCOMPARE(roiMenu->actions(), (QList<QAction *>{manualAction, automaticAction, convertTextRois, exportTextRois}));
         QVERIFY(!manualAction->menu() && !automaticAction->menu());
         auto chooseRoi = [&](QAction *action) {
             QTest::mouseClick(menuBar, Qt::LeftButton, Qt::NoModifier,
@@ -1356,6 +1358,118 @@ class GuiTests : public QObject {
         QCOMPARE(stack->currentWidget(), browser);
         QCOMPARE(window.currentFile(), QFileInfo(file).canonicalFilePath());
     }
+    void defaultFoilIsShared() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QSettings settings;
+        const QString key = "workspace/root";
+        const auto previous = settings.value(key);
+        const auto restore = qScopeGuard([&] { settings.setValue(key, previous); });
+        WorkspacePaths::setRoot(temp.path());
+        QVERIFY(QDir(temp.path()).mkpath("Data/kapton"));
+        QFile foil(temp.filePath("Data/kapton/target_kapton_55.nxs"));
+        QVERIFY(foil.open(QIODevice::WriteOnly));
+        foil.close();
+        MainWindow window;
+        auto *imaging = window.openImaging();
+        auto *bond = window.openBondImaging();
+        const auto expected = QDir(WorkspacePaths::root()).filePath("Data/kapton/target_kapton_55.nxs");
+        for (auto *workflow : {static_cast<QWidget *>(imaging), static_cast<QWidget *>(bond)}) {
+            QCOMPARE(workflow->findChild<QLineEdit *>("input.calibration_nxs")->text(), expected);
+            QCOMPARE(workflow->findChild<QLineEdit *>("acquisition.calibration_exposure_s")->text(), QStringLiteral("0.5"));
+        }
+    }
+
+    void packagedFoilWithoutLocalCalibration() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QSettings settings;
+        const QString key = "workspace/root";
+        const auto previous = settings.value(key);
+        const auto restore = qScopeGuard([&] { settings.setValue(key, previous); });
+        WorkspacePaths::setRoot(temp.path());
+        MainWindow window;
+        auto *imaging = window.openImaging();
+        auto *bond = window.openBondImaging();
+        for (auto *workflow : {static_cast<QWidget *>(imaging), static_cast<QWidget *>(bond)}) {
+            const auto foil = workflow->findChild<QLineEdit *>("input.calibration_nxs")->text();
+            const auto roi = workflow->findChild<QLineEdit *>("input.roi_table")->text();
+            QCOMPARE(QFileInfo(foil).fileName(), QStringLiteral("target_kapton_55.calibration.h5"));
+            QCOMPARE(QFileInfo(roi).fileName(), QStringLiteral("target_kapton_55.roi.json"));
+            QVERIFY(QFileInfo(foil).isFile() && QFileInfo(roi).isFile());
+            QCOMPARE(workflow->findChild<QLineEdit *>("acquisition.calibration_exposure_s")->text(),
+                     QStringLiteral("0.5"));
+        }
+    }
+
+    void exportLegacyRoiFromMenu() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QVector<QSize> sizes{{516, 516}, {256, 256}};
+        CrystalRois rois;
+        QVERIFY(rois.assign(0, QRect(10, 20, 5, 7), sizes[0]));
+        QVERIFY(rois.assignMask(60, {{1, 2}, {2, 2}, {1, 3}}, sizes[1]));
+        QFile source(temp.filePath("sample.roi.json"));
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        const auto json = rois.serialize({}, sizes);
+        QCOMPARE(source.write(json), json.size());
+        source.close();
+        QVERIFY(QDir(temp.path()).mkdir("sample_legacy_roi"));
+
+        QSettings settings;
+        const QString sourceKey = "roi/jsonExportSourceDirectory", outputKey = "roi/textExportDirectory";
+        const auto lastSource = settings.value(sourceKey), lastOutput = settings.value(outputKey);
+        const bool nonNative = QApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+        const auto restorePreferences = qScopeGuard([&] {
+            settings.setValue(sourceKey, lastSource);
+            settings.setValue(outputKey, lastOutput);
+            QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, nonNative);
+        });
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        settings.setValue(sourceKey, temp.path());
+        settings.setValue(outputKey, temp.path());
+        MainWindow window;
+        window.show();
+        auto *action = window.findChild<QAction *>("ExportTextRois");
+        QVERIFY(action && action->isEnabled());
+        bool sawApproximation = false, sawSuccess = false;
+        QElapsedTimer deadline;
+        deadline.start();
+        QTimer driveDialogs;
+        connect(&driveDialogs, &QTimer::timeout, &window, [&] {
+            auto *modal = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if (!modal)
+                return;
+            if (deadline.hasExpired(5000)) {
+                modal->reject();
+            } else if (auto *picker = qobject_cast<QFileDialog *>(modal)) {
+                if (picker->fileMode() != QFileDialog::Directory)
+                    picker->selectFile(QFileInfo(source).fileName());
+                QMetaObject::invokeMethod(picker, "accept");
+            } else if (auto *message = qobject_cast<QMessageBox *>(modal)) {
+                if (auto *confirm = message->button(QMessageBox::Yes)) {
+                    sawApproximation = message->detailedText().contains("VD-A1");
+                    confirm->click();
+                } else {
+                    sawSuccess = message->icon() == QMessageBox::Information;
+                    message->accept();
+                }
+            }
+        });
+        driveDialogs.start(20);
+        action->trigger();
+        driveDialogs.stop();
+        QVERIFY(sawApproximation && sawSuccess);
+        QCOMPARE(QDir(temp.filePath("sample_legacy_roi")).entryList(QDir::Files).size(), 0);
+        const QDir output(temp.filePath("sample_legacy_roi_2"));
+        const auto tables = CrystalRois::exportTextTables(json);
+        for (const auto &pair : {qMakePair(QString("roi_lambda.txt"), 0), qMakePair(QString("roi_minipix.txt"), 1)}) {
+            QFile exported(output.filePath(pair.first));
+            QVERIFY(exported.open(QIODevice::ReadOnly));
+            QCOMPARE(exported.readAll(), tables[pair.second]);
+        }
+    }
+
     void workflowOverview() {
         auto directory = qEnvironmentVariable("XRI_WORKFLOW_SCREENSHOTS");
         if (directory.isEmpty())

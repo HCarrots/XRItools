@@ -266,8 +266,8 @@
             <translation>ROI Calibration Settings</translation>
         </message>
         <message>
-            <source>计算 ROI 标定</source>
-            <translation>Calculate ROI Calibration</translation>
+            <source>载入或计算 ROI 标定</source>
+            <translation>Load or Calculate ROI Calibration</translation>
         </message>
         <message>
             <source>计算后检查体素网格、采用的晶体和增益收敛状态。</source>
@@ -374,16 +374,16 @@
             <translation>Back to Step 2 to Update Calibration</translation>
         </message>
         <message>
-            <source>晶体选择或空间参数已变更，请重新计算 ROI 标定。</source>
-            <translation>Crystal selection or spatial settings changed. Recalculate the ROI calibration.</translation>
+            <source>晶体选择或空间参数已变更，请更新 ROI 标定。</source>
+            <translation>Crystal selection or spatial settings changed. Update the ROI calibration.</translation>
         </message>
         <message>
-            <source>输入已校验。请计算 ROI 标定。</source>
-            <translation>Inputs validated. Calculate the ROI calibration.</translation>
+            <source>输入已校验。请载入或计算 ROI 标定。</source>
+            <translation>Inputs validated. Load or calculate the ROI calibration.</translation>
         </message>
         <message>
-            <source>正在计算 ROI 标定…</source>
-            <translation>Calculating ROI calibration…</translation>
+            <source>正在载入或计算 ROI 标定…</source>
+            <translation>Loading or calculating ROI calibration…</translation>
         </message>
         <message>
             <source>ROI 标定完成。检查体素网格和晶体增益后继续。</source>
@@ -1448,6 +1448,14 @@
             <translation>Select text ROI tables and provide the sizes of both detectors.</translation>
         </message>
         <message>
+            <source>ROI 方案须包含 LAMBDA 和 MINIPIX 的有效探测器尺寸。</source>
+            <translation>The ROI scheme must contain valid detector sizes for LAMBDA and MINIPIX.</translation>
+        </message>
+        <message>
+            <source>方案中没有可导出的有效 ROI。</source>
+            <translation>The ROI scheme has no valid ROIs to export.</translation>
+        </message>
+        <message>
             <source>%1 · 按旧成像映射将编号 35 的 VU-C3 修正为 VU-A3。</source>
             <translation>%1 · Applied the legacy imaging mapping VU-A3 to row 35 (listed as VU-C3).</translation>
         </message>
@@ -1583,6 +1591,22 @@
             <translation>Preparing foil spatial calibration</translation>
         </message>
         <message>
+            <source>1/6 准备薄膜空间标定</source>
+            <translation>1/6 Preparing foil spatial calibration</translation>
+        </message>
+        <message>
+            <source>3/6 准备晶体光斑模型和质心轨迹</source>
+            <translation>3/6 Preparing crystal spot models and centroid trajectories</translation>
+        </message>
+        <message>
+            <source>已载入薄膜标定缓存，复用光斑响应和空间模型。</source>
+            <translation>Loaded the foil calibration from cache and reused its spot responses and spatial models.</translation>
+        </message>
+        <message>
+            <source>已载入预计算薄膜标定。</source>
+            <translation>Loaded the precomputed foil calibration.</translation>
+        </message>
+        <message>
             <source>输入文件自投影计算后已变化，请返回数据与 ROI 重新校验并计算投影。</source>
             <translation>An input file has changed since projection. Return to Data and ROI to validate and calculate the projection again.</translation>
         </message>
@@ -1614,9 +1638,33 @@
             <source>正在保存 Avizo 体数据 reconstruction.am</source>
             <translation>Saving Avizo volume reconstruction.am</translation>
         </message>
+        <message>
+            <source>正在用独立薄膜比较目标能区的空间响应…</source>
+            <translation>Comparing the spatial response in the target band using an independent foil scan…</translation>
+        </message>
+        <message>
+            <source>目标能区的空间响应待独立薄膜验证。</source>
+            <translation>Spatial response in the target band needs verification with an independent foil scan.</translation>
+        </message>
+        <message>
+            <source>空间响应对照已保存。可比较的 ROI 数为 %1。</source>
+            <translation>Spatial response comparison saved. %1 ROIs could be compared.</translation>
+        </message>
     </context>
     <context>
         <name>ImagingConfig</name>
+        <message>
+            <source>预计算薄膜标定文件无效。</source>
+            <translation>The precomputed foil calibration is invalid.</translation>
+        </message>
+        <message>
+            <source>当前参数与预计算标定不一致。请恢复预设参数，或导入薄膜 NeXus 重新标定。</source>
+            <translation>The current settings differ from the precomputed calibration. Restore the preset settings or import a foil NeXus scan to recalibrate.</translation>
+        </message>
+        <message>
+            <source>晶体 %1 的 ROI 与预计算标定不一致。请使用随附的 ROI，或导入薄膜 NeXus 重新标定。</source>
+            <translation>The ROI for crystal %1 differs from the precomputed calibration. Use the accompanying ROI scheme or import a foil NeXus scan to recalibrate.</translation>
+        </message>
         <message>
             <source>扫描计划中的电机参数不完整：%1</source>
             <translation>The scan plan has incomplete motor parameters: %1</translation>
@@ -1624,6 +1672,38 @@
         <message>
             <source>薄膜标定</source>
             <translation>Foil calibration</translation>
+        </message>
+        <message>
+            <source>空白扫描</source>
+            <translation>Blank scan</translation>
+        </message>
+        <message>
+            <source>空白扫描至少需要两个不同的能量点。</source>
+            <translation>A blank scan needs at least two different energy points.</translation>
+        </message>
+        <message>
+            <source>共同覆盖的样品能量点不足两个。可关闭能区匹配，用独立薄膜空间响应重建。</source>
+            <translation>Fewer than two sample energy points have shared coverage. Turn off energy matching to reconstruct with the foil's independent spatial response.</translation>
+        </message>
+        <message>
+            <source>使用薄膜自身能区确定空间响应，积分全部 %1 个样品能量点。</source>
+            <translation>Using the foil scan's own band for the spatial response and integrating all %1 sample energy points.</translation>
+        </message>
+        <message>
+            <source>空白扣除仅覆盖其中 %1 个样品能量点。</source>
+            <translation>Blank subtraction covers %1 of those sample energy points.</translation>
+        </message>
+        <message>
+            <source>空间响应验证需要另一份独立的薄膜扫描。</source>
+            <translation>Spatial response verification needs a separate foil scan.</translation>
+        </message>
+        <message>
+            <source>按共同覆盖能区积分：%1–%2 keV，保留 %3/%4 个样品能量点，舍弃 %5 帧。</source>
+            <translation>Integrating over shared coverage: %1–%2 keV, using %3 of %4 sample energy points and discarding %5 frames.</translation>
+        </message>
+        <message>
+            <source>样品能区 %1–%2 keV 超出%3能区 %4–%5 keV。请选择覆盖整个样品能区的%3文件。</source>
+            <translation>Sample energy range %1–%2 keV exceeds the reference coverage (%3, %4–%5 keV). Select a reference file that covers the full sample range.</translation>
         </message>
         <message>
             <source>样品成像</source>
@@ -1713,8 +1793,48 @@ Settings (outer to inner): %4</translation>
             <translation>Select an independent blank scan</translation>
         </message>
         <message>
-            <source>主输出：相对 Kapton 等效弹性散射密度 I(X,Y,Z)。能量已积分；背景来源可在重建参数中指定。</source>
-            <translation>Output: energy-integrated relative Kapton-equivalent elastic scattering density I(X,Y,Z). Set the background source in reconstruction parameters.</translation>
+            <source>主输出是以 Kapton 空间响应为基准的相对散射强度 I(X,Y,Z)。可在重建参数中指定背景。</source>
+            <translation>The main output is relative scattering contrast I(X,Y,Z) referenced to the Kapton spatial response. The background source is set in Reconstruction Parameters.</translation>
+        </message>
+        <message>
+            <source>选择目标能区的独立薄膜扫描</source>
+            <translation>Select an independent foil scan in the target band</translation>
+        </message>
+        <message>
+            <source>仅积分薄膜覆盖的样品能量点</source>
+            <translation>Integrate only sample energies covered by the foil scan</translation>
+        </message>
+        <message>
+            <source>目标能区独立薄膜（可选）</source>
+            <translation>Independent target-band foil (optional)</translation>
+        </message>
+        <message>
+            <source>默认用薄膜自身能区确定空间响应，样品按完整能区积分。可添加同一几何下的独立薄膜扫描，比较两者在目标能区的光斑位置和形状。</source>
+            <translation>By default the foil scan's band determines the spatial response, and all sample energies are integrated. Add an independent foil scan with the same geometry to compare spot positions and shapes in the target band.</translation>
+        </message>
+        <message>
+            <source>相对散射强度</source>
+            <translation>Relative scattering contrast</translation>
+        </message>
+        <message>
+            <source>相对 Kapton 等效密度</source>
+            <translation>Relative Kapton-equivalent density</translation>
+        </message>
+        <message>
+            <source>未扣背景</source>
+            <translation>No background subtraction</translation>
+        </message>
+        <message>
+            <source>部分能量点已扣空白</source>
+            <translation>Blank subtracted over partial coverage</translation>
+        </message>
+        <message>
+            <source>已扣背景</source>
+            <translation>Background subtracted</translation>
+        </message>
+        <message>
+            <source>%1 × %2 × %3 · %4 · %5 · NNLS 残差 %6 · TV %7 · %8</source>
+            <translation>%1 × %2 × %3 · %4 · %5 · NNLS residual %6 · TV %7 · %8</translation>
         </message>
         <message>
             <source>计数方差与背景</source>
@@ -2087,6 +2207,10 @@ Settings (outer to inner): %4</translation>
         <message>
             <source>输入校验通过：薄膜与样品网格完整，能量范围匹配。输出目录须为尚不存在的新目录。</source>
             <translation>Inputs validated. Foil and sample grids are complete and energy ranges match. Choose an output directory that does not yet exist.</translation>
+        </message>
+        <message>
+            <source>输入校验通过。%1</source>
+            <translation>Inputs validated. %1</translation>
         </message>
         <message>
             <source>重建已保存：%1；主结果采用 %2。请结合残差、灵敏度和收敛状态检查。</source>
@@ -2660,6 +2784,46 @@ Settings (outer to inner): %4</translation>
         <message>
             <source>文本式ROI转换</source>
             <translation>Convert Text ROIs</translation>
+        </message>
+        <message>
+            <source>JSON 转旧版 ROI 文本…</source>
+            <translation>Export JSON as Legacy ROI Text…</translation>
+        </message>
+        <message>
+            <source>JSON 转旧版 ROI 文本</source>
+            <translation>Export JSON as Legacy ROI Text</translation>
+        </message>
+        <message>
+            <source>选择 ROI JSON 方案</source>
+            <translation>Select an ROI JSON Scheme</translation>
+        </message>
+        <message>
+            <source>XRI ROI (*.roi.json *.json)</source>
+            <translation>XRI ROI (*.roi.json *.json)</translation>
+        </message>
+        <message>
+            <source>旧版 TXT 只能保存矩形。%1 个有效 ROI 将使用外接矩形，处理时会包含矩形内的额外像素。</source>
+            <translation>Legacy TXT supports rectangular ROIs. Exporting %1 valid ROIs as bounding rectangles will include additional pixels in processing.</translation>
+        </message>
+        <message>
+            <source>导出外接矩形</source>
+            <translation>Export Bounding Rectangles</translation>
+        </message>
+        <message>
+            <source>选择旧版 ROI 的输出目录</source>
+            <translation>Select an Output Directory for Legacy ROIs</translation>
+        </message>
+        <message>
+            <source>无法创建旧版 ROI 输出目录 %1。</source>
+            <translation>Cannot create legacy ROI output directory %1.</translation>
+        </message>
+        <message>
+            <source>已保存旧版 ROI 表。
+%1
+%2</source>
+            <translation>Saved the legacy ROI tables.
+%1
+%2</translation>
         </message>
         <message>
             <source>选择一个或多个文本 ROI 表</source>

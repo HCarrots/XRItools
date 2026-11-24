@@ -12,9 +12,11 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QImage>
+#include <QLockFile>
 #include <QPainter>
 #include <QPainterPath>
 #include <QSaveFile>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <QtEndian>
 #include <algorithm>
@@ -75,21 +77,25 @@ void writeGeometry(ImagingH5 &f, const QString &base, const ImagingRoi &r) {
     f.writeUInt(base + "/pixels_rc", {quint64(r.pixels.size()), 2}, pixels.constData());
     f.attributes(base, roiAttributes(r));
 }
-QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, const QString &directory,
+QVector<RoiData> calibration(const QJsonObject &c, const ImagingGrid &g, const QVector<ImagingRoi> &rois,
+                             const QString &directory,
                              const std::atomic_bool &stop, Imaging::Progress progress,
                              const QVector<double> &weights) {
-    const auto &g = v.calibration;
     auto acq = c["acquisition"].toObject();
     int nx = int(g.axes[0].size()), ne = int(g.axes[1].size()), width = g.imageSize.width(),
         height = g.imageSize.height(), countPixels = width * height;
     auto rawWeights = Imaging::energyWeights(g.axes[1]);
     quint64 count = 0;
-    for (const auto &roi : v.rois)
+    for (const auto &roi : rois)
         count += quint64(ne) * roi.pixels.size() * nx;
-    if (count > 134217728 || (!directory.isEmpty() && quint64(nx) * countPixels > 134217728))
-        fail("Calibration pixel/grid buffers exceed 1 GiB; use smaller ROIs or grid");
+    const quint64 detectorValues = directory.isEmpty() ? 0 : (quint64(nx) + 1) * countPixels;
+    // With diagnostics, the count and full-detector buffers share their former combined budget.
+    const quint64 budgetGiB = directory.isEmpty() ? 1 : 2;
+    constexpr quint64 valuesPerGiB = (quint64(1) << 30) / sizeof(quint64);
+    if (count + detectorValues > budgetGiB * valuesPerGiB)
+        fail(QString("Calibration pixel/grid buffers exceed %1 GiB; use smaller ROIs or grid").arg(budgetGiB));
     QVector<std::vector<quint64>> counts;
-    for (const auto &roi : v.rois)
+    for (const auto &roi : rois)
         counts.append(std::vector<quint64>(size_t(ne) * roi.pixels.size() * nx, 0));
     QVector<double> rawImage(directory.isEmpty() ? 0 : countPixels, 0),
         band(directory.isEmpty() ? 0 : qsizetype(nx) * countPixels, 0);
@@ -107,8 +113,8 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
                               image[p] += factor * double(pixels[p]);
                           }
                       }
-                      for (int r = 0; r < v.rois.size(); ++r) {
-                          const auto &roi = v.rois[r];
+                      for (int r = 0; r < rois.size(); ++r) {
+                          const auto &roi = rois[r];
                           auto *buffer = counts[r].data();
                           qsizetype size = roi.pixels.size();
                           for (qsizetype p = 0; p < size; ++p) {
@@ -168,9 +174,9 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
                    {quint64(nx), quint64(height), quint64(width)}, band.constData());
     }
     QVector<RoiData> selected;
-    for (int r = 0; r < v.rois.size(); ++r) {
+    for (int r = 0; r < rois.size(); ++r) {
         cancel(stop);
-        const auto &roi = v.rois[r];
+        const auto &roi = rois[r];
         int np = int(roi.pixels.size());
         auto base = "rois/" + roi.key;
         if (out)
@@ -199,8 +205,101 @@ QVector<RoiData> calibration(const QJsonObject &c, const ImagingValidation &v, c
     }
     return selected;
 }
-void estimateBackground(const QJsonObject &c, const ImagingGrid &g, QVector<RoiData> &data,
+
+struct NormalizedSpot {
+    Eigen::VectorXd profile;
+    QPointF center;
+    double radius = 0.;
+};
+
+NormalizedSpot normalizedSpot(const Eigen::VectorXd &response, const Eigen::VectorXd &variance,
+                              const QVector<QPoint> &pixels) {
+    const QVector<double> values(response.data(), response.data() + response.size());
+    Eigen::VectorXd profile = (response.array() - percentile(values, 20)).max(0.);
+    Eigen::Index peakIndex;
+    const double peak = profile.maxCoeff(&peakIndex);
+    if (!(peak > 0. && peak >= 5. * std::sqrt(variance[peakIndex])))
+        return {};
+    // Focus the spatial metrics on the spot rather than isolated fluctuations in its tails.
+    profile = (profile.array() - .05 * peak).max(0.);
+    profile /= profile.sum();
+    QPointF center;
+    for (qsizetype p = 0; p < pixels.size(); ++p)
+        center += QPointF(pixels[p]) * profile[p];
+    double radius2 = 0.;
+    for (qsizetype p = 0; p < pixels.size(); ++p) {
+        const auto offset = QPointF(pixels[p]) - center;
+        radius2 += QPointF::dotProduct(offset, offset) * profile[p];
+    }
+    return {std::move(profile), center, std::sqrt(radius2)};
+}
+
+QJsonObject verifySpatialResponse(const QJsonObject &c, const ImagingValidation &v,
+                                  const QVector<RoiData> &reference, const std::atomic_bool &stop) {
+    const auto &band = v.energyBand;
+    QJsonObject report{{"schema", "XRI.spatial-response-verification.v1"},
+                       {"calibration_file", v.calibration.file},
+                       {"sample_energies_kev", json(band.energies)},
+                       {"status", "independent_scan_required"}};
+    if (v.verification.file.isEmpty())
+        return report;
+    report["verification_file"] = v.verification.file;
+    report["checked_energies_kev"] = json(band.verificationEnergies);
+    if (band.verificationEnergies.isEmpty()) {
+        report["status"] = "no_target_energy_coverage";
+        return report;
+    }
+
+    const auto measured = calibration(c, v.verification, v.rois, {}, stop, {}, band.verificationWeights);
+    const auto &x = v.calibration.axes[0];
+    const auto &targetX = v.verification.axes[0];
+    const int minimumPositions = c["psf"].toObject()["min_observations"].toInt();
+    QJsonObject crystals;
+    int comparable = 0;
+    for (qsizetype r = 0; r < measured.size(); ++r) {
+        cancel(stop);
+        const auto &foil = reference[r], &target = measured[r];
+        QVector<double> shifts, radii, shapeDistances;
+        for (qsizetype i = 0; i < targetX.size(); ++i) {
+            const double position = targetX[i];
+            if (position < x.first() || position > x.last())
+                continue;
+            const auto hi = std::clamp(std::upper_bound(x.cbegin(), x.cend(), position) - x.cbegin(),
+                                       qsizetype(1), x.size() - 1);
+            const double t = (position - x[hi - 1]) / (x[hi] - x[hi - 1]);
+            const auto original = normalizedSpot((1. - t) * foil.response.col(hi - 1) + t * foil.response.col(hi),
+                                                 (1. - t) * (1. - t) * foil.referenceVariance.col(hi - 1) +
+                                                     t * t * foil.referenceVariance.col(hi), foil.roi.pixels);
+            const auto observed = normalizedSpot(target.response.col(i), target.referenceVariance.col(i),
+                                                 target.roi.pixels);
+            if (!original.profile.size() || !observed.profile.size())
+                continue;
+            const auto offset = original.center - observed.center;
+            shifts.append(std::hypot(offset.x(), offset.y()));
+            radii.append(std::abs(original.radius - observed.radius));
+            shapeDistances.append(.5 * (original.profile - observed.profile).lpNorm<1>());
+        }
+        QJsonObject metrics{{"compared_x_positions", shifts.size()}};
+        if (shifts.size() >= minimumPositions) {
+            metrics["centroid_shift_p90_pixels"] = percentile(shifts, 90);
+            metrics["spot_radius_change_p90_pixels"] = percentile(radii, 90);
+            metrics["normalized_pixel_distance_p90"] = percentile(shapeDistances, 90);
+            ++comparable;
+        }
+        crystals[foil.roi.key] = metrics;
+    }
+    report["minimum_comparable_x_positions"] = minimumPositions;
+    report["comparable_roi_count"] = comparable;
+    report["crystals"] = crystals;
+    report["status"] = !comparable ? "insufficient_comparable_spots"
+                       : band.verificationEnergies.size() == band.energies.size() ? "full_target_band_compared"
+                                                                                : "partial_target_band_compared";
+    return report;
+}
+
+void estimateBackground(const QJsonObject &c, const ImagingValidation &validation, QVector<RoiData> &data,
                         const std::atomic_bool &stop) {
+    const auto &g = validation.sample;
     const auto stats = c["statistics"].toObject(), acq = c["acquisition"].toObject();
     const auto region = stats["background_yz_mm"].toArray();
     if (!region.isEmpty()) {
@@ -231,49 +330,22 @@ void estimateBackground(const QJsonObject &c, const ImagingGrid &g, QVector<RoiD
         return;
     }
     const auto path = stats["blank_nxs"].toString();
-    if (path.isEmpty())
+    if (validation.energyBand.blankFrameWeights.isEmpty())
         return;
-    if (QFileInfo(path).canonicalFilePath() == QFileInfo(g.file).canonicalFilePath())
-        fail("The blank must be an independent scan");
     ImagingH5 blank(path);
-    const auto energy = blank.read("/entry/instrument/M_DCM_B5Energy_setpoint");
-    const auto monitor = blank.read("/entry/data/" + acq["monitor"].toString());
     const auto detector = "/entry/data/" + acq["detector"].toString();
-    const auto node = HdfFile::inspect(path, detector);
-    if (energy.isEmpty() || energy.size() != monitor.size() || !node.type.startsWith("uint") ||
-        node.dims != QVector<quint64>{quint64(energy.size()), quint64(g.imageSize.height()),
-                                      quint64(g.imageSize.width())})
-        fail("Blank detector geometry, monitor and energy records must match the acquired frames");
-    QVector<double> axis = energy;
-    for (double e : axis)
-        if (!std::isfinite(e))
-            fail("Nonfinite blank energy");
-    std::sort(axis.begin(), axis.end());
-    axis.erase(
-        std::unique(axis.begin(), axis.end(), [](double a, double b) { return std::abs(a - b) <= 1e-10; }),
-        axis.end());
-    if (axis.size() < 2)
-        fail("Blank requires an energy scan spanning the sample band");
-    const auto weights = Imaging::matchedWeights(axis, g.axes[2]).first;
-    QVector<int> bins;
-    QVector<double> dose(axis.size(), 0.);
-    const double exposure = stats["blank_exposure_s"].toDouble(acq["sample_exposure_s"].toDouble());
-    for (int f = 0; f < energy.size(); ++f) {
-        if (!(monitor[f] > 0. && std::isfinite(monitor[f])))
-            fail("Invalid blank monitor");
-        const int e = int(std::lower_bound(axis.begin(), axis.end(), energy[f] - 1e-10) - axis.begin());
-        if (e >= axis.size())
-            fail("Cannot match blank energy");
-        bins.append(e);
-        dose[e] += monitor[f] * exposure;
-    }
+    const auto &weights = validation.energyBand.blankFrameWeights;
     for (auto &r : data) {
         r.background = ImageMatrix::Zero(r.measured.rows(), 1);
         r.backgroundVariance = r.background;
     }
     blank.frames(detector, c["runtime"].toObject()["chunk_frames"].toInt(), stop,
                  [&](int f, const quint64 *counts, int width, int) {
-                     const double factor = weights[bins[f]] / dose[bins[f]];
+                     if (f >= weights.size())
+                         fail("Blank detector frame count changed after validation");
+                     const double factor = weights[f];
+                     if (factor == 0.)
+                         return;
                      for (auto &r : data)
                          for (int p = 0; p < r.roi.pixels.size(); ++p) {
                              const auto pt = r.roi.pixels[p];
@@ -300,8 +372,7 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
     auto acq = c["acquisition"].toObject();
     int ny = int(g.axes[0].size()), nz = int(g.axes[1].size()), ne = int(g.axes[2].size()),
         width = g.imageSize.width();
-    const auto weights = directory.isEmpty() ? qMakePair(QVector<double>{}, Imaging::energyWeights(g.axes[2]))
-                                             : Imaging::matchedWeights(v.calibration.axes[1], g.axes[2]);
+    const auto weights = directory.isEmpty() ? Imaging::energyWeights(g.axes[2]) : v.energyBand.sampleWeights;
     quint64 size = 0;
     for (const auto &r : selected)
         size += r.roi.pixels.size() * quint64(ny) * nz;
@@ -315,8 +386,14 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
     source.frames("/entry/data/" + acq["detector"].toString(),
                   c["runtime"].toObject()["chunk_frames"].toInt(), stop,
                   [&](int frame, const quint64 *pixels, int, int) {
-                      int yz = g.indices[0][frame] * nz + g.indices[1][frame], e = g.indices[2][frame];
-                      double factor = weights.second[e] / g.dose[yz * ne + e];
+                      if (progress && frame % 64 == 0)
+                          progress(QCoreApplication::translate("Imaging", "样品积分 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
+                                   25 + frame * 20 / int(g.monitor.size()));
+                      const int e = g.indices[2][frame];
+                      if (weights[e] == 0.)
+                          return;
+                      const int yz = g.indices[0][frame] * nz + g.indices[1][frame];
+                      const double factor = weights[e] / g.dose[yz * ne + e];
                       for (auto &r : selected) {
                           for (int p = 0; p < r.roi.pixels.size(); ++p) {
                               auto point = r.roi.pixels[p];
@@ -325,13 +402,10 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                               r.variance(p, yz) += factor * factor * value;
                           }
                       }
-                      if (progress && frame % 64 == 0)
-                          progress(QCoreApplication::translate("Imaging", "样品积分 %1 / %2").arg(frame + 1).arg(g.monitor.size()),
-                                   25 + frame * 20 / int(g.monitor.size()));
                   });
     if (directory.isEmpty())
         return;
-    estimateBackground(c,g,selected,stop);
+    estimateBackground(c, v, selected, stop);
     ImagingH5 out(directory + "/tomography_inputs.h5", true);
     bool canonical = true;
     for (int f = 0; f < g.monitor.size(); ++f)
@@ -347,14 +421,15 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
                     {"actual_frames", g.monitor.size()},
                     {"canonical_order_verified", canonical},
                     {"background_subtracted", false},
-                    {"integration",
-                     "linear calibration spectral interpolation then sample-grid trapezoidal integration"}});
+                    {"calibration_energy_mode", v.report["energy_integration"].toObject()["calibration_mode"]},
+                    {"integration", "trapezoidal integration on the recorded sample energy grid"}});
     writeVector(out, "x_mm", v.calibration.axes[0]);
     writeVector(out, "y_mm", g.axes[0]);
     writeVector(out, "z_mm", g.axes[1]);
     writeVector(out, "energy_kev", g.axes[2]);
-    writeVector(out, "energy_weights_kev", weights.second);
-    writeVector(out, "reference_effective_energy_weights_kev", weights.first);
+    writeVector(out, "integration_energy_kev", v.energyBand.energies);
+    writeVector(out, "energy_weights_kev", weights);
+    writeVector(out, "reference_effective_energy_weights_kev", v.energyBand.calibrationWeights);
     writeIndex(out, "occupancy_yze", g.occupancy, {quint64(ny), quint64(nz), quint64(ne)});
     writeIndex(out, "complete_spectrum_yz", QVector<int>(ny * nz, 1), {quint64(ny), quint64(nz)});
     out.write("dose_yze", {quint64(ny), quint64(nz), quint64(ne)}, g.dose.constData(), false);
@@ -383,6 +458,273 @@ void sample(const QJsonObject &c, const ImagingValidation &v, QVector<RoiData> &
     }
 }
 
+struct FoilModels {
+    QHash<QString, ImagingPsf> models;
+    QJsonObject rejected;
+};
+
+FoilModels fitFoilModels(const QJsonObject &c, const QVector<RoiData> &rois, const QVector<double> &x,
+                        const std::atomic_bool &stop, const Imaging::Progress &log,
+                        QVector<QHash<double, ImagingSpotFit>> *spotCaches = nullptr) {
+    FoilModels out;
+    for (int i = 0; i < rois.size(); ++i) {
+        cancel(stop);
+        const auto &roi = rois[i];
+        try {
+            out.models.insert(roi.roi.key, Imaging::fitPsf(roi.response, roi.roi.pixels, x, c["psf"].toObject(),
+                                                           stop, spotCaches ? &(*spotCaches)[i] : nullptr));
+        } catch (const std::exception &e) {
+            cancel(stop);
+            out.rejected[roi.roi.key] = QString::fromUtf8(e.what());
+            if (log)
+                log("PSF rejected " + roi.roi.key + ": " + QString::fromUtf8(e.what()),
+                    46 + i * 14 / int(rois.size()));
+        }
+        if (log)
+            log(QStringLiteral("PSF %1 / %2").arg(i + 1).arg(rois.size()), 46 + (i + 1) * 14 / int(rois.size()));
+    }
+    return out;
+}
+
+// The reusable model is fitted in the foil's native band. A run can rescale it
+// for its own integration width without changing the spatial response.
+ImagingPsf scaledFoilModel(ImagingPsf model, double scale) {
+    if (scale == 1.)
+        return model;
+    model.amplitude *= scale;
+    model.calibrationOffset *= scale;
+    for (auto it = model.observations.begin(); it != model.observations.end(); ++it) {
+        auto observation = it->toObject();
+        observation["calibration_offset"] = observation["calibration_offset"].toDouble() * scale;
+        *it = observation;
+    }
+    if (model.kind == ImagingPsf::Varying) {
+        auto &amplitude = model.trends[0];
+        const double offset = std::log(scale);
+        for (int i : {0, 2, 3})
+            amplitude[i] += offset;
+    }
+    model.templateResiduals *= scale;
+    return model;
+}
+
+struct PreparedFoil {
+    QVector<RoiData> selected;
+    FoilModels models;
+    QJsonObject cache;
+};
+
+QString foilCacheKey(const QJsonObject &c, const ImagingGrid &grid, const QVector<ImagingRoi> &rois) {
+    const QFileInfo file(grid.file);
+    const auto acq = c["acquisition"].toObject();
+    QJsonArray geometry;
+    for (const auto &roi : rois) {
+        QJsonArray pixels;
+        for (const auto &p : roi.pixels)
+            pixels.append(qint64(p.y()) * grid.imageSize.width() + p.x());
+        geometry.append(QJsonArray{roi.key, roi.sourceLabel, roi.excluded, pixels});
+    }
+    const QJsonObject key{{"schema", "XRI.foil-cache.v1"},
+                          {"file", QJsonArray{file.canonicalFilePath(), file.size(),
+                                              file.lastModified().toMSecsSinceEpoch()}},
+                          {"detector", acq["detector"]},
+                          {"monitor", acq["monitor"]},
+                          {"exposure_s", acq["calibration_exposure_s"]},
+                          {"foil_thickness_mm", acq["foil_thickness_mm"]},
+                          {"detector_pitch_mm", acq["detector_pixel_pitch_mm"]},
+                          {"axes", QJsonArray{json(grid.axes[0]), json(grid.axes[1])}},
+                          {"rois", geometry},
+                          {"psf_settings", c["psf"]}};
+    return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(key).toJson(QJsonDocument::Compact),
+                                                       QCryptographicHash::Sha256).toHex());
+}
+
+ImageMatrix readFoilMatrix(const ImagingH5 &file, const QString &path, qsizetype rows, qsizetype cols) {
+    QVector<quint64> shape;
+    const auto values = file.read(path, &shape);
+    if (shape != QVector<quint64>{quint64(rows), quint64(cols)})
+        fail("Invalid cached foil matrix dimensions");
+    const ImageMatrix matrix = Eigen::Map<const ImageMatrix>(values.constData(), rows, cols);
+    if (!matrix.allFinite())
+        fail("Invalid cached foil matrix values");
+    return matrix;
+}
+
+ImagingPsf loadFoilPsf(const ImagingH5 &file, const ImagingRoi &roi, const QJsonObject &record) {
+    ImagingPsf model;
+    model.selection = record["model_selection"].toObject();
+    const auto row = record["row_line"].toArray(), column = record["column_line"].toArray();
+    if (row.size() != 2 || column.size() != 2)
+        fail("Invalid cached PSF trajectory");
+    model.rowSlope = row.at(0).toDouble(); model.rowIntercept = row.at(1).toDouble();
+    model.columnSlope = column.at(0).toDouble(); model.columnIntercept = column.at(1).toDouble();
+    model.sigmaRow = record["sigma_row"].toDouble(); model.sigmaColumn = record["sigma_col"].toDouble();
+    model.correlation = record["correlation"].toDouble();
+    model.amplitude = record["amplitude"].toDouble();
+    model.calibrationOffset = model.selection["calibration_offset"].toDouble();
+    model.xMin = record["fitted_x_min"].toDouble(); model.xMax = record["fitted_x_max"].toDouble();
+    model.sampleMmPerPixel = record["sample_mm_per_detector_pixel"].toDouble();
+    model.trajectoryRms = record["centroid_fit_rms_detector_pixels"].toDouble();
+    model.fwhmMm = record["projected_psf_fwhm_sample_mm"].toDouble();
+    model.minR2 = record["fit_r2_min"].toDouble();
+    model.observations = record["observations"].toArray();
+    if (model.sigmaRow <= 0. || model.sigmaColumn <= 0. ||
+        std::abs(model.correlation) >= 1. || model.amplitude <= 0. || model.xMin >= model.xMax ||
+        model.sampleMmPerPixel <= 0. || model.observations.isEmpty())
+        fail("Invalid cached PSF parameters");
+    const auto kind = model.selection["selected_model"].toString();
+    if (kind == "varying_gaussian") {
+        model.kind = ImagingPsf::Varying;
+        model.trendCenter = model.selection["trend_center_x_mm"].toDouble();
+        const auto trends = model.selection["log_shape_trends"].toArray();
+        if (trends.size() != qsizetype(model.trends.size()))
+            fail("Invalid cached PSF trends");
+        for (int i = 0; i < trends.size(); ++i) {
+            const auto values = trends[i].toArray();
+            if (values.size() != qsizetype(model.trends[i].size()))
+                fail("Invalid cached PSF trends");
+            for (int j = 0; j < values.size(); ++j)
+                model.trends[i][j] = values[j].toDouble();
+        }
+    } else if (kind == "measured_template") {
+        model.kind = ImagingPsf::Empirical;
+        for (const auto &value : model.selection["template_x_mm"].toArray())
+            model.knots.append(value.toDouble());
+        if (model.knots.size() < 2 || std::adjacent_find(model.knots.cbegin(), model.knots.cend(),
+                                                         std::greater_equal<double>()) != model.knots.cend())
+            fail("Invalid cached PSF template coordinates");
+        model.templateResiduals = readFoilMatrix(file, "templates/" + roi.key, roi.pixels.size(), model.knots.size());
+        for (int i = 0; i < roi.pixels.size(); ++i)
+            model.pixelIndex.insert(roi.pixels[i], i);
+    } else if (kind != "constant_gaussian")
+        fail("Unrecognized cached PSF model");
+    return model;
+}
+
+PreparedFoil loadFoilRecords(const ImagingH5 &raw, const ImagingH5 &fitted, const QJsonObject &manifest,
+                            const ImagingValidation &v, const std::atomic_bool &stop, double scale) {
+    PreparedFoil prepared;
+    const auto models = manifest["models"].toObject(), rejected = manifest["rejected"].toObject();
+    for (const auto &roi : v.rois) {
+        cancel(stop);
+        if (roi.excluded)
+            continue;
+        const auto base = "rois/" + roi.key;
+        const auto nx = v.calibration.axes[0].size(), np = roi.pixels.size();
+        auto response = readFoilMatrix(raw, base + "/R_band_px", np, nx);
+        auto variance = readFoilMatrix(raw, base + "/R_band_variance_px", np, nx);
+        response *= scale;
+        variance *= scale * scale;
+        prepared.selected.append({roi, std::move(response), std::move(variance), {}, {}});
+        if (models.contains(roi.key))
+            prepared.models.models.insert(
+                roi.key, scaledFoilModel(loadFoilPsf(fitted, roi, models[roi.key].toObject()), scale));
+        else if (rejected.contains(roi.key))
+            prepared.models.rejected[roi.key] = rejected[roi.key];
+        else
+            fail("Missing cached PSF for " + roi.key);
+    }
+    return prepared;
+}
+
+PreparedFoil prepareFoil(const QJsonObject &c, const ImagingValidation &v, const QString &directory,
+                         const std::atomic_bool &stop, const Imaging::Progress &log,
+                         const QVector<double> &weights, bool useNativeBand, double scale = 1.) {
+    if (!v.calibration.preparedFoil.isEmpty()) {
+        const ImagingH5 stored(v.calibration.file);
+        const auto manifest = QJsonDocument::fromJson(stored.text("manifest").toUtf8()).object();
+        auto prepared = loadFoilRecords(stored, stored, manifest, v, stop, scale);
+        if (!directory.isEmpty() && !QFile::copy(v.calibration.file, directory + "/calibration.h5"))
+            fail("Cannot save the precomputed foil calibration with the reconstruction");
+        if (log)
+            log(QCoreApplication::translate("Imaging", "已载入预计算薄膜标定。"), 24);
+        prepared.cache = {{"status", "packaged"}, {"source", v.calibration.file},
+                          {"source_scan", v.calibration.preparedFoil["source_scan"]}};
+        return prepared;
+    }
+    const auto root = c["spatial_calibration"].toObject()["cache_directory"].toString();
+    if (root.isEmpty() || !useNativeBand)
+        return {calibration(c, v.calibration, v.rois, directory, stop, log, weights), {},
+                {{"status", "uncached"}}};
+
+    auto cacheRois = v.rois;
+    for (auto &roi : cacheRois)
+        roi.excluded = roi.sourceInvalid || roi.pixels.isEmpty();
+    if (!QDir().mkpath(root))
+        fail("Cannot create foil calibration cache: " + root);
+    QDir cacheRoot(root);
+    const auto key = foilCacheKey(c, v.calibration, cacheRois);
+    const auto cache = cacheRoot.filePath(key);
+    QLockFile lock(cache + ".lock");
+    lock.setStaleLockTime(0);
+    while (!lock.tryLock(100)) {
+        cancel(stop);
+        if (lock.error() != QLockFile::LockFailedError)
+            fail("Cannot lock foil calibration cache: " + cache);
+    }
+
+    const auto load = [&]() {
+        const ImagingH5 raw(cache + "/calibration.h5"), fitted(cache + "/psf.h5");
+        const auto manifest = QJsonDocument::fromJson(fitted.text("manifest").toUtf8()).object();
+        if (manifest["key"] != key || raw.read("x_mm") != v.calibration.axes[0] ||
+            raw.read("energy_kev") != v.calibration.axes[1])
+            fail("Foil calibration cache does not match the scan");
+        return loadFoilRecords(raw, fitted, manifest, v, stop, scale);
+    };
+    PreparedFoil prepared;
+    bool reused = QFileInfo(cache).isDir();
+    if (reused) {
+        try {
+            prepared = load();
+        } catch (const std::exception &) {
+            cancel(stop);
+            QTemporaryDir obsolete(cacheRoot.filePath(".invalid-XXXXXX"));
+            if (!obsolete.isValid() || !cacheRoot.rename(cache, obsolete.filePath("data")))
+                throw;
+            reused = false;
+        }
+    }
+    if (!reused) {
+        QTemporaryDir staging(cacheRoot.filePath(".building-XXXXXX"));
+        if (!staging.isValid())
+            fail("Cannot stage foil calibration cache: " + staging.errorString());
+        const auto cacheProgress = [&](const QString &text, int percent) {
+            if (log)
+                log(text, std::min(percent, 24));
+        };
+        auto selected = calibration(c, v.calibration, cacheRois, staging.path(), stop, cacheProgress,
+                                    Imaging::energyWeights(v.calibration.axes[1]));
+        const auto fitted = fitFoilModels(c, selected, v.calibration.axes[0], stop, cacheProgress);
+        cancel(stop);
+        {
+            ImagingH5 output(staging.filePath("psf.h5"), true);
+            QJsonObject models;
+            const double pitch = c["acquisition"].toObject()["detector_pixel_pitch_mm"].toDouble();
+            for (auto it = fitted.models.cbegin(); it != fitted.models.cend(); ++it) {
+                models[it.key()] = it->json(pitch);
+                if (it->kind == ImagingPsf::Empirical)
+                    writeMatrix(output, "templates/" + it.key(), it->templateResiduals);
+            }
+            output.writeText("manifest", QString::fromUtf8(QJsonDocument(
+                QJsonObject{{"key", key}, {"models", models}, {"rejected", fitted.rejected}})
+                                                               .toJson(QJsonDocument::Compact)));
+        }
+        cancel(stop);
+        if (key != foilCacheKey(c, v.calibration, cacheRois))
+            fail("Foil scan changed during calibration");
+        if (!cacheRoot.rename(staging.path(), cache))
+            fail("Cannot publish foil calibration cache: " + cache);
+        staging.setAutoRemove(false);
+        prepared = load();
+    } else if (log) {
+        log(QCoreApplication::translate("Imaging", "已载入薄膜标定缓存，复用光斑响应和空间模型。"), 24);
+    }
+    if (!directory.isEmpty() && !QFile::copy(cache + "/calibration.h5", directory + "/calibration.h5"))
+        fail("Cannot copy cached foil diagnostics into the reconstruction result");
+    prepared.cache = {{"status", reused ? "reused" : "created"}, {"directory", cache}};
+    return prepared;
+}
+
 struct SpatialSolution {
     QVector<RoiData> accepted;
     QStringList keys;
@@ -402,30 +744,25 @@ SpatialSolution solveSpatial(const QJsonObject &c, const ImagingValidation &vali
                              QVector<RoiData> &selected, ImagingResult &result, const std::atomic_bool &stop,
                              const Imaging::Progress &log,
                              const QVector<double> &trainingX = {},
-                             QVector<QHash<double, ImagingSpotFit>> *spotCaches = nullptr) {
-    const auto &progress = log;
+                             QVector<QHash<double, ImagingSpotFit>> *spotCaches = nullptr,
+                             const FoilModels *prepared = nullptr) {
     QVector<RoiData> accepted;
     QVector<ImagingPsf> models;
     auto acq = c["acquisition"].toObject(), rec = c["reconstruction"].toObject();
     double pitch = acq["detector_pixel_pitch_mm"].toDouble();
+    auto fitted = prepared ? FoilModels{} : fitFoilModels(
+        c, selected, trainingX.isEmpty() ? validation.calibration.axes[0] : trainingX, stop, log, spotCaches);
+    const auto &psfs = prepared ? *prepared : fitted;
     for (int i = 0; i < selected.size(); ++i) {
         cancel(stop);
-        try {
-            auto model = Imaging::fitPsf(selected[i].response, selected[i].roi.pixels,
-                                         trainingX.isEmpty() ? validation.calibration.axes[0] : trainingX,
-                                         c["psf"].toObject(), stop, spotCaches ? &(*spotCaches)[i] : nullptr);
-            result.models[selected[i].roi.key] = model.json(pitch);
-            models.append(model);
+        const auto key = selected[i].roi.key;
+        const auto model = psfs.models.constFind(key);
+        if (model != psfs.models.cend()) {
+            result.models[key] = model->json(pitch);
+            models.append(*model);
             accepted.append(std::move(selected[i]));
-        } catch (const std::exception &e) {
-            cancel(stop);
-            result.rejected[selected[i].roi.key] = QString::fromUtf8(e.what());
-            log("PSF rejected " + selected[i].roi.key + ": " + QString::fromUtf8(e.what()),
-                46 + i * 14 / int(selected.size()));
-        }
-        if (progress)
-            progress(QStringLiteral("PSF %1 / %2").arg(i + 1).arg(selected.size()),
-                     46 + (i + 1) * 14 / int(selected.size()));
+        } else
+            result.rejected[key] = psfs.rejected[key];
     }
     if (!result.directory.isEmpty())
         saveJson(result.directory + "/psf_models.json",
@@ -502,7 +839,9 @@ void exportVolume(const QString &path, const ImageMatrix &rho, const QVector<QVe
               true);
     out.attributes("reinterp_insect_ck",
                    {{"axes", "X,Y,Z"},
-                    {"quantity", "relative Kapton-equivalent elastic scattering density"},
+                    {"quantity", metadata["calibration_energy_mode"].toString() == "foil-native-spatial"
+                                     ? "relative scattering contrast referenced to Kapton spatial response"
+                                     : "relative Kapton-equivalent elastic scattering density"},
                     {"units", "relative"},
                     {"background_subtracted", metadata["sample_background_subtracted"].toBool()},
                     {"energy_integrated", true},
@@ -993,7 +1332,8 @@ QJsonObject Imaging::validateDepth(const QString &dir, const std::atomic_bool &s
 ImagingValidation BondImaging::validate(const QJsonObject &c, const std::atomic_bool &stop) {
     auto out = Imaging::validate(c, stop, false);
     const auto &foil = out.calibration.axes[1], &sample = out.sample.axes[2];
-    const bool matched = sample.first() >= foil.first() - 1e-10 && sample.last() <= foil.last() + 1e-10;
+    const bool matched = c["spatial_calibration"].toObject()["match_sample_band"].toBool() &&
+                         sample.first() >= foil.first() - 1e-10 && sample.last() <= foil.last() + 1e-10;
     out.report["psf_energy_band"] = matched ? "sample-matched" : "foil-native";
     return out;
 }
@@ -1070,10 +1410,12 @@ std::shared_ptr<const BondSpatialModel> BondImaging::prepareSpatial(
     const auto &energy = validation.sample.axes[2], &foil = validation.calibration.axes[1];
     const bool matched = validation.report.value("psf_energy_band").toString() == "sample-matched";
     const auto band = matched ? Imaging::matchedWeights(foil, energy).first : Imaging::energyWeights(foil);
-    auto selected = calibration(c, validation, {}, stop, log, band);
+    auto prepared = prepareFoil(c, validation, {}, stop, log, band, !matched);
+    auto &selected = prepared.selected;
     sample(c, validation, selected, {}, stop, log);
     ImagingResult spatial;
-    auto fit = solveSpatial(c, validation, selected, spatial, stop, log);
+    const auto *preparedModels = prepared.cache["status"] == "uncached" ? nullptr : &prepared.models;
+    auto fit = solveSpatial(c, validation, selected, spatial, stop, log, {}, nullptr, preparedModels);
 
     auto model = std::make_shared<BondSpatialModel>();
     model->config = c;
@@ -1091,6 +1433,7 @@ std::shared_ptr<const BondSpatialModel> BondImaging::prepareSpatial(
         model->integratedMeasurements.append(std::move(item.measured));
     }
     model->diagnostics = {{"input_validation", validation.report},
+                          {"foil_calibration_cache", prepared.cache},
                           {"psf_band_kev", QJsonArray{matched ? energy.first() : foil.first(),
                                                       matched ? energy.last() : foil.last()}},
                           {"psf_models", spatial.models},
@@ -1313,10 +1656,15 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
     try {
         saveJson(directory + "/config.resolved.json", c);
         saveJson(directory + "/input_validation.json", validation.report);
+        const auto &band = validation.energyBand;
+        if (!band.notice.isEmpty())
+            log(band.notice, 1);
         QJsonObject sources;
         auto input = c["input"].toObject();
         const auto blankPath=c["statistics"].toObject()["blank_nxs"].toString();
         if(!blankPath.isEmpty()) input["blank_nxs"]=blankPath;
+        if (!validation.verification.file.isEmpty())
+            input["spatial_verification_nxs"] = validation.verification.file;
         for (auto it = input.begin(); it != input.end(); ++it) {
             QFileInfo f(it->toString());
             sources[it.key()] = QJsonObject{{"path", f.absoluteFilePath()},
@@ -1337,18 +1685,32 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                   {"xri", "0.2.2-native"}, {"qt", qVersion()}, {"eigen", "3.4.0"}, {"hdf5", H5_VERSION}}},
              {"inputs", sources},
              {"started_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
-        log("1/6 Extracting calibration pixels and pooled monitor doses", 3);
-        auto selected =
-            calibration(c, validation, directory, stop, progress,
-                        matchedWeights(validation.calibration.axes[1], validation.sample.axes[2]).first);
-        log("2/6 Mapping sample YZE and matching energy integrals", 25);
+        log(QCoreApplication::translate("Imaging", "1/6 准备薄膜空间标定"), 3);
+        const bool native = !c["spatial_calibration"].toObject()["match_sample_band"].toBool();
+        const auto &foilEnergy = validation.calibration.axes[1];
+        const double scale = (band.energies.last() - band.energies.first()) / (foilEnergy.last() - foilEnergy.first());
+        auto prepared = prepareFoil(c, validation, directory, stop, log, band.calibrationWeights, native, scale);
+        auto &selected = prepared.selected;
+        if (!validation.verification.file.isEmpty())
+            log(QCoreApplication::translate("Imaging", "正在用独立薄膜比较目标能区的空间响应…"), 24);
+        auto verification = verifySpatialResponse(c, validation, selected, stop);
+        saveJson(directory + "/spatial_response_verification.json", verification);
+        if (verification["status"] == "independent_scan_required")
+            log(QCoreApplication::translate("Imaging", "目标能区的空间响应待独立薄膜验证。"), 24);
+        else
+            log(QCoreApplication::translate("Imaging", "空间响应对照已保存。可比较的 ROI 数为 %1。")
+                    .arg(verification["comparable_roi_count"].toInt()), 24);
+        log("2/6 Integrating sample images on the sample energy grid", 25);
         sample(c, validation, selected, directory, stop, progress);
-        log("3/6 Calibrating per-crystal PSFs and centroid trajectories", 46);
+        log(QCoreApplication::translate("Imaging", "3/6 准备晶体光斑模型和质心轨迹"), 46);
         ImagingResult result;
         result.directory = directory;
-        auto solution = solveSpatial(c, validation, selected, result, stop, log);
+        const auto *preparedModels = prepared.cache["status"] == "uncached" ? nullptr : &prepared.models;
+        auto solution = solveSpatial(c, validation, selected, result, stop, log, {}, nullptr, preparedModels);
         const auto &[accepted, keys, response, operators, gains, history, h, b, rho, nnlsInfo, gainConverged,
                      gainIteration, dx, weightedH, varianceFloors] = solution;
+        verification["reconstruction_roi_keys"] = json(keys);
+        saveJson(directory + "/spatial_response_verification.json", verification);
         int nx = int(result.axes[0].size()), ny = int(result.axes[1].size()), nz = int(result.axes[2].size());
         const auto &x = result.axes[0];
         const auto &originalX = validation.calibration.axes[0];
@@ -1433,9 +1795,11 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
             {"detector_pixel_pitch_mm", pitch},
             {"foil_thickness_mm", acq["foil_thickness_mm"]},
             {"calibration_x_positions", originalX.size()},
-            {"energy_range_kev",
-             QJsonArray{validation.sample.axes[2].first(), validation.sample.axes[2].last()}},
-            {"energy_points", validation.sample.axes[2].size()},
+            {"energy_range_kev", QJsonArray{band.energies.first(), band.energies.last()}},
+            {"energy_points", band.energies.size()},
+            {"energy_integration", validation.report["energy_integration"]},
+            {"spatial_response_verification_status", verification["status"]},
+            {"foil_calibration_cache", prepared.cache},
             {"input_roi_count", selected.size()},
             {"accepted_roi_count", accepted.size()},
             {"roi_keys", json(keys)},
@@ -1483,13 +1847,15 @@ ImagingResult Imaging::run(const QJsonObject &supplied, const std::atomic_bool &
                  "Full X includes weak or unobservable depths; inspect sensitivity and "
                  "Gram eigenvalues; zeros do not prove empty material.",
                  "TV does not add measurements or improve measured resolution.",
-                 "Relative Kapton-equivalent density; no absorption or composition correction.",
+                 "Relative scattering contrast on the Kapton spatial response scale; no absorption or composition correction.",
                  "Marginal counting variances include independent background counting variance when used. "
                  "Shared-background covariance and monitor, gain and model uncertainty are excluded."}}};
         if (!gainConverged)
             log("Gain/NNLS fit not converged: outputs remain provisional", 96);
         log("6/6 Saving volumes, XYZ axes, sensitivity, responses and residuals", 96);
         QJsonObject metadata{{"detector_pixel_pitch_mm", pitch},
+                             {"calibration_energy_mode", validation.report["energy_integration"].toObject()["calibration_mode"]},
+                             {"spatial_response_verification_status", verification["status"]},
                              {"sample_background_subtracted",hasBackground},
                              {"variance_weighted",!varianceFloors.isEmpty()},
                              {"sample_x_spacing_mm", dx},

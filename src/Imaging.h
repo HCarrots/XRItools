@@ -26,9 +26,17 @@ struct ImagingGrid {
     QVector<double> monitor, dose;
     QSize imageSize;
     QString plan;
+    QJsonObject preparedFoil;
+};
+struct ImagingEnergyBand {
+    QVector<double> energies, sampleWeights, calibrationWeights, blankFrameWeights;
+    QVector<double> verificationEnergies, verificationWeights;
+    QString notice;
 };
 struct ImagingValidation {
     ImagingGrid calibration, sample;
+    ImagingGrid verification;
+    ImagingEnergyBand energyBand;
     QVector<ImagingRoi> rois;
     QJsonObject report;
 };
@@ -74,15 +82,16 @@ class Imaging {
     static QJsonObject config(const QJsonObject &, const QString &baseDirectory);
     static QJsonObject loadConfig(const QString &file, QString *bondOutputFile = nullptr);
     static ImagingValidation validate(const QJsonObject &, const std::atomic_bool &cancel,
-                                      bool requireMatchedBand = true);
+                                      bool selectIntegrationBand = true);
     static void validateRois(ImagingValidation &, const QJsonObject &);
     static ImagingResult run(const QJsonObject &, const std::atomic_bool &, Progress = {});
     static QJsonObject validateDepth(const QString &resultDirectory, const std::atomic_bool &, Progress = {});
     static QJsonObject comparePsfModels(const QString &resultDirectory, const std::atomic_bool &, Progress = {});
     static QJsonObject validateBoundaries(const QString &resultDirectory, const std::atomic_bool &, Progress = {});
     static QVector<double> energyWeights(const QVector<double> &);
-    static QPair<QVector<double>, QVector<double>> matchedWeights(const QVector<double> &,
-                                                                  const QVector<double> &);
+    static QPair<QVector<double>, QVector<double>> matchedWeights(const QVector<double> &source,
+                                                                  const QVector<double> &target,
+                                                                  const QString &referenceLabel = {});
     static ImagingPsf fitPsf(const ImageMatrix &, const QVector<QPoint> &, const QVector<double> &,
                              const QJsonObject &, const std::atomic_bool &,
                              QHash<double, ImagingSpotFit> *spotCache = nullptr);

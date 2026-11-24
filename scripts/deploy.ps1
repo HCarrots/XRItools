@@ -11,6 +11,10 @@ if (![IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory = Join-Path $pr
 if (![IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory = Join-Path $projectRoot $OutputDirectory }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Copy-Item -LiteralPath "$BuildDirectory\XRI.exe" -Destination $OutputDirectory -Force
+$foilDirectory = Join-Path $OutputDirectory 'calibration'
+New-Item -ItemType Directory -Path $foilDirectory -Force | Out-Null
+Copy-Item -LiteralPath "$projectRoot\assets\calibration\target_kapton_55.calibration.h5",
+                       "$projectRoot\assets\calibration\target_kapton_55.roi.json" -Destination $foilDirectory -Force
 $deployTool = @("$QtRoot\bin\windeployqt.exe", "$QtRoot\lib\qt6\bin\windeployqt.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (!$deployTool) { throw 'windeployqt.exe was not found in the Qt SDK.' }
 $qtpaths = @("$QtRoot\bin\qtpaths6.exe", "$QtRoot\bin\qtpaths.exe", "$QtRoot\lib\qt6\bin\qtpaths6.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1

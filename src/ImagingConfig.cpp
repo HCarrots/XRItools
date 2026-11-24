@@ -10,10 +10,165 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 using namespace ImageUtil;
 namespace {
 const QStringList calibrationMotors{"M_Stage_X", "M_DCM_B5Energy"};
 const QStringList sampleMotors{"M_Stage_Y", "M_Stage_Z", "M_DCM_B5Energy"};
+constexpr double energyCoverageTolerance = 1e-10;
+
+struct BlankScan {
+    QVector<double> axis, dose;
+    QVector<int> frameBins;
+};
+
+QPair<qsizetype, qsizetype> coveredSamples(const QVector<double> &sample, double low, double high) {
+    return {std::lower_bound(sample.cbegin(), sample.cend(), low - energyCoverageTolerance) - sample.cbegin(),
+            std::upper_bound(sample.cbegin(), sample.cend(), high + energyCoverageTolerance) - sample.cbegin()};
+}
+
+QVector<double> interpolateWeights(const QVector<double> &source, const QVector<double> &target,
+                                   const QVector<double> &weights) {
+    QVector<double> result(source.size(), 0.);
+    for (qsizetype k = 0; k < target.size(); ++k) {
+        const double energy = std::clamp(target[k], source.first(), source.last());
+        const auto it = std::upper_bound(source.cbegin(), source.cend(), energy);
+        const auto j = std::clamp(it - source.cbegin() - 1, qsizetype(0), source.size() - 2);
+        const double fraction = (energy - source[j]) / (source[j + 1] - source[j]);
+        result[j] += weights[k] * (1 - fraction);
+        result[j + 1] += weights[k] * fraction;
+    }
+    return result;
+}
+
+BlankScan blankScan(const QString &path, const ImagingGrid &sample, const QJsonObject &acq,
+                    double exposure, const std::atomic_bool &stop) {
+    cancel(stop);
+    if (!QFileInfo(path).isFile() ||
+        QFileInfo(path).canonicalFilePath() == QFileInfo(sample.file).canonicalFilePath())
+        fail("Select an existing blank scan independent of the sample");
+    ImagingH5 source(path);
+    const auto energy = source.read("/entry/instrument/M_DCM_B5Energy_setpoint");
+    const auto monitor = source.read("/entry/data/" + acq["monitor"].toString());
+    const auto detector = HdfFile::inspect(path, "/entry/data/" + acq["detector"].toString());
+    if (energy.isEmpty() || energy.size() != monitor.size() || !detector.type.startsWith("uint") ||
+        detector.dims != QVector<quint64>{quint64(energy.size()), quint64(sample.imageSize.height()),
+                                          quint64(sample.imageSize.width())})
+        fail("Blank detector geometry, monitor and energy records must match the acquired frames");
+    BlankScan blank;
+    blank.axis = energy;
+    for (double e : energy)
+        if (!std::isfinite(e))
+            fail("Nonfinite blank energy");
+    std::sort(blank.axis.begin(), blank.axis.end());
+    blank.axis.erase(std::unique(blank.axis.begin(), blank.axis.end(), [](double a, double b) {
+                         return std::abs(a - b) <= energyCoverageTolerance;
+                     }),
+                     blank.axis.end());
+    if (blank.axis.size() < 2)
+        fail(QCoreApplication::translate("ImagingConfig", "空白扫描至少需要两个不同的能量点。"));
+    blank.dose.fill(0., blank.axis.size());
+    blank.frameBins.reserve(energy.size());
+    for (qsizetype f = 0; f < energy.size(); ++f) {
+        if (!(monitor[f] > 0. && std::isfinite(monitor[f])))
+            fail("Invalid blank monitor");
+        const auto bin = std::lower_bound(blank.axis.cbegin(), blank.axis.cend(), energy[f] - energyCoverageTolerance);
+        if (bin == blank.axis.cend())
+            fail("Cannot match blank energy");
+        const int e = int(bin - blank.axis.cbegin());
+        blank.frameBins.append(e);
+        blank.dose[e] += monitor[f] * exposure;
+    }
+    return blank;
+}
+
+void selectEnergyBand(ImagingValidation &validation, const BlankScan &blank, bool matchFoil) {
+    const auto &sample = validation.sample.axes[2];
+    const auto &foil = validation.calibration.axes[1];
+    qsizetype first = 0, end = sample.size();
+    if (matchFoil) {
+        double low = foil.first(), high = foil.last();
+        if (!blank.axis.isEmpty()) {
+            low = std::max(low, blank.axis.first());
+            high = std::min(high, blank.axis.last());
+        }
+        const auto bounds = coveredSamples(sample, low, high);
+        first = bounds.first;
+        end = bounds.second;
+        if (end - first < 2)
+            fail(QCoreApplication::translate(
+                "ImagingConfig", "共同覆盖的样品能量点不足两个。可关闭能区匹配，用独立薄膜空间响应重建。"));
+    }
+
+    auto &band = validation.energyBand;
+    band.energies = sample.mid(first, end - first);
+    const auto usedWeights = Imaging::energyWeights(band.energies);
+    band.sampleWeights.fill(0., sample.size());
+    std::copy(usedWeights.cbegin(), usedWeights.cend(), band.sampleWeights.begin() + first);
+    if (matchFoil) {
+        band.calibrationWeights = interpolateWeights(foil, band.energies, usedWeights);
+    } else {
+        band.calibrationWeights = Imaging::energyWeights(foil);
+        // Keep the operator on the sample integration scale without evaluating the foil at sample energies.
+        const double scale = (sample.last() - sample.first()) / (foil.last() - foil.first());
+        for (double &weight : band.calibrationWeights)
+            weight *= scale;
+    }
+
+    const auto range = [](const QVector<double> &axis) { return QJsonArray{axis.first(), axis.last()}; };
+    QJsonArray discarded;
+    for (qsizetype e = 0; e < first; ++e)
+        discarded.append(sample[e]);
+    for (qsizetype e = end; e < sample.size(); ++e)
+        discarded.append(sample[e]);
+    const auto &frameIndices = validation.sample.indices[2];
+    const auto usedFrames = std::count_if(frameIndices.cbegin(), frameIndices.cend(),
+                                          [&](int e) { return band.sampleWeights[e] > 0.; });
+    QJsonObject report{{"calibration_mode", matchFoil ? "sample-matched" : "foil-native-spatial"},
+                       {"original_sample_range_kev", range(sample)},
+                       {"calibration_range_kev", range(foil)},
+                       {"used_range_kev", range(band.energies)},
+                       {"used_sample_energies_kev", json(band.energies)},
+                       {"discarded_sample_energies_kev", discarded},
+                       {"used_sample_frames", qsizetype(usedFrames)},
+                       {"discarded_sample_frames", frameIndices.size() - qsizetype(usedFrames)}};
+    if (!blank.axis.isEmpty()) {
+        const auto [lo, hi] = coveredSamples(band.energies, blank.axis.first(), blank.axis.last());
+        const auto covered = band.energies.mid(lo, hi - lo);
+        report["blank_corrected_sample_energies_kev"] = json(covered);
+        if (!covered.isEmpty()) {
+            const auto blankWeights = interpolateWeights(blank.axis, covered, usedWeights.mid(lo, hi - lo));
+            band.blankFrameWeights.reserve(blank.frameBins.size());
+            for (int bin : blank.frameBins)
+                band.blankFrameWeights.append(blankWeights[bin] / blank.dose[bin]);
+        }
+        report["blank_range_kev"] = range(blank.axis);
+    }
+    if (!matchFoil) {
+        band.notice = QCoreApplication::translate(
+            "ImagingConfig", "使用薄膜自身能区确定空间响应，积分全部 %1 个样品能量点。").arg(sample.size());
+    } else if (!discarded.isEmpty()) {
+        band.notice = QCoreApplication::translate(
+                          "ImagingConfig", "按共同覆盖能区积分：%1–%2 keV，保留 %3/%4 个样品能量点，舍弃 %5 帧。")
+                          .arg(QString::number(band.energies.first(), 'g', 12),
+                               QString::number(band.energies.last(), 'g', 12))
+                          .arg(band.energies.size()).arg(sample.size())
+                          .arg(frameIndices.size() - qsizetype(usedFrames));
+    }
+    if (!blank.axis.isEmpty() && report["blank_corrected_sample_energies_kev"].toArray().size() < band.energies.size())
+        band.notice += ' ' + QCoreApplication::translate("ImagingConfig", "空白扣除仅覆盖其中 %1 个样品能量点。")
+                                 .arg(report["blank_corrected_sample_energies_kev"].toArray().size());
+    if (!validation.verification.file.isEmpty()) {
+        const auto &axis = validation.verification.axes[1];
+        const auto [lo, hi] = coveredSamples(band.energies, axis.first(), axis.last());
+        band.verificationEnergies = band.energies.mid(lo, hi - lo);
+        report["verification_foil_range_kev"] = range(axis);
+        report["verification_sample_energies_kev"] = json(band.verificationEnergies);
+        if (!band.verificationEnergies.isEmpty())
+            band.verificationWeights = Imaging::matchedWeights(axis, band.verificationEnergies).first;
+    }
+    validation.report["energy_integration"] = report;
+}
 
 QString loopAxis(const QString &motor) {
     return motor == "M_DCM_B5Energy" ? QStringLiteral("DCM") : motor.right(1);
@@ -404,6 +559,8 @@ QJsonObject Imaging::defaults() {
                                    {"sample_dcm_points", QJsonValue()}}},
         {"roi", QJsonObject{{"excluded_ids", QJsonArray()}, {"label_overrides", QJsonObject()}}},
         {"grid", QJsonObject{{"x_step_mm", QJsonValue()}}},
+        {"spatial_calibration", QJsonObject{{"match_sample_band", false}, {"verification_nxs", ""},
+                                            {"cache_directory", ""}}},
         {"statistics", QJsonObject{{"variance_weighted", false},
                                    {"sigma_floor", QJsonValue()},
                                    {"blank_nxs", ""},
@@ -434,6 +591,15 @@ QJsonObject Imaging::defaults() {
 }
 QJsonObject Imaging::config(const QJsonObject &input, const QString &directory) {
     auto c = merge(defaults(), input);
+    auto spatial = c["spatial_calibration"].toObject();
+    if (!spatial["match_sample_band"].isBool() || !spatial["verification_nxs"].isString() ||
+        !spatial["cache_directory"].isString())
+        fail("Invalid spatial calibration configuration");
+    for (const auto &key : {QStringLiteral("verification_nxs"), QStringLiteral("cache_directory")}) {
+        const auto path = spatial[key].toString().trimmed();
+        spatial[key] = path.isEmpty() ? QString{} : QFileInfo(QDir(directory), path).absoluteFilePath();
+    }
+    c["spatial_calibration"] = spatial;
     auto statistics = c["statistics"].toObject();
     if (!statistics["variance_weighted"].isBool() || !statistics["blank_nxs"].isString() ||
         !statistics["background_yz_mm"].isArray())
@@ -587,6 +753,8 @@ QJsonObject Imaging::loadConfig(const QString &file, QString *bondOutputFile) {
             psf["auto_select_model"] = false;
             object["psf"] = psf;
         }
+        if (!object.contains("spatial_calibration"))
+            object["spatial_calibration"] = QJsonObject{{"match_sample_band", true}};
     }
     const auto output = object.take("bond_output_file").toString().trimmed();
     object.remove("bond_contrast_output_file"); // Accept configurations saved by older XRI versions.
@@ -595,7 +763,7 @@ QJsonObject Imaging::loadConfig(const QString &file, QString *bondOutputFile) {
     return config(object, QFileInfo(file).absolutePath());
 }
 ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool &stop,
-                                    bool requireMatchedBand) {
+                                    bool selectIntegrationBand) {
     auto validated = config(c, QDir::currentPath());
     auto inputs = validated["input"].toObject(), acq = validated["acquisition"].toObject();
     for (auto i = inputs.begin(); i != inputs.end(); ++i)
@@ -603,32 +771,58 @@ ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool
             fail("Input does not exist: " + i->toString());
     ImagingValidation out;
     auto loops = validated["scan_loops"].toObject();
-    out.calibration = grid(inputs["calibration_nxs"].toString(), "calibration", calibrationMotors,
-                           acq["calibration_exposure_s"].toDouble(), acq, loops, stop);
-    out.sample = grid(inputs["sample_nxs"].toString(), "sample", sampleMotors,
-                      acq["sample_exposure_s"].toDouble(), acq, loops, stop);
-    if (requireMatchedBand) {
-        const auto stats = validated["statistics"].toObject();
-        const auto path = stats["blank_nxs"].toString();
-        if (!path.isEmpty() &&
-            (!QFileInfo(path).isFile() ||
-             QFileInfo(path).canonicalFilePath() == QFileInfo(out.sample.file).canonicalFilePath()))
-            fail("Select an existing blank scan independent of the sample");
-        const auto rect = stats["background_yz_mm"].toArray();
-        if (!rect.isEmpty()) {
-            auto count = [&](int d) {
-                return std::count_if(out.sample.axes[d].begin(), out.sample.axes[d].end(), [&](double t) {
-                    return t >= rect[d * 2].toDouble() && t <= rect[d * 2 + 1].toDouble();
-                });
-            };
-            if (count(0) * count(1) < 2)
-                fail("Background YZ rectangle must include at least two scan positions");
+    const auto foilFile = inputs["calibration_nxs"].toString();
+    cancel(stop);
+    {
+        const ImagingH5 source(foilFile);
+        if (source.contains("xri_prepared_foil")) {
+            auto &foil = out.calibration;
+            foil.preparedFoil = QJsonDocument::fromJson(source.text("xri_prepared_foil").toUtf8()).object();
+            const auto &preset = foil.preparedFoil;
+            const auto image = preset["image_shape"].toArray();
+            if (preset["schema"] != "XRI.prepared-foil.v1" || image.size() != 2 ||
+                image[0].toInt() < 1 || image[1].toInt() < 1 ||
+                preset["source_scan"].toString().isEmpty())
+                fail(QCoreApplication::translate("ImagingConfig", "预计算薄膜标定文件无效。"));
+            bool compatible = preset["psf"] == validated["psf"] &&
+                              !validated["spatial_calibration"].toObject()["match_sample_band"].toBool();
+            for (const auto &field : {"detector", "monitor", "calibration_exposure_s",
+                                      "foil_thickness_mm", "detector_pixel_pitch_mm"})
+                compatible &= preset[field] == acq[field];
+            foil.file = foilFile;
+            foil.imageSize = {image[1].toInt(), image[0].toInt()};
+            foil.axes = {source.read("x_mm"), source.read("energy_kev")};
+            for (const auto &axis : foil.axes) {
+                if (axis.size() < 2)
+                    fail(QCoreApplication::translate("ImagingConfig", "预计算薄膜标定文件无效。"));
+                energyWeights(axis);
+            }
+            const auto order = preset["loop_order"].toArray();
+            for (const auto &name : order)
+                foil.loopOrder.append(name.toString());
+            auto sorted = foil.loopOrder;
+            sorted.sort();
+            const auto cells = foil.axes[0].size() * foil.axes[1].size();
+            if (sorted != QStringList{"DCM", "X"} || preset["actual_frames"].toInteger() < cells)
+                fail(QCoreApplication::translate("ImagingConfig", "预计算薄膜标定文件无效。"));
+            const auto requestedOrder = loops["calibration_order"].toString();
+            compatible &= requestedOrder.isEmpty() || requestedOrder == foil.loopOrder.join(',');
+            for (int axis = 0; axis < calibrationMotors.size(); ++axis) {
+                const auto count = loops[loopCountKey("calibration", loopAxis(calibrationMotors[axis]))];
+                compatible &= count.isNull() || count.toInteger() == foil.axes[axis].size();
+            }
+            if (!compatible)
+                fail(QCoreApplication::translate(
+                    "ImagingConfig", "当前参数与预计算标定不一致。请恢复预设参数，或导入薄膜 NeXus 重新标定。"));
         }
     }
+    if (out.calibration.preparedFoil.isEmpty())
+        out.calibration = grid(foilFile, "calibration", calibrationMotors,
+                               acq["calibration_exposure_s"].toDouble(), acq, loops, stop);
+    out.sample = grid(inputs["sample_nxs"].toString(), "sample", sampleMotors,
+                      acq["sample_exposure_s"].toDouble(), acq, loops, stop);
     if (out.calibration.imageSize != out.sample.imageSize)
         fail("Calibration/sample detector dimensions differ");
-    if (requireMatchedBand)
-        matchedWeights(out.calibration.axes[1], out.sample.axes[2]);
     auto report = [](const ImagingGrid &g, const QStringList &motors, double exposure) {
         QJsonObject axes;
         QMap<QString, qsizetype> counts;
@@ -640,20 +834,58 @@ ImagingValidation Imaging::validate(const QJsonObject &c, const std::atomic_bool
         }
         for (const auto &axis : g.loopOrder)
             loopCounts.append(counts.value(axis));
-        return QJsonObject{{"source_file", g.file},
+        const auto cells = g.preparedFoil.isEmpty() ? qint64(g.occupancy.size())
+                                                    : qint64(g.axes[0].size()) * g.axes[1].size();
+        const auto frames = g.preparedFoil.isEmpty() ? qint64(g.monitor.size())
+                                                     : g.preparedFoil["actual_frames"].toInteger();
+        QJsonObject result{{"source_file", g.file},
                            {"axes", axes},
                            {"grid_shape", shape},
                            {"loop_order_outer_to_inner", json(g.loopOrder)},
                            {"loop_counts_outer_to_inner", loopCounts},
-                           {"actual_frames", g.monitor.size()},
-                           {"expected_grid_cells", g.occupancy.size()},
-                           {"repeated_frames", g.monitor.size() - g.occupancy.size()},
+                           {"actual_frames", frames},
+                           {"expected_grid_cells", cells},
+                           {"repeated_frames", frames - cells},
                            {"image_shape", QJsonArray{g.imageSize.height(), g.imageSize.width()}},
                            {"exposure_s", exposure}};
+        if (!g.preparedFoil.isEmpty())
+            result["prepared_foil"] = g.preparedFoil;
+        return result;
     };
     out.report = {
         {"calibration", report(out.calibration, calibrationMotors, acq["calibration_exposure_s"].toDouble())},
         {"sample", report(out.sample, sampleMotors, acq["sample_exposure_s"].toDouble())}};
+    if (selectIntegrationBand) {
+        const auto stats = validated["statistics"].toObject();
+        const auto rect = stats["background_yz_mm"].toArray();
+        if (!rect.isEmpty()) {
+            auto count = [&](int d) {
+                return std::count_if(out.sample.axes[d].begin(), out.sample.axes[d].end(), [&](double t) {
+                    return t >= rect[d * 2].toDouble() && t <= rect[d * 2 + 1].toDouble();
+                });
+            };
+            if (count(0) * count(1) < 2)
+                fail("Background YZ rectangle must include at least two scan positions");
+        }
+        const auto path = stats["blank_nxs"].toString();
+        const double exposure = stats["blank_exposure_s"].toDouble(acq["sample_exposure_s"].toDouble());
+        const auto spatial = validated["spatial_calibration"].toObject();
+        const auto verification = spatial["verification_nxs"].toString();
+        if (!verification.isEmpty()) {
+            const QFileInfo file(verification);
+            if (!file.isFile() || file.canonicalFilePath() == QFileInfo(out.calibration.file).canonicalFilePath())
+                fail(QCoreApplication::translate("ImagingConfig", "空间响应验证需要另一份独立的薄膜扫描。"));
+            out.verification = grid(verification, "calibration", calibrationMotors, 1., acq,
+                                    defaults()["scan_loops"].toObject(), stop);
+            if (out.verification.imageSize != out.calibration.imageSize)
+                fail("Verification/calibration detector dimensions differ");
+            auto verificationReport = report(out.verification, calibrationMotors, 1.);
+            verificationReport.remove("exposure_s");
+            out.report["spatial_verification_scan"] = verificationReport;
+        }
+        selectEnergyBand(out, path.isEmpty() ? BlankScan{} : blankScan(path, out.sample, acq, exposure, stop),
+                         spatial["match_sample_band"].toBool());
+    }
     validateRois(out, validated);
     return out;
 }
@@ -663,7 +895,22 @@ void Imaging::validateRois(ImagingValidation &data, const QJsonObject &settings)
                          data.calibration.imageSize, settings["roi"].toObject());
     QStringList keys, excluded;
     qsizetype pixels = 0;
+    std::unique_ptr<ImagingH5> prepared;
+    if (!data.calibration.preparedFoil.isEmpty())
+        prepared = std::make_unique<ImagingH5>(data.calibration.file);
     for (const auto &r : rois) {
+        if (prepared && !r.excluded) {
+            const auto path = "rois/" + r.key + "/pixels_rc";
+            QVector<quint64> shape;
+            const auto positions = prepared->contains(path) ? prepared->read(path, &shape) : QVector<double>{};
+            bool same = shape == QVector<quint64>{quint64(r.pixels.size()), 2};
+            for (qsizetype i = 0; same && i < r.pixels.size(); ++i)
+                same = positions[2 * i] == r.pixels[i].y() && positions[2 * i + 1] == r.pixels[i].x();
+            if (!same)
+                fail(QCoreApplication::translate(
+                         "ImagingConfig", "晶体 %1 的 ROI 与预计算标定不一致。请使用随附的 ROI，或导入薄膜 NeXus 重新标定。")
+                         .arg(r.key));
+        }
         if (r.excluded)
             excluded.append(r.id);
         else {
@@ -698,21 +945,21 @@ QVector<double> Imaging::energyWeights(const QVector<double> &axis) {
     return w;
 }
 QPair<QVector<double>, QVector<double>> Imaging::matchedWeights(const QVector<double> &source,
-                                                                const QVector<double> &target) {
+                                                                const QVector<double> &target,
+                                                                const QString &referenceLabel) {
     if (source.size() < 2)
         fail("Calibration energy grid requires at least two points");
     energyWeights(source);
     auto w = energyWeights(target);
-    if (target.first() < source.first() - 1e-10 || target.last() > source.last() + 1e-10)
-        fail("Sample energy range extends outside calibration; extrapolation is not allowed");
-    QVector<double> v(source.size(), 0);
-    for (int k = 0; k < target.size(); ++k) {
-        double e = std::clamp(target[k], source.first(), source.last());
-        auto it = std::upper_bound(source.begin(), source.end(), e);
-        int j = std::clamp(int(it - source.begin()) - 1, 0, int(source.size()) - 2);
-        double t = (e - source[j]) / (source[j + 1] - source[j]);
-        v[j] += w[k] * (1 - t);
-        v[j + 1] += w[k] * t;
+    if (target.first() < source.first() - energyCoverageTolerance ||
+        target.last() > source.last() + energyCoverageTolerance) {
+        const auto label = referenceLabel.isEmpty()
+                               ? QCoreApplication::translate("ImagingConfig", "薄膜标定")
+                               : referenceLabel;
+        fail(QCoreApplication::translate(
+                 "ImagingConfig", "样品能区 %1–%2 keV 超出%3能区 %4–%5 keV。请选择覆盖整个样品能区的%3文件。")
+                 .arg(QString::number(target.first(), 'g', 12), QString::number(target.last(), 'g', 12),
+                      label, QString::number(source.first(), 'g', 12), QString::number(source.last(), 'g', 12)));
     }
-    return {v, w};
+    return {interpolateWeights(source, target, w), w};
 }

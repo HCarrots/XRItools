@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QTemporaryDir>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtWidgets>
 #include <algorithm>
@@ -247,6 +248,9 @@ void MainWindow::buildUi() {
     auto textRoi = roiMenu->addAction(tr("文本式ROI转换"));
     textRoi->setObjectName("ConvertTextRois");
     connect(textRoi, &QAction::triggered, this, &MainWindow::convertTextRois);
+    auto exportRoi = roiMenu->addAction(tr("JSON 转旧版 ROI 文本…"));
+    exportRoi->setObjectName("ExportTextRois");
+    connect(exportRoi, &QAction::triggered, this, &MainWindow::exportTextRois);
     auto spectroscopyMenu = menuBar()->addMenu(tr("谱学(&S)"));
     auto spectrum = spectroscopyMenu->addAction(WorkflowUi::icon("chart-line"), tr("打开谱学处理工作区"));
     spectrum->setObjectName("SpectroscopyStep0");
@@ -853,6 +857,81 @@ void MainWindow::convertTextRois() {
         if (!notes.isEmpty())
             message.setDetailedText(notes.join('\n'));
         message.exec();
+    } catch (const std::exception &error) {
+        QMessageBox::warning(this, title, QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::exportTextRois() {
+    const auto title = tr("JSON 转旧版 ROI 文本");
+    QSettings settings;
+    const auto configDirectory = WorkspacePaths::directory(WorkspacePaths::Workflow::Roi, WorkspacePaths::Kind::Config);
+    const auto path = QFileDialog::getOpenFileName(
+        this, tr("选择 ROI JSON 方案"), settings.value("roi/jsonExportSourceDirectory", configDirectory).toString(),
+        tr("XRI ROI (*.roi.json *.json)"));
+    if (path.isEmpty())
+        return;
+    const QFileInfo source(path);
+    settings.setValue("roi/jsonExportSourceDirectory", source.absolutePath());
+
+    try {
+        QFile input(path);
+        if (!input.open(QIODevice::ReadOnly))
+            throw std::runtime_error(input.errorString().toStdString());
+        QStringList approximatedMasks;
+        const auto tables = CrystalRois::exportTextTables(input.readAll(), &approximatedMasks);
+        if (!approximatedMasks.isEmpty()) {
+            QMessageBox message(QMessageBox::Warning, title,
+                                tr("旧版 TXT 只能保存矩形。%1 个有效 ROI 将使用外接矩形，处理时会包含矩形内的额外像素。")
+                                    .arg(approximatedMasks.size()),
+                                QMessageBox::Yes | QMessageBox::Cancel, this);
+            message.button(QMessageBox::Yes)->setText(tr("导出外接矩形"));
+            message.setDefaultButton(QMessageBox::Cancel);
+            message.setDetailedText(approximatedMasks.join('\n'));
+            if (message.exec() != QMessageBox::Yes)
+                return;
+        }
+
+        auto initialDirectory = settings.value("roi/textExportDirectory").toString();
+        if (!QFileInfo(initialDirectory).isDir()) {
+            const auto workspace = WorkspacePaths::root();
+            const auto legacy = workspace.isEmpty() ? QString{} : QDir(workspace).filePath("ROI/old_ROI");
+            initialDirectory = QFileInfo(legacy).isDir() ? legacy : source.absolutePath();
+        }
+        const auto parent = QFileDialog::getExistingDirectory(this, tr("选择旧版 ROI 的输出目录"), initialDirectory);
+        if (parent.isEmpty())
+            return;
+
+        auto stem = source.completeBaseName();
+        if (stem.endsWith(".roi", Qt::CaseInsensitive))
+            stem.chop(4);
+        stem += "_legacy_roi";
+        QDir folder(parent);
+        auto destination = folder.filePath(stem);
+        for (int i = 2; QFileInfo::exists(destination); ++i)
+            destination = folder.filePath(stem + '_' + QString::number(i));
+
+        QTemporaryDir staging(folder.filePath(".xri-roi-export-XXXXXX"));
+        if (!staging.isValid())
+            throw std::runtime_error(staging.errorString().toStdString());
+        const QStringList names{"roi_lambda.txt", "roi_minipix.txt"};
+        QStringList written;
+        for (int i = 0; i < names.size(); ++i) {
+            if (tables[i].isEmpty())
+                continue;
+            QSaveFile output(staging.filePath(names[i]));
+            if (!output.open(QIODevice::WriteOnly) || output.write(tables[i]) != tables[i].size() || !output.commit())
+                throw std::runtime_error(output.errorString().toStdString());
+            written.append(names[i]);
+        }
+        if (!folder.rename(staging.path(), destination))
+            throw std::runtime_error(
+                tr("无法创建旧版 ROI 输出目录 %1。").arg(QDir::toNativeSeparators(destination)).toStdString());
+        staging.setAutoRemove(false);
+        settings.setValue("roi/textExportDirectory", parent);
+        QMessageBox::information(this, title,
+                                 tr("已保存旧版 ROI 表。\n%1\n%2")
+                                     .arg(QDir::toNativeSeparators(destination), written.join('\n')));
     } catch (const std::exception &error) {
         QMessageBox::warning(this, title, QString::fromUtf8(error.what()));
     }
